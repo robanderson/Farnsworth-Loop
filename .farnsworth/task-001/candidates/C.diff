@@ -1,0 +1,1118 @@
+diff --git a/.code-tips.md b/.code-tips.md
+new file mode 100644
+index 0000000..34ee833
+--- /dev/null
++++ b/.code-tips.md
+@@ -0,0 +1,9 @@
++# Code Tips (written by reviewer only; workers read-only)
++
++## Invariants
++
++## Gotchas
++
++## Style
++
++## Per-module notes
+diff --git a/.farnsworth/task-001/brief.md b/.farnsworth/task-001/brief.md
+new file mode 100644
+index 0000000..e05360e
+--- /dev/null
++++ b/.farnsworth/task-001/brief.md
+@@ -0,0 +1,98 @@
++# Task 001 — M1 Skeleton: dispatch + worktree + gate
++
++## Goal
++
++Implement Milestone M1 of the Farnsworth Loop PRD (see README.md): a CLI that
++runs ONE task with ONE worker — create a git worktree, run the worker command
++in it, run the mechanical gate, and write a JSON run log. No review phase, no
++tips lifecycle, no parallelism yet. Prove the plumbing.
++
++## Hard requirements
++
++1. **Language:** Python 3.11+, standard library only. No third-party deps.
++2. **Layout:** a `farnsworth/` package, runnable as `python3 -m farnsworth`.
++3. **CLI:** `python3 -m farnsworth run <task-brief.md>`
++   - `<task-brief.md>` is any markdown file; its path stem (e.g. `task-042`
++     from `task-042.md`) is the task id.
++   - Optional `--config <path>` (default: `farnsworth.json` in repo root).
++4. **Config file** (`farnsworth.json`), JSON, with at least:
++   ```json
++   {
++     "worker": {
++       "command": ["claude", "-p", "{prompt}", "--bare", "--model",
++                    "claude-haiku-4-5", "--permission-mode", "acceptEdits",
++                    "--output-format", "json"]
++     },
++     "gate": [
++       {"name": "tests", "command": ["python3", "-m", "unittest", "discover"]}
++     ]
++   }
++   ```
++   - `{prompt}` in any argv element is substituted with the worker briefing.
++   - The worker briefing is: contents of `.code-tips.md` (if present), then
++     `"\n\nTASK: "`, then the contents of the task brief file.
++   - The worker command is configurable precisely so tests can substitute a
++     fake worker — tests MUST NOT invoke the real `claude` binary.
++5. **Run behavior** (the loop body, single worker):
++   a. Verify the CWD is a git repo with a clean working tree; abort with a
++      clear error otherwise.
++   b. Create worktree `../<task-id>-w1` on new branch `<task-id>-w1`
++      (fail clearly if branch or path already exists).
++   c. Run the worker command with CWD set to the worktree. Capture stdout,
++      stderr, exit code. Worker stdout is saved verbatim (it may be the
++      `claude --output-format json` payload; do not require it to parse).
++   d. Run each gate command, in order, in the worktree. A gate entry fails on
++      nonzero exit. Record per-gate: name, exit code, and a one-line autopsy
++      (e.g. `"tests: exit 1"` plus last line of stderr if any). All gates run
++      even if an earlier one fails.
++   e. Write the run log to `.farnsworth/<task-id>/run.json` in the MAIN repo
++      (not the worktree). Schema below.
++   f. Do NOT merge and do NOT destroy the worktree; print its path and the
++      gate summary, exit 0 if all gates passed, exit 1 otherwise.
++6. **Run log schema** (`run.json`):
++   ```json
++   {
++     "task_id": "task-042",
++     "started_at": "ISO-8601 UTC",
++     "finished_at": "ISO-8601 UTC",
++     "base_commit": "sha of main repo HEAD at dispatch",
++     "workers": [
++       {
++         "id": "w1",
++         "branch": "task-042-w1",
++         "worktree": "../task-042-w1",
++         "exit_code": 0,
++         "stdout_file": "w1.stdout",
++         "gate": {"passed": true,
++                   "results": [{"name": "tests", "exit_code": 0,
++                                 "autopsy": "tests: exit 0"}]}
++       }
++     ]
++   }
++   ```
++   Worker stdout/stderr go to `.farnsworth/<task-id>/w1.stdout` / `w1.stderr`.
++7. **Tests:** stdlib `unittest`, discoverable via
++   `python3 -m unittest discover -s tests -v`. Tests must build a throwaway
++   git repo in a temp dir (subprocess git is fine), use a fake worker command
++   (e.g. a `bash -c` or `python3 -c` one-liner that writes a file and
++   commits), and assert: worktree created, gate pass and gate fail paths,
++   run.json schema fields present, clean-tree precondition enforced.
++8. **No side effects in this repo's root:** running the test suite must not
++   leave worktrees, branches, or `.farnsworth/` artifacts behind in the repo
++   under test (use temp dirs; clean up worktrees in test teardown).
++
++## Acceptance criteria
++
++- [ ] `python3 -m farnsworth run …` works end-to-end with a fake worker in a
++      scratch repo.
++- [ ] `python3 -m unittest discover -s tests` passes.
++- [ ] `python3 -m compileall farnsworth` succeeds.
++- [ ] run.json matches the schema above (field names exactly).
++- [ ] No third-party imports anywhere.
++- [ ] Code does not write `.code-tips.md` anywhere (workers are read-only
++      consumers of it).
++
++## Out of scope (do not build)
++
++Parallel dispatch, review, verdicts, tips writing, divergence measurement,
++metrics, consolidation, daemons, UI. Keep it small; this is the skeleton.
+diff --git a/farnsworth.json b/farnsworth.json
+new file mode 100644
+index 0000000..0f35e98
+--- /dev/null
++++ b/farnsworth.json
+@@ -0,0 +1,8 @@
++{
++  "worker": {
++    "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-haiku-4-5", "--permission-mode", "acceptEdits", "--output-format", "json"]
++  },
++  "gate": [
++    {"name": "tests", "command": ["python3", "-m", "unittest", "discover"]}
++  ]
++}
+diff --git a/farnsworth/__init__.py b/farnsworth/__init__.py
+new file mode 100644
+index 0000000..3ba6d71
+--- /dev/null
++++ b/farnsworth/__init__.py
+@@ -0,0 +1,3 @@
++"""Farnsworth Loop: reference implementation."""
++
++__version__ = "0.1.0"
+diff --git a/farnsworth/__main__.py b/farnsworth/__main__.py
+new file mode 100644
+index 0000000..56ce481
+--- /dev/null
++++ b/farnsworth/__main__.py
+@@ -0,0 +1,7 @@
++"""CLI entry point for farnsworth."""
++
++import sys
++from farnsworth.cli import main
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/farnsworth/__pycache__/__init__.cpython-311.pyc b/farnsworth/__pycache__/__init__.cpython-311.pyc
+new file mode 100644
+index 0000000..248e3dd
+Binary files /dev/null and b/farnsworth/__pycache__/__init__.cpython-311.pyc differ
+diff --git a/farnsworth/__pycache__/__main__.cpython-311.pyc b/farnsworth/__pycache__/__main__.cpython-311.pyc
+new file mode 100644
+index 0000000..1ec8e60
+Binary files /dev/null and b/farnsworth/__pycache__/__main__.cpython-311.pyc differ
+diff --git a/farnsworth/__pycache__/cli.cpython-311.pyc b/farnsworth/__pycache__/cli.cpython-311.pyc
+new file mode 100644
+index 0000000..26400fe
+Binary files /dev/null and b/farnsworth/__pycache__/cli.cpython-311.pyc differ
+diff --git a/farnsworth/__pycache__/runner.cpython-311.pyc b/farnsworth/__pycache__/runner.cpython-311.pyc
+new file mode 100644
+index 0000000..0f1fa55
+Binary files /dev/null and b/farnsworth/__pycache__/runner.cpython-311.pyc differ
+diff --git a/farnsworth/cli.py b/farnsworth/cli.py
+new file mode 100644
+index 0000000..58cb971
+--- /dev/null
++++ b/farnsworth/cli.py
+@@ -0,0 +1,128 @@
++"""Main CLI implementation for Farnsworth Loop."""
++
++import argparse
++import json
++import os
++import subprocess
++import sys
++from datetime import datetime
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++from farnsworth.runner import WorkerRunner
++
++
++def load_config(config_path: str) -> Dict[str, Any]:
++    """Load JSON configuration file."""
++    with open(config_path, "r") as f:
++        return json.load(f)
++
++
++def main() -> int:
++    """Main CLI entry point."""
++    parser = argparse.ArgumentParser(
++        description="Farnsworth Loop: M1 skeleton implementation"
++    )
++    parser.add_argument(
++        "command", choices=["run"], help="Command to execute"
++    )
++    parser.add_argument(
++        "task_brief", help="Path to task brief markdown file"
++    )
++    parser.add_argument(
++        "--config",
++        default="farnsworth.json",
++        help="Path to configuration file (default: farnsworth.json)",
++    )
++
++    args = parser.parse_args()
++
++    if args.command == "run":
++        return run_task(args.task_brief, args.config)
++
++    return 1
++
++
++def run_task(task_brief_path: str, config_path: str) -> int:
++    """Run a single task with one worker."""
++    task_brief_path = os.path.abspath(task_brief_path)
++
++    # Verify task brief exists
++    if not os.path.isfile(task_brief_path):
++        print(f"Error: task brief not found: {task_brief_path}", file=sys.stderr)
++        return 1
++
++    # Extract task ID from brief path stem
++    task_id = Path(task_brief_path).stem
++
++    # Load configuration
++    if not os.path.isfile(config_path):
++        print(f"Error: config file not found: {config_path}", file=sys.stderr)
++        return 1
++
++    try:
++        config = load_config(config_path)
++    except json.JSONDecodeError as e:
++        print(f"Error: invalid JSON in config: {e}", file=sys.stderr)
++        return 1
++
++    # Verify current directory is a git repo with clean tree
++    cwd = os.getcwd()
++    try:
++        result = subprocess.run(
++            ["git", "rev-parse", "--git-dir"],
++            cwd=cwd,
++            capture_output=True,
++            text=True,
++            check=False,
++        )
++        if result.returncode != 0:
++            print("Error: current directory is not a git repository", file=sys.stderr)
++            return 1
++
++        # Check working tree is clean
++        result = subprocess.run(
++            ["git", "status", "--porcelain"],
++            cwd=cwd,
++            capture_output=True,
++            text=True,
++            check=False,
++        )
++        if result.stdout.strip():
++            print("Error: git working tree is not clean", file=sys.stderr)
++            return 1
++
++        # Get base commit
++        result = subprocess.run(
++            ["git", "rev-parse", "HEAD"],
++            cwd=cwd,
++            capture_output=True,
++            text=True,
++            check=True,
++        )
++        base_commit = result.stdout.strip()
++    except subprocess.CalledProcessError as e:
++        print(f"Error: git command failed: {e}", file=sys.stderr)
++        return 1
++
++    # Run the task
++    runner = WorkerRunner(config, cwd)
++    result = runner.run(task_id, task_brief_path, base_commit)
++
++    # Print summary
++    if result["gate_passed"]:
++        print(f"✓ All gates passed")
++        print(f"Worktree: {result['worktree_path']}")
++        return 0
++    else:
++        print(f"✗ Gate failed")
++        for gate_result in result["gate_results"]:
++            if gate_result["exit_code"] != 0:
++                autopsy = gate_result.get("autopsy", "unknown")
++                print(f"  - {autopsy}")
++        print(f"Worktree: {result['worktree_path']}")
++        return 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/farnsworth/runner.py b/farnsworth/runner.py
+new file mode 100644
+index 0000000..469cc45
+--- /dev/null
++++ b/farnsworth/runner.py
+@@ -0,0 +1,212 @@
++"""Worker dispatch and gate execution."""
++
++import json
++import os
++import subprocess
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++
++class WorkerRunner:
++    """Manages worktree creation, worker dispatch, and gate execution."""
++
++    def __init__(self, config: Dict[str, Any], repo_cwd: str):
++        """Initialize runner with configuration and repo path."""
++        self.config = config
++        self.repo_cwd = repo_cwd
++        self.repo_path = Path(repo_cwd)
++
++    def run(self, task_id: str, task_brief_path: str, base_commit: str) -> Dict[str, Any]:
++        """
++        Run a single worker for a task.
++
++        Returns a dict with:
++        - task_id
++        - started_at
++        - finished_at
++        - base_commit
++        - workers
++        - gate_passed
++        - gate_results
++        - worktree_path
++        """
++        started_at = datetime.now(timezone.utc)
++
++        # Create worktree
++        worktree_id = "w1"
++        branch_name = f"{task_id}-w1"
++        worktree_relpath = f"../{task_id}-w1"
++        worktree_abspath = (self.repo_path.parent / f"{task_id}-w1").absolute()
++
++        try:
++            # Create the worktree
++            subprocess.run(
++                ["git", "worktree", "add", worktree_relpath, "-b", branch_name],
++                cwd=self.repo_cwd,
++                check=True,
++                capture_output=True,
++            )
++        except subprocess.CalledProcessError as e:
++            print(f"Error: failed to create worktree: {e}", file=sys.stderr)
++            return {
++                "task_id": task_id,
++                "started_at": started_at.isoformat(),
++                "finished_at": datetime.now(timezone.utc).isoformat(),
++                "base_commit": base_commit,
++                "workers": [],
++                "gate_passed": False,
++                "gate_results": [],
++                "worktree_path": str(worktree_abspath),
++            }
++
++        # Create .farnsworth directory for logs
++        farnsworth_dir = self.repo_path / ".farnsworth" / task_id
++        farnsworth_dir.mkdir(parents=True, exist_ok=True)
++
++        # Read the task brief
++        with open(task_brief_path, "r") as f:
++            task_brief_content = f.read()
++
++        # Read code-tips if it exists
++        code_tips_path = self.repo_path / ".code-tips.md"
++        code_tips_content = ""
++        if code_tips_path.exists():
++            with open(code_tips_path, "r") as f:
++                code_tips_content = f.read()
++
++        # Prepare the worker briefing
++        briefing = code_tips_content
++        if briefing:
++            briefing += "\n\nTASK: "
++        else:
++            briefing = "TASK: "
++        briefing += task_brief_content
++
++        # Prepare the worker command
++        worker_config = self.config.get("worker", {})
++        worker_command = worker_config.get("command", [])
++
++        # Substitute {prompt} with the briefing
++        substituted_command = [
++            arg.replace("{prompt}", briefing) for arg in worker_command
++        ]
++
++        # Run the worker
++        stdout_file = farnsworth_dir / f"{worktree_id}.stdout"
++        stderr_file = farnsworth_dir / f"{worktree_id}.stderr"
++
++        try:
++            result = subprocess.run(
++                substituted_command,
++                cwd=str(worktree_abspath),
++                capture_output=True,
++                text=True,
++                timeout=None,
++            )
++            worker_exit_code = result.returncode
++            stdout_content = result.stdout
++            stderr_content = result.stderr
++        except subprocess.TimeoutExpired:
++            worker_exit_code = -1
++            stdout_content = ""
++            stderr_content = "Worker command timed out"
++        except Exception as e:
++            worker_exit_code = -1
++            stdout_content = ""
++            stderr_content = str(e)
++
++        # Write stdout and stderr files
++        with open(stdout_file, "w") as f:
++            f.write(stdout_content)
++        with open(stderr_file, "w") as f:
++            f.write(stderr_content)
++
++        # Run the gate
++        gate_results = self._run_gate(worktree_abspath)
++        gate_passed = all(g["exit_code"] == 0 for g in gate_results)
++
++        finished_at = datetime.now(timezone.utc)
++
++        # Create run.json
++        run_log = {
++            "task_id": task_id,
++            "started_at": started_at.isoformat(),
++            "finished_at": finished_at.isoformat(),
++            "base_commit": base_commit,
++            "workers": [
++                {
++                    "id": worktree_id,
++                    "branch": branch_name,
++                    "worktree": worktree_relpath,
++                    "exit_code": worker_exit_code,
++                    "stdout_file": f"{worktree_id}.stdout",
++                    "gate": {
++                        "passed": gate_passed,
++                        "results": gate_results,
++                    },
++                }
++            ],
++        }
++
++        # Write run.json
++        run_json_path = farnsworth_dir / "run.json"
++        with open(run_json_path, "w") as f:
++            json.dump(run_log, f, indent=2)
++
++        return {
++            "task_id": task_id,
++            "started_at": started_at.isoformat(),
++            "finished_at": finished_at.isoformat(),
++            "base_commit": base_commit,
++            "workers": run_log["workers"],
++            "gate_passed": gate_passed,
++            "gate_results": gate_results,
++            "worktree_path": str(worktree_abspath),
++        }
++
++    def _run_gate(self, worktree_path: Path) -> List[Dict[str, Any]]:
++        """Run all gate commands in the worktree."""
++        gate_config = self.config.get("gate", [])
++        results = []
++
++        for gate_entry in gate_config:
++            name = gate_entry.get("name", "unknown")
++            command = gate_entry.get("command", [])
++
++            try:
++                result = subprocess.run(
++                    command,
++                    cwd=str(worktree_path),
++                    capture_output=True,
++                    text=True,
++                    timeout=None,
++                )
++                exit_code = result.returncode
++                stderr_content = result.stderr
++            except subprocess.TimeoutExpired:
++                exit_code = -1
++                stderr_content = "Command timed out"
++            except Exception as e:
++                exit_code = -1
++                stderr_content = str(e)
++
++            # Generate autopsy
++            if exit_code == 0:
++                autopsy = f"{name}: exit 0"
++            else:
++                # Try to get last line of stderr
++                if stderr_content.strip():
++                    last_line = stderr_content.strip().split("\n")[-1]
++                    autopsy = f"{name}: exit {exit_code} ({last_line})"
++                else:
++                    autopsy = f"{name}: exit {exit_code}"
++
++            results.append({
++                "name": name,
++                "exit_code": exit_code,
++                "autopsy": autopsy,
++            })
++
++        return results
+diff --git a/tests/__init__.py b/tests/__init__.py
+new file mode 100644
+index 0000000..3ca8ad8
+--- /dev/null
++++ b/tests/__init__.py
+@@ -0,0 +1 @@
++"""Test suite for Farnsworth Loop."""
+diff --git a/tests/__pycache__/test_cli.cpython-311.pyc b/tests/__pycache__/test_cli.cpython-311.pyc
+new file mode 100644
+index 0000000..2f2c130
+Binary files /dev/null and b/tests/__pycache__/test_cli.cpython-311.pyc differ
+diff --git a/tests/__pycache__/test_runner.cpython-311.pyc b/tests/__pycache__/test_runner.cpython-311.pyc
+new file mode 100644
+index 0000000..b07287d
+Binary files /dev/null and b/tests/__pycache__/test_runner.cpython-311.pyc differ
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+new file mode 100644
+index 0000000..c327ef9
+--- /dev/null
++++ b/tests/test_cli.py
+@@ -0,0 +1,273 @@
++"""Tests for the CLI."""
++
++import json
++import os
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++from farnsworth.cli import main, run_task
++
++
++class TestCLI(unittest.TestCase):
++    """Test CLI functionality."""
++
++    def setUp(self):
++        """Set up a temporary git repository for testing."""
++        self.temp_dir = tempfile.mkdtemp()
++        self.repo_path = Path(self.temp_dir) / "test_repo"
++        self.repo_path.mkdir()
++
++        # Initialize git repo
++        subprocess.run(
++            ["git", "init"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "config", "user.email", "test@example.com"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "config", "user.name", "Test User"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "config", "commit.gpgsign", "false"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++
++        # Create initial commit
++        (self.repo_path / "README.md").write_text("# Test Repo\n")
++        subprocess.run(
++            ["git", "add", "README.md"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "commit", "-m", "Initial commit"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++
++        # Save current directory
++        self.orig_cwd = os.getcwd()
++        os.chdir(self.repo_path)
++
++    def tearDown(self):
++        """Clean up temporary directory and worktrees."""
++        # Restore directory
++        os.chdir(self.orig_cwd)
++
++        # Clean up any worktrees
++        try:
++            result = subprocess.run(
++                ["git", "worktree", "list"],
++                cwd=self.repo_path,
++                capture_output=True,
++                text=True,
++                check=True,
++            )
++            for line in result.stdout.split("\n"):
++                if "detached" in line or "task" in line:
++                    parts = line.split()
++                    if parts:
++                        path = parts[0]
++                        if path != str(self.repo_path):
++                            try:
++                                subprocess.run(
++                                    ["git", "worktree", "remove", path, "-f"],
++                                    cwd=self.repo_path,
++                                    capture_output=True,
++                                    timeout=5,
++                                )
++                            except Exception:
++                                pass
++        except Exception:
++            pass
++
++        # Remove temp directory
++        if os.path.exists(self.temp_dir):
++            shutil.rmtree(self.temp_dir)
++
++    def test_run_task_success(self):
++        """Test running a task with all gates passing."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        # Create a config file
++        config_file = self.repo_path / "farnsworth.json"
++        config_file.write_text(json.dumps({
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "test", "command": ["true"]},
++            ],
++        }))
++
++        # Commit the files
++        subprocess.run(
++            ["git", "add", "task-001.md", "farnsworth.json"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "commit", "-m", "Add test files"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++
++        result = run_task(str(task_brief), str(config_file))
++        self.assertEqual(result, 0)
++
++    def test_run_task_gate_failure(self):
++        """Test running a task with a failing gate."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        # Create a config file
++        config_file = self.repo_path / "farnsworth.json"
++        config_file.write_text(json.dumps({
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "failing", "command": ["false"]},
++            ],
++        }))
++
++        result = run_task(str(task_brief), str(config_file))
++        self.assertEqual(result, 1)
++
++    def test_run_task_missing_brief(self):
++        """Test error handling for missing task brief."""
++        # Create a config file
++        config_file = self.repo_path / "farnsworth.json"
++        config_file.write_text(json.dumps({
++            "worker": {"command": ["true"]},
++            "gate": [],
++        }))
++
++        result = run_task("/nonexistent/task.md", str(config_file))
++        self.assertEqual(result, 1)
++
++    def test_run_task_missing_config(self):
++        """Test error handling for missing config file."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n")
++
++        result = run_task(str(task_brief), "/nonexistent/farnsworth.json")
++        self.assertEqual(result, 1)
++
++    def test_run_task_invalid_config_json(self):
++        """Test error handling for invalid JSON in config."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n")
++
++        # Create invalid config file
++        config_file = self.repo_path / "farnsworth.json"
++        config_file.write_text("{ invalid json }")
++
++        result = run_task(str(task_brief), str(config_file))
++        self.assertEqual(result, 1)
++
++    def test_clean_tree_precondition(self):
++        """Test that dirty working tree is rejected."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        # Create a config file
++        config_file = self.repo_path / "farnsworth.json"
++        config_file.write_text(json.dumps({
++            "worker": {"command": ["true"]},
++            "gate": [],
++        }))
++
++        # Make working tree dirty
++        dirty_file = self.repo_path / "dirty.txt"
++        dirty_file.write_text("dirty")
++
++        result = run_task(str(task_brief), str(config_file))
++        self.assertEqual(result, 1)
++
++    def test_code_tips_injection(self):
++        """Test that .code-tips.md is injected into worker briefing."""
++        # Create .code-tips.md
++        code_tips = self.repo_path / ".code-tips.md"
++        code_tips.write_text("# Code Tips\n\nSome important tips.\n")
++
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task.\n")
++
++        # Create a fake worker that writes the prompt to a file
++        config_file = self.repo_path / "farnsworth.json"
++        config_file.write_text(json.dumps({
++            "worker": {
++                "command": ["bash", "-c", "echo '{prompt}' > prompt.txt"],
++            },
++            "gate": [],
++        }))
++
++        # Commit the files
++        subprocess.run(
++            ["git", "add", ".code-tips.md", "task-001.md", "farnsworth.json"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "commit", "-m", "Add test files"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++
++        result = run_task(str(task_brief), str(config_file))
++        # Should succeed
++        self.assertEqual(result, 0)
++
++        # Find the worktree
++        worktree_path = None
++        for line in subprocess.run(
++            ["git", "worktree", "list"],
++            cwd=self.repo_path,
++            capture_output=True,
++            text=True,
++            check=True,
++        ).stdout.split("\n"):
++            if "task-001-w1" in line:
++                worktree_path = Path(line.split()[0])
++                break
++
++        self.assertIsNotNone(worktree_path)
++        prompt_file = worktree_path / "prompt.txt"
++        if prompt_file.exists():
++            content = prompt_file.read_text()
++            # Should contain the code tips
++            self.assertIn("Code Tips", content)
++            # Should contain the task
++            self.assertIn("Task 001", content)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_runner.py b/tests/test_runner.py
+new file mode 100644
+index 0000000..4bedd7a
+--- /dev/null
++++ b/tests/test_runner.py
+@@ -0,0 +1,295 @@
++"""Tests for the WorkerRunner."""
++
++import json
++import os
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++from farnsworth.runner import WorkerRunner
++
++
++class TestWorkerRunner(unittest.TestCase):
++    """Test worktree creation and runner functionality."""
++
++    def setUp(self):
++        """Set up a temporary git repository for testing."""
++        self.temp_dir = tempfile.mkdtemp()
++        self.repo_path = Path(self.temp_dir) / "test_repo"
++        self.repo_path.mkdir()
++
++        # Initialize git repo
++        subprocess.run(
++            ["git", "init"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "config", "user.email", "test@example.com"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "config", "user.name", "Test User"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "config", "commit.gpgsign", "false"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++
++        # Create initial commit
++        (self.repo_path / "README.md").write_text("# Test Repo\n")
++        subprocess.run(
++            ["git", "add", "README.md"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++        subprocess.run(
++            ["git", "commit", "-m", "Initial commit"],
++            cwd=self.repo_path,
++            check=True,
++            capture_output=True,
++        )
++
++    def tearDown(self):
++        """Clean up temporary directory and worktrees."""
++        # Clean up any worktrees
++        try:
++            result = subprocess.run(
++                ["git", "worktree", "list"],
++                cwd=self.repo_path,
++                capture_output=True,
++                text=True,
++                check=True,
++            )
++            for line in result.stdout.split("\n"):
++                if "detached" in line or "task" in line:
++                    parts = line.split()
++                    if parts:
++                        path = parts[0]
++                        if path != str(self.repo_path):
++                            try:
++                                subprocess.run(
++                                    ["git", "worktree", "remove", path, "-f"],
++                                    cwd=self.repo_path,
++                                    capture_output=True,
++                                    timeout=5,
++                                )
++                            except Exception:
++                                pass
++        except Exception:
++            pass
++
++        # Remove temp directory
++        if os.path.exists(self.temp_dir):
++            shutil.rmtree(self.temp_dir)
++
++    def test_worktree_creation(self):
++        """Test that worktree is created successfully."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        # Create a fake worker command that just creates a file
++        config = {
++            "worker": {
++                "command": ["bash", "-c", "echo 'Worker output' > worker.txt"]
++            },
++            "gate": [],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123")
++
++        # Verify worktree was created
++        worktree_path = Path(result["worktree_path"])
++        self.assertTrue(worktree_path.exists())
++
++        # Verify the worker command ran in the worktree
++        self.assertTrue((worktree_path / "worker.txt").exists())
++
++    def test_gate_pass(self):
++        """Test gate passes when all commands succeed."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        # Create a fake worker that just succeeds
++        config = {
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "test_gate", "command": ["true"]},
++            ],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123")
++
++        self.assertTrue(result["gate_passed"])
++        self.assertEqual(len(result["gate_results"]), 1)
++        self.assertEqual(result["gate_results"][0]["exit_code"], 0)
++        self.assertEqual(result["gate_results"][0]["name"], "test_gate")
++
++    def test_gate_fail(self):
++        """Test gate fails when a command fails."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        # Create a fake worker that just succeeds
++        config = {
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "failing_gate", "command": ["false"]},
++            ],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123")
++
++        self.assertFalse(result["gate_passed"])
++        self.assertEqual(len(result["gate_results"]), 1)
++        self.assertEqual(result["gate_results"][0]["exit_code"], 1)
++
++    def test_run_json_schema(self):
++        """Test that run.json is created with correct schema."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        config = {
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "test", "command": ["true"]},
++            ],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123def456")
++
++        # Read the generated run.json
++        run_json_path = self.repo_path / ".farnsworth" / "task-001" / "run.json"
++        self.assertTrue(run_json_path.exists())
++
++        with open(run_json_path) as f:
++            run_log = json.load(f)
++
++        # Verify schema
++        self.assertIn("task_id", run_log)
++        self.assertIn("started_at", run_log)
++        self.assertIn("finished_at", run_log)
++        self.assertIn("base_commit", run_log)
++        self.assertIn("workers", run_log)
++
++        self.assertEqual(run_log["task_id"], "task-001")
++        self.assertEqual(run_log["base_commit"], "abc123def456")
++        self.assertEqual(len(run_log["workers"]), 1)
++
++        worker = run_log["workers"][0]
++        self.assertEqual(worker["id"], "w1")
++        self.assertEqual(worker["branch"], "task-001-w1")
++        self.assertIn("worktree", worker)
++        self.assertIn("exit_code", worker)
++        self.assertIn("stdout_file", worker)
++        self.assertIn("gate", worker)
++
++        gate = worker["gate"]
++        self.assertIn("passed", gate)
++        self.assertIn("results", gate)
++        self.assertEqual(len(gate["results"]), 1)
++
++        gate_result = gate["results"][0]
++        self.assertIn("name", gate_result)
++        self.assertIn("exit_code", gate_result)
++        self.assertIn("autopsy", gate_result)
++
++    def test_multiple_gates(self):
++        """Test multiple gate commands are all executed."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        config = {
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "gate1", "command": ["true"]},
++                {"name": "gate2", "command": ["true"]},
++                {"name": "gate3", "command": ["false"]},
++            ],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123")
++
++        self.assertEqual(len(result["gate_results"]), 3)
++        self.assertEqual(result["gate_results"][0]["name"], "gate1")
++        self.assertEqual(result["gate_results"][1]["name"], "gate2")
++        self.assertEqual(result["gate_results"][2]["name"], "gate3")
++        self.assertFalse(result["gate_passed"])
++
++    def test_worker_stdout_file(self):
++        """Test worker stdout is written to file."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        config = {
++            "worker": {
++                "command": ["echo", "test output"],
++            },
++            "gate": [],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123")
++
++        # Verify stdout file was created
++        stdout_file = self.repo_path / ".farnsworth" / "task-001" / "w1.stdout"
++        self.assertTrue(stdout_file.exists())
++        content = stdout_file.read_text()
++        self.assertIn("test output", content)
++
++    def test_gate_autopsy(self):
++        """Test that autopsy is generated for gate failures."""
++        # Create a task brief
++        task_brief = self.repo_path / "task-001.md"
++        task_brief.write_text("# Task 001\n\nTest task brief.\n")
++
++        config = {
++            "worker": {
++                "command": ["true"],
++            },
++            "gate": [
++                {"name": "mytest", "command": ["bash", "-c", "echo error; exit 2"]},
++            ],
++        }
++
++        runner = WorkerRunner(config, str(self.repo_path))
++        result = runner.run("task-001", str(task_brief), "abc123")
++
++        gate_result = result["gate_results"][0]
++        self.assertEqual(gate_result["exit_code"], 2)
++        self.assertIn("mytest", gate_result["autopsy"])
++        self.assertIn("exit 2", gate_result["autopsy"])
++
++
++if __name__ == "__main__":
++    unittest.main()
