@@ -35,14 +35,33 @@ def build_parser():
     return parser
 
 
-def _print_summary(run_log, worktree_abs):
-    worker = run_log["workers"][0]
-    gate = worker["gate"]
-    print("worktree: {0}".format(worktree_abs))
-    print("worker exit: {0}".format(worker["exit_code"]))
-    print("gate: {0}".format("PASS" if gate["passed"] else "FAIL"))
-    for result in gate["results"]:
-        print("  - {0}".format(result["autopsy"]))
+def _print_summary(run_log, repo_root):
+    """Print ASCII-only summary of the run."""
+    print("")
+    print("Run summary for {0}".format(run_log["task_id"]))
+    print("")
+    for worker in run_log["workers"]:
+        gate = worker["gate"]
+        status = "PASS" if gate["passed"] else "FAIL"
+        label = ""
+        if worker["candidate_label"] is not None:
+            label = " [candidate {0}]".format(worker["candidate_label"])
+        print("worker {0}: gate {1}{2}".format(worker["id"], status, label))
+        for result in gate["results"]:
+            print("  - {0}".format(result["autopsy"]))
+    print("")
+
+    review = run_log.get("review")
+    if review is None:
+        print("No candidates passed gate; no review.")
+    else:
+        verdict = review["verdict"]
+        print(
+            "Verdict: {0} [candidate: {1}]".format(
+                verdict["outcome"], verdict["candidate"]
+            )
+        )
+        print("Reasoning: {0}".format(verdict["reasoning"]))
 
 
 def main(argv=None):
@@ -56,14 +75,18 @@ def main(argv=None):
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
 
-        # Reconstruct the absolute worktree path (sibling of the repo root).
         repo_root = repo_toplevel(os.getcwd())
-        worktree_abs = os.path.normpath(
-            os.path.join(repo_root, run_log["workers"][0]["worktree"])
-        )
-        _print_summary(run_log, worktree_abs)
+        _print_summary(run_log, repo_root)
 
-        return 0 if run_log["workers"][0]["gate"]["passed"] else 1
+        # Exit code logic:
+        # 0: valid verdict was produced (any outcome)
+        # 1: no candidates passed gate (no review, review is null)
+        # 2: infrastructure/config errors (but those raise exceptions above)
+        review = run_log.get("review")
+        if review is None:
+            return 1
+        else:
+            return 0
 
     parser.print_help(sys.stderr)
     return 2

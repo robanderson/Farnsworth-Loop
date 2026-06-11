@@ -1,22 +1,27 @@
-"""The single-worker loop body (Milestone M1, Skeleton).
+"""The multi-worker loop body with review (Milestone M2, Tournament).
 
 One invocation:
 
   1. Verify the CWD is a clean git repo.
-  2. Create a worktree ``../<task-id>-w1`` on branch ``<task-id>-w1``.
-  3. Run the worker command in the worktree, capturing stdout/stderr/exit.
-  4. Run each gate command, in order, in the worktree.
-  5. Write ``.farnsworth/<task-id>/run.json`` in the MAIN repo.
-  6. Leave the worktree in place; print a summary.
+  2. Create N worktrees ``../<task-id>-<worker-id>`` in parallel, one per worker.
+  3. Run each worker command in its worktree (parallel fan-out).
+  4. Run each gate command in each worktree (all workers gated).
+  5. Anonymize passing candidates: assign labels A, B, C, ... in random order.
+  6. If any candidates passed: run the reviewer with an anonymized briefing.
+  7. Parse and validate the verdict.json from the reviewer.
+  8. Write .farnsworth/<task-id>/run.json in the MAIN repo.
+  9. Leave all worktrees in place for manual inspection/merge.
 
-No review, no tips writing, no parallelism. This proves the plumbing.
+Full support for multiple workers, blind dispatch, anonymized review, and verdicts.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
 import json
 import os
+import random
 import subprocess
 
 from . import gitutil
@@ -104,8 +109,44 @@ def _run_gate(gate, worktree):
     return passed, results
 
 
+def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
+    """Run a single worker and return (exit_code, gate_passed, gate_results).
+
+    Called in parallel for each worker.
+    """
+    worker_id = worker_spec["id"]
+    command = _substitute_prompt(worker_spec["command"], briefing)
+
+    # Run the worker command.
+    worker_proc = subprocess.run(
+        command,
+        cwd=worktree_abs,
+        capture_output=True,
+        text=True,
+    )
+
+    # Write stdout/stderr.
+    stdout_name = "{0}.stdout".format(worker_id)
+    stderr_name = "{0}.stderr".format(worker_id)
+    with open(os.path.join(artifact_dir, stdout_name), "w", encoding="utf-8") as fh:
+        fh.write(worker_proc.stdout or "")
+    with open(os.path.join(artifact_dir, stderr_name), "w", encoding="utf-8") as fh:
+        fh.write(worker_proc.stderr or "")
+
+    # Run the mechanical gate.
+    gate_passed, gate_results = _run_gate(gate, worktree_abs)
+
+    return {
+        "exit_code": worker_proc.returncode,
+        "gate_passed": gate_passed,
+        "gate_results": gate_results,
+        "stdout_name": stdout_name,
+        "stderr_name": stderr_name,
+    }
+
+
 def run(brief_path, config_path=None, cwd=None):
-    """Execute the single-worker loop body.
+    """Execute the multi-worker loop body with review.
 
     Returns the run-log dict. Raises LoopError on a precondition failure.
     """
@@ -126,68 +167,271 @@ def run(brief_path, config_path=None, cwd=None):
     config = Config.load(config_path)
 
     task_id = task_id_from_brief(brief_path)
-    branch = "{0}-w1".format(task_id)
-    worktree_rel = "../{0}-w1".format(task_id)
     parent = os.path.dirname(repo_root)
-    worktree_abs = os.path.join(parent, "{0}-w1".format(task_id))
-
     base_commit = gitutil.head_commit(repo_root)
     started_at = _utcnow_iso()
 
-    # (b) Create worktree on a fresh branch; fail clearly on collisions.
-    if gitutil.branch_exists(branch, repo_root):
-        raise LoopError("branch already exists: {0}".format(branch))
-    if os.path.exists(worktree_abs):
-        raise LoopError("worktree path already exists: {0}".format(worktree_abs))
+    # (b) Create all worktrees upfront (serial); must be done before parallel fan-out.
+    worktree_specs = []
+    for worker_spec in config.workers:
+        worker_id = worker_spec["id"]
+        branch = "{0}-{1}".format(task_id, worker_id)
+        worktree_rel = "../{0}-{1}".format(task_id, worker_id)
+        worktree_abs = os.path.join(parent, "{0}-{1}".format(task_id, worker_id))
 
-    briefing = build_briefing(repo_root, brief_path)
-    gitutil.add_worktree(worktree_abs, branch, repo_root)
+        # Check for collisions before creating.
+        if gitutil.branch_exists(branch, repo_root):
+            raise LoopError("branch already exists: {0}".format(branch))
+        if os.path.exists(worktree_abs):
+            raise LoopError("worktree path already exists: {0}".format(worktree_abs))
+
+        gitutil.add_worktree(worktree_abs, branch, repo_root)
+        worktree_specs.append(
+            {
+                "worker_id": worker_id,
+                "branch": branch,
+                "worktree_rel": worktree_rel,
+                "worktree_abs": worktree_abs,
+            }
+        )
 
     # Per-task artifact directory lives in the MAIN repo.
     artifact_dir = os.path.join(repo_root, ".farnsworth", task_id)
     os.makedirs(artifact_dir, exist_ok=True)
 
-    # (c) Run the worker in the worktree.
-    worker_command = _substitute_prompt(config.worker_command, briefing)
-    worker_proc = subprocess.run(
-        worker_command,
-        cwd=worktree_abs,
-        capture_output=True,
-        text=True,
-    )
+    # (c) Build the briefing once, use for all workers.
+    briefing = build_briefing(repo_root, brief_path)
 
-    stdout_name = "w1.stdout"
-    stderr_name = "w1.stderr"
-    with open(os.path.join(artifact_dir, stdout_name), "w", encoding="utf-8") as fh:
-        fh.write(worker_proc.stdout or "")
-    with open(os.path.join(artifact_dir, stderr_name), "w", encoding="utf-8") as fh:
-        fh.write(worker_proc.stderr or "")
+    # (d) Run all workers in parallel.
+    worker_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(config.workers)) as executor:
+        futures = {}
+        for i, worktree_spec in enumerate(worktree_specs):
+            worker_id = worktree_spec["worker_id"]
+            worktree_abs = worktree_spec["worktree_abs"]
+            worker_spec = config.workers[i]
 
-    # (d) Run the mechanical gate.
-    gate_passed, gate_results = _run_gate(config.gate, worktree_abs)
+            future = executor.submit(
+                _run_worker,
+                worker_spec,
+                briefing,
+                worktree_abs,
+                artifact_dir,
+                config.gate,
+            )
+            futures[worker_id] = future
+
+        for worker_id, future in futures.items():
+            worker_results[worker_id] = future.result()
+
+    # (e) Identify candidates (workers whose gate passed).
+    candidates = []
+    failed_workers = []
+    for i, worktree_spec in enumerate(worktree_specs):
+        worker_id = worktree_spec["worker_id"]
+        result = worker_results[worker_id]
+        if result["gate_passed"]:
+            candidates.append(
+                {
+                    "worker_id": worker_id,
+                    "worktree_abs": worktree_spec["worktree_abs"],
+                    "base_commit": base_commit,
+                }
+            )
+        else:
+            failed_workers.append(
+                {
+                    "worker_id": worker_id,
+                    "gate_results": result["gate_results"],
+                }
+            )
+
+    # (f) Anonymize candidates: shuffle and assign labels A, B, C, ...
+    random.shuffle(candidates)
+    label_to_worker_id = {}
+    label_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for i, candidate in enumerate(candidates):
+        label = label_chars[i]
+        label_to_worker_id[label] = candidate["worker_id"]
+        candidate["label"] = label
+
+        # Write the diff for this candidate.
+        diff_path = os.path.join(artifact_dir, "candidates", "{0}.diff".format(label))
+        os.makedirs(os.path.dirname(diff_path), exist_ok=True)
+        gitutil.write_diff(
+            base_commit, candidate["worktree_abs"], diff_path, repo_root
+        )
+
+    # (g) Build run.json workers[] list for all workers (including non-candidates).
+    run_workers = []
+    for i, worktree_spec in enumerate(worktree_specs):
+        worker_id = worktree_spec["worker_id"]
+        result = worker_results[worker_id]
+
+        # Find the label assigned to this worker (if a candidate).
+        candidate_label = None
+        for label, wid in label_to_worker_id.items():
+            if wid == worker_id:
+                candidate_label = label
+                break
+
+        run_workers.append(
+            {
+                "id": worker_id,
+                "branch": worktree_spec["branch"],
+                "worktree": worktree_spec["worktree_rel"],
+                "exit_code": result["exit_code"],
+                "stdout_file": result["stdout_name"],
+                "gate": {
+                    "passed": result["gate_passed"],
+                    "results": result["gate_results"],
+                },
+                "candidate_label": candidate_label,
+            }
+        )
+
+    # (h) Review phase: if any candidates, run the reviewer.
+    review_exit_code = None
+    verdict = None
+    if candidates:
+        # Check that reviewer is configured.
+        if not config.reviewer:
+            raise LoopError(
+                "candidates passed gate but no reviewer configured in config"
+            )
+
+        # Build the review briefing.
+        review_briefing = build_review_briefing(
+            brief_path, repo_root, artifact_dir, candidates, failed_workers
+        )
+
+        # Run the reviewer.
+        reviewer_command = _substitute_prompt(config.reviewer["command"], review_briefing)
+        reviewer_proc = subprocess.run(
+            reviewer_command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        review_exit_code = reviewer_proc.returncode
+
+        # Write reviewer stdout/stderr.
+        with open(os.path.join(artifact_dir, "reviewer.stdout"), "w", encoding="utf-8") as fh:
+            fh.write(reviewer_proc.stdout or "")
+        with open(os.path.join(artifact_dir, "reviewer.stderr"), "w", encoding="utf-8") as fh:
+            fh.write(reviewer_proc.stderr or "")
+
+        # Parse and validate verdict.json.
+        verdict_path = os.path.join(artifact_dir, "verdict.json")
+        try:
+            with open(verdict_path, "r", encoding="utf-8") as fh:
+                verdict = json.load(fh)
+        except FileNotFoundError:
+            raise LoopError("reviewer did not write verdict.json")
+        except json.JSONDecodeError as exc:
+            raise LoopError("verdict.json is not valid JSON: {0}".format(exc))
+
+        # Validate verdict structure.
+        if not isinstance(verdict, dict):
+            raise LoopError("verdict.json root must be a JSON object")
+        if "outcome" not in verdict:
+            raise LoopError("verdict.json missing 'outcome' field")
+        if "candidate" not in verdict:
+            raise LoopError("verdict.json missing 'candidate' field")
+        if "reasoning" not in verdict:
+            raise LoopError("verdict.json missing 'reasoning' field")
+
+        outcome = verdict["outcome"]
+        candidate_label = verdict["candidate"]
+
+        if outcome not in ("adopt", "synthesize", "escalate"):
+            raise LoopError(
+                "verdict outcome must be one of adopt/synthesize/escalate, got: {0}".format(
+                    outcome
+                )
+            )
+
+        if outcome == "adopt":
+            if not candidate_label or candidate_label not in label_to_worker_id:
+                raise LoopError(
+                    "outcome is 'adopt' but candidate is missing or invalid: {0}".format(
+                        candidate_label
+                    )
+                )
+        else:
+            # synthesize or escalate
+            if candidate_label is not None:
+                raise LoopError(
+                    "outcome is '{0}' but candidate should be null, got: {1}".format(
+                        outcome, candidate_label
+                    )
+                )
 
     finished_at = _utcnow_iso()
 
+    # (i) Build the final run.json.
     run_log = {
         "task_id": task_id,
         "started_at": started_at,
         "finished_at": finished_at,
         "base_commit": base_commit,
-        "workers": [
-            {
-                "id": "w1",
-                "branch": branch,
-                "worktree": worktree_rel,
-                "exit_code": worker_proc.returncode,
-                "stdout_file": stdout_name,
-                "gate": {"passed": gate_passed, "results": gate_results},
-            }
-        ],
+        "workers": run_workers,
     }
 
-    # (e) Write run.json in the MAIN repo.
+    if candidates:
+        run_log["review"] = {
+            "exit_code": review_exit_code,
+            "verdict": verdict,
+        }
+    else:
+        run_log["review"] = None
+
+    # (j) Write run.json in the MAIN repo.
     with open(os.path.join(artifact_dir, "run.json"), "w", encoding="utf-8") as fh:
         json.dump(run_log, fh, indent=2)
         fh.write("\n")
 
     return run_log
+
+
+def build_review_briefing(brief_path, repo_root, artifact_dir, candidates, failed_workers):
+    """Build the anonymized review briefing.
+
+    Contains: task brief verbatim, labels and relative paths to diffs, one-line
+    autopsies of failed workers (anonymized), and instructions for the verdict.
+    """
+    with open(brief_path, "r", encoding="utf-8") as fh:
+        brief_text = fh.read()
+
+    lines = [brief_text]
+    lines.append("")
+    lines.append("## Candidates")
+    lines.append("")
+
+    for candidate in candidates:
+        label = candidate["label"]
+        diff_path = "candidates/{0}.diff".format(label)
+        lines.append("- Candidate {0}: {1}".format(label, diff_path))
+
+    if failed_workers:
+        lines.append("")
+        lines.append("## Gate Failures")
+        lines.append("")
+        for failed in failed_workers:
+            for gate_result in failed["gate_results"]:
+                autopsy = gate_result["autopsy"]
+                lines.append("- a failed candidate: {0}".format(autopsy))
+
+    lines.append("")
+    lines.append("## Verdict")
+    lines.append("")
+    lines.append("Write .farnsworth/{0}/verdict.json with schema:".format(
+        os.path.basename(artifact_dir)
+    ))
+    lines.append("")
+    lines.append('{"outcome": "adopt" | "synthesize" | "escalate",')
+    lines.append(' "candidate": "A" | null,')
+    lines.append(' "reasoning": "..."}')
+    lines.append("")
+
+    return "\n".join(lines)
