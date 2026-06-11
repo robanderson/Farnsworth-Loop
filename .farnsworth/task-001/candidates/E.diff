@@ -1,0 +1,774 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..523698d
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,6 @@
++__pycache__/
++*.pyc
++*.pyo
++.farnsworth/*/run.json
++.farnsworth/*/w1.stdout
++.farnsworth/*/w1.stderr
+diff --git a/farnsworth.json b/farnsworth.json
+new file mode 100644
+index 0000000..5a8f0dd
+--- /dev/null
++++ b/farnsworth.json
+@@ -0,0 +1,12 @@
++{
++  "worker": {
++    "command": [
++      "claude", "-p", "{prompt}", "--bare", "--model",
++      "claude-haiku-4-5", "--permission-mode", "acceptEdits",
++      "--output-format", "json"
++    ]
++  },
++  "gate": [
++    {"name": "tests", "command": ["python3", "-m", "unittest", "discover"]}
++  ]
++}
+diff --git a/farnsworth/__init__.py b/farnsworth/__init__.py
+new file mode 100644
+index 0000000..8a9332f
+--- /dev/null
++++ b/farnsworth/__init__.py
+@@ -0,0 +1 @@
++# Farnsworth Loop - M1 Skeleton
+diff --git a/farnsworth/__main__.py b/farnsworth/__main__.py
+new file mode 100644
+index 0000000..3008ad5
+--- /dev/null
++++ b/farnsworth/__main__.py
+@@ -0,0 +1,6 @@
++"""Entry point: python3 -m farnsworth"""
++import sys
++from farnsworth.cli import main
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/farnsworth/cli.py b/farnsworth/cli.py
+new file mode 100644
+index 0000000..740a4f2
+--- /dev/null
++++ b/farnsworth/cli.py
+@@ -0,0 +1,29 @@
++"""CLI argument parsing and dispatch."""
++import argparse
++import sys
++
++
++def main(argv=None):
++    """Main entry point. Returns exit code."""
++    parser = argparse.ArgumentParser(
++        prog="farnsworth",
++        description="Farnsworth Loop - M1 Skeleton",
++    )
++    subparsers = parser.add_subparsers(dest="subcommand", required=True)
++
++    run_parser = subparsers.add_parser("run", help="Run a task with one worker")
++    run_parser.add_argument("task_brief", help="Path to task brief markdown file")
++    run_parser.add_argument(
++        "--config",
++        default="farnsworth.json",
++        help="Path to config file (default: farnsworth.json in repo root)",
++    )
++
++    args = parser.parse_args(argv)
++
++    if args.subcommand == "run":
++        from farnsworth.runner import run_task
++        return run_task(args.task_brief, args.config)
++
++    parser.print_help()
++    return 1
+diff --git a/farnsworth/config.py b/farnsworth/config.py
+new file mode 100644
+index 0000000..dc62a84
+--- /dev/null
++++ b/farnsworth/config.py
+@@ -0,0 +1,42 @@
++"""Config loading for farnsworth.json."""
++import json
++import os
++from typing import Any
++
++
++DEFAULT_CONFIG = {
++    "worker": {
++        "command": [
++            "claude", "-p", "{prompt}", "--bare", "--model",
++            "claude-haiku-4-5", "--permission-mode", "acceptEdits",
++            "--output-format", "json",
++        ]
++    },
++    "gate": [
++        {"name": "tests", "command": ["python3", "-m", "unittest", "discover"]}
++    ],
++}
++
++
++def load_config(config_path: str) -> dict[str, Any]:
++    """Load and return config from JSON file, falling back to defaults.
++
++    Raises FileNotFoundError if the path is explicitly given but does not exist,
++    except when the path is the default 'farnsworth.json' in which case the
++    default config is returned silently.
++    """
++    is_default = config_path == "farnsworth.json"
++
++    if not os.path.isabs(config_path):
++        # Resolve relative to CWD (which should be the repo root)
++        abs_path = os.path.abspath(config_path)
++    else:
++        abs_path = config_path
++
++    if not os.path.exists(abs_path):
++        if is_default:
++            return dict(DEFAULT_CONFIG)
++        raise FileNotFoundError(f"Config file not found: {abs_path}")
++
++    with open(abs_path, "r", encoding="utf-8") as fh:
++        return json.load(fh)
+diff --git a/farnsworth/runner.py b/farnsworth/runner.py
+new file mode 100644
+index 0000000..c78c237
+--- /dev/null
++++ b/farnsworth/runner.py
+@@ -0,0 +1,227 @@
++"""Core run logic for the M1 skeleton."""
++import datetime
++import json
++import os
++import subprocess
++import sys
++from pathlib import Path
++from typing import Any
++
++from farnsworth.config import load_config
++
++
++def _utc_now() -> str:
++    """Return current UTC time as ISO-8601 string."""
++    return datetime.datetime.now(datetime.timezone.utc).isoformat()
++
++
++def _run_subprocess(cmd: list[str], cwd: str) -> tuple[int, str, str]:
++    """Run a subprocess; return (exit_code, stdout, stderr)."""
++    result = subprocess.run(
++        cmd,
++        cwd=cwd,
++        capture_output=True,
++        text=True,
++    )
++    return result.returncode, result.stdout, result.stderr
++
++
++def _git(args: list[str], cwd: str) -> tuple[int, str, str]:
++    """Run a git command in the given directory."""
++    return _run_subprocess(["git"] + args, cwd=cwd)
++
++
++def _require_clean_git_repo(repo_root: str) -> str:
++    """Verify CWD is a git repo with clean working tree.
++
++    Returns HEAD commit SHA.
++    Raises SystemExit with a clear message on failure.
++    """
++    # Check it's a git repo
++    rc, out, err = _git(["rev-parse", "--show-toplevel"], cwd=repo_root)
++    if rc != 0:
++        sys.exit(f"ERROR: Not a git repository: {repo_root}")
++
++    # Check clean working tree (index + untracked)
++    rc, out, err = _git(["status", "--porcelain"], cwd=repo_root)
++    if rc != 0:
++        sys.exit(f"ERROR: git status failed: {err.strip()}")
++    if out.strip():
++        sys.exit(
++            "ERROR: Working tree is not clean. Commit or stash changes before running:\n"
++            + out.rstrip()
++        )
++
++    # Get HEAD SHA
++    rc, out, err = _git(["rev-parse", "HEAD"], cwd=repo_root)
++    if rc != 0:
++        sys.exit(f"ERROR: Could not determine HEAD commit: {err.strip()}")
++    return out.strip()
++
++
++def _build_worker_prompt(repo_root: str, task_brief_path: str) -> str:
++    """Build the worker briefing: code-tips + task brief."""
++    parts = []
++
++    tips_path = os.path.join(repo_root, ".code-tips.md")
++    if os.path.exists(tips_path):
++        with open(tips_path, "r", encoding="utf-8") as fh:
++            parts.append(fh.read().rstrip())
++
++    with open(task_brief_path, "r", encoding="utf-8") as fh:
++        brief = fh.read().rstrip()
++
++    if parts:
++        parts.append("\n\nTASK: " + brief)
++    else:
++        parts.append("TASK: " + brief)
++
++    return "".join(parts)
++
++
++def _substitute_prompt(cmd: list[str], prompt: str) -> list[str]:
++    """Replace {prompt} placeholder in command argv elements."""
++    return [arg.replace("{prompt}", prompt) for arg in cmd]
++
++
++def _autopsy(name: str, exit_code: int, stderr: str) -> str:
++    """Produce a one-line autopsy string."""
++    last_line = ""
++    if stderr:
++        lines = [l for l in stderr.strip().splitlines() if l.strip()]
++        if lines:
++            last_line = ": " + lines[-1].strip()
++    return f"{name}: exit {exit_code}{last_line}"
++
++
++def _run_gate(gate_config: list[dict], worktree: str) -> dict[str, Any]:
++    """Run all gate commands; return gate results dict."""
++    results = []
++    all_passed = True
++
++    for entry in gate_config:
++        name = entry["name"]
++        cmd = entry["command"]
++        rc, out, err = _run_subprocess(cmd, cwd=worktree)
++        passed = rc == 0
++        if not passed:
++            all_passed = False
++        results.append({
++            "name": name,
++            "exit_code": rc,
++            "autopsy": _autopsy(name, rc, err),
++        })
++
++    return {"passed": all_passed, "results": results}
++
++
++def run_task(task_brief_arg: str, config_path: str) -> int:
++    """Main loop body: single worker, single gate pass, write run log.
++
++    Returns 0 if all gates passed, 1 otherwise.
++    """
++    # Resolve repo root (CWD when invoked)
++    repo_root = os.path.abspath(os.getcwd())
++
++    # Resolve task brief path
++    task_brief_path = os.path.abspath(task_brief_arg)
++    if not os.path.exists(task_brief_path):
++        sys.exit(f"ERROR: Task brief not found: {task_brief_path}")
++
++    # Derive task_id from file stem
++    task_id = Path(task_brief_path).stem
++
++    # Load config
++    try:
++        config = load_config(config_path)
++    except FileNotFoundError as exc:
++        sys.exit(f"ERROR: {exc}")
++
++    # Validate git state
++    started_at = _utc_now()
++    base_commit = _require_clean_git_repo(repo_root)
++
++    # Determine worktree path and branch
++    worktree_name = f"{task_id}-w1"
++    worktree_path = os.path.abspath(os.path.join(repo_root, "..", worktree_name))
++    branch_name = worktree_name
++
++    # Check branch/path don't already exist
++    rc, out, _ = _git(["branch", "--list", branch_name], cwd=repo_root)
++    if rc == 0 and out.strip():
++        sys.exit(f"ERROR: Branch '{branch_name}' already exists.")
++    if os.path.exists(worktree_path):
++        sys.exit(f"ERROR: Worktree path already exists: {worktree_path}")
++
++    # Create worktree
++    print(f"Creating worktree: {worktree_path} (branch: {branch_name})")
++    rc, out, err = _git(
++        ["worktree", "add", worktree_path, "-b", branch_name],
++        cwd=repo_root,
++    )
++    if rc != 0:
++        sys.exit(f"ERROR: Failed to create worktree:\n{err.strip()}")
++
++    # Build worker prompt
++    prompt = _build_worker_prompt(repo_root, task_brief_path)
++
++    # Build worker command
++    worker_cmd_template = config["worker"]["command"]
++    worker_cmd = _substitute_prompt(worker_cmd_template, prompt)
++
++    # Prepare output directory in main repo
++    artifacts_dir = os.path.join(repo_root, ".farnsworth", task_id)
++    os.makedirs(artifacts_dir, exist_ok=True)
++
++    stdout_file = os.path.join(artifacts_dir, "w1.stdout")
++    stderr_file = os.path.join(artifacts_dir, "w1.stderr")
++
++    # Run worker
++    print(f"Running worker in: {worktree_path}")
++    worker_rc, worker_stdout, worker_stderr = _run_subprocess(worker_cmd, cwd=worktree_path)
++
++    # Save worker output
++    with open(stdout_file, "w", encoding="utf-8") as fh:
++        fh.write(worker_stdout)
++    with open(stderr_file, "w", encoding="utf-8") as fh:
++        fh.write(worker_stderr)
++
++    # Run gate
++    print("Running gate checks...")
++    gate_config = config.get("gate", [])
++    gate_result = _run_gate(gate_config, worktree_path)
++
++    finished_at = _utc_now()
++
++    # Build run log
++    run_log = {
++        "task_id": task_id,
++        "started_at": started_at,
++        "finished_at": finished_at,
++        "base_commit": base_commit,
++        "workers": [
++            {
++                "id": "w1",
++                "branch": branch_name,
++                "worktree": f"../{worktree_name}",
++                "exit_code": worker_rc,
++                "stdout_file": "w1.stdout",
++                "gate": gate_result,
++            }
++        ],
++    }
++
++    run_log_path = os.path.join(artifacts_dir, "run.json")
++    with open(run_log_path, "w", encoding="utf-8") as fh:
++        json.dump(run_log, fh, indent=2)
++
++    # Print summary
++    gate_status = "PASSED" if gate_result["passed"] else "FAILED"
++    print(f"\n--- Gate Summary: {gate_status} ---")
++    for result in gate_result["results"]:
++        status = "OK" if result["exit_code"] == 0 else "FAIL"
++        print(f"  [{status}] {result['autopsy']}")
++    print(f"\nWorktree: {worktree_path}")
++    print(f"Run log:  {run_log_path}")
++
++    return 0 if gate_result["passed"] else 1
+diff --git a/tests/__init__.py b/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/test_runner.py b/tests/test_runner.py
+new file mode 100644
+index 0000000..d99a406
+--- /dev/null
++++ b/tests/test_runner.py
+@@ -0,0 +1,400 @@
++"""Tests for farnsworth M1 skeleton.
++
++All tests operate on throwaway git repos in temp directories.
++No side effects in the main repository.
++"""
++import json
++import os
++import subprocess
++import sys
++import tempfile
++import unittest
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++def _git(args, cwd):
++    """Run git in cwd; return (returncode, stdout, stderr)."""
++    result = subprocess.run(
++        ["git"] + args, cwd=cwd, capture_output=True, text=True
++    )
++    return result.returncode, result.stdout, result.stderr
++
++
++def _init_repo(path):
++    """Create a minimal git repo suitable for worktree operations."""
++    os.makedirs(path, exist_ok=True)
++    _git(["init", "-b", "main"], path)
++    _git(["config", "user.email", "test@example.com"], path)
++    _git(["config", "user.name", "Test User"], path)
++    # Initial commit so HEAD exists
++    readme = os.path.join(path, "README.md")
++    with open(readme, "w") as fh:
++        fh.write("# test repo\n")
++    _git(["add", "README.md"], path)
++    _git(["commit", "-m", "init"], path)
++
++
++def _commit_all(repo_path, message="add test files"):
++    """Stage all changes and commit them."""
++    _git(["add", "-A"], repo_path)
++    _git(["-c", "user.email=t@t.com", "-c", "user.name=Test",
++          "commit", "-m", message], repo_path)
++
++
++def _write_config(repo_path, worker_cmd, gate_cmds=None):
++    """Write a farnsworth.json into repo_path and return its path."""
++    if gate_cmds is None:
++        # Default gate: always passes (true is /bin/true on Linux)
++        gate_cmds = [{"name": "always-pass", "command": ["true"]}]
++
++    config = {
++        "worker": {"command": worker_cmd},
++        "gate": gate_cmds,
++    }
++    cfg_path = os.path.join(repo_path, "farnsworth.json")
++    with open(cfg_path, "w") as fh:
++        json.dump(config, fh)
++    return cfg_path
++
++
++def _write_task_brief(repo_path, stem="task-test"):
++    """Write a minimal task brief and return its path."""
++    path = os.path.join(repo_path, f"{stem}.md")
++    with open(path, "w") as fh:
++        fh.write(f"# {stem}\n\nDo something.\n")
++    return path
++
++
++def _fake_worker_cmd():
++    """Return a worker command that creates a commit in the worktree.
++
++    The worker command must be runnable by subprocess with no external deps.
++    We use a Python one-liner that:
++      1. Writes a file.
++      2. Stages and commits it.
++    """
++    script = (
++        "import subprocess, os; "
++        "open('worker-output.txt', 'w').write('done'); "
++        "subprocess.run(['git', 'add', 'worker-output.txt']); "
++        "subprocess.run(['git', '-c', 'user.email=w@w.com', "
++        "'-c', 'user.name=Worker', 'commit', '-m', 'worker commit']); "
++    )
++    return [sys.executable, "-c", script]
++
++
++def _run_farnsworth(task_brief_path, config_path, repo_root):
++    """Invoke farnsworth.runner.run_task directly (not via subprocess).
++
++    We manipulate CWD via os.chdir.  Returns exit code.
++    """
++    old_cwd = os.getcwd()
++    try:
++        os.chdir(repo_root)
++        from farnsworth.runner import run_task
++        return run_task(task_brief_path, config_path)
++    finally:
++        os.chdir(old_cwd)
++
++
++# ---------------------------------------------------------------------------
++# Test cases
++# ---------------------------------------------------------------------------
++
++class TestRunnerBase(unittest.TestCase):
++    """Base class: creates a fresh temp dir and repo for every test."""
++
++    def setUp(self):
++        self._tmpdir = tempfile.mkdtemp(prefix="farnsworth_test_")
++        self.repo = os.path.join(self._tmpdir, "main_repo")
++        _init_repo(self.repo)
++
++    def tearDown(self):
++        # Clean up any worktrees then remove temp dir
++        import shutil
++        # Remove worktrees registered with git
++        rc, out, _ = _git(["worktree", "list", "--porcelain"], self.repo)
++        if rc == 0:
++            current_wt = None
++            for line in out.splitlines():
++                if line.startswith("worktree "):
++                    current_wt = line[len("worktree "):].strip()
++                if line == "" and current_wt and current_wt != self.repo:
++                    # Prune that worktree
++                    _git(["worktree", "remove", "--force", current_wt], self.repo)
++                    current_wt = None
++        shutil.rmtree(self._tmpdir, ignore_errors=True)
++
++
++class TestWorktreeCreated(TestRunnerBase):
++    """Worktree is created on disk and registered with git."""
++
++    def test_worktree_created(self):
++        cfg = _write_config(self.repo, _fake_worker_cmd())
++        brief = _write_task_brief(self.repo, "task-test")
++        _commit_all(self.repo)  # clean tree required
++
++        exit_code = _run_farnsworth(brief, cfg, self.repo)
++
++        expected_wt = os.path.join(self._tmpdir, "task-test-w1")
++        self.assertTrue(
++            os.path.isdir(expected_wt),
++            f"Worktree directory not found: {expected_wt}",
++        )
++        # Verify branch exists
++        rc, out, _ = _git(["branch", "--list", "task-test-w1"], self.repo)
++        self.assertIn("task-test-w1", out)
++
++
++class TestGatePass(TestRunnerBase):
++    """Gate pass: exit code 0, run.json records passed=true."""
++
++    def test_gate_pass(self):
++        cfg = _write_config(
++            self.repo,
++            _fake_worker_cmd(),
++            gate_cmds=[{"name": "always-pass", "command": ["true"]}],
++        )
++        brief = _write_task_brief(self.repo, "task-gpass")
++        _commit_all(self.repo)
++
++        exit_code = _run_farnsworth(brief, cfg, self.repo)
++        self.assertEqual(exit_code, 0)
++
++        run_log_path = os.path.join(
++            self.repo, ".farnsworth", "task-gpass", "run.json"
++        )
++        self.assertTrue(os.path.exists(run_log_path))
++        with open(run_log_path) as fh:
++            data = json.load(fh)
++
++        self.assertTrue(data["workers"][0]["gate"]["passed"])
++        results = data["workers"][0]["gate"]["results"]
++        self.assertEqual(results[0]["name"], "always-pass")
++        self.assertEqual(results[0]["exit_code"], 0)
++
++
++class TestGateFail(TestRunnerBase):
++    """Gate fail: exit code 1, run.json records passed=false."""
++
++    def test_gate_fail(self):
++        cfg = _write_config(
++            self.repo,
++            _fake_worker_cmd(),
++            gate_cmds=[{"name": "always-fail", "command": ["false"]}],
++        )
++        brief = _write_task_brief(self.repo, "task-gfail")
++        _commit_all(self.repo)
++
++        exit_code = _run_farnsworth(brief, cfg, self.repo)
++        self.assertEqual(exit_code, 1)
++
++        run_log_path = os.path.join(
++            self.repo, ".farnsworth", "task-gfail", "run.json"
++        )
++        with open(run_log_path) as fh:
++            data = json.load(fh)
++
++        self.assertFalse(data["workers"][0]["gate"]["passed"])
++        results = data["workers"][0]["gate"]["results"]
++        self.assertEqual(results[0]["exit_code"], 1)
++
++
++class TestRunJsonSchema(TestRunnerBase):
++    """run.json has all required schema fields."""
++
++    def test_run_json_schema(self):
++        cfg = _write_config(
++            self.repo,
++            _fake_worker_cmd(),
++            gate_cmds=[{"name": "tests", "command": ["true"]}],
++        )
++        brief = _write_task_brief(self.repo, "task-schema")
++        _commit_all(self.repo)
++
++        _run_farnsworth(brief, cfg, self.repo)
++
++        run_log_path = os.path.join(
++            self.repo, ".farnsworth", "task-schema", "run.json"
++        )
++        with open(run_log_path) as fh:
++            data = json.load(fh)
++
++        # Top-level fields
++        self.assertEqual(data["task_id"], "task-schema")
++        self.assertIn("started_at", data)
++        self.assertIn("finished_at", data)
++        self.assertIn("base_commit", data)
++        self.assertIsInstance(data["workers"], list)
++        self.assertEqual(len(data["workers"]), 1)
++
++        worker = data["workers"][0]
++        self.assertEqual(worker["id"], "w1")
++        self.assertEqual(worker["branch"], "task-schema-w1")
++        self.assertIn("worktree", worker)
++        self.assertIn("exit_code", worker)
++        self.assertEqual(worker["stdout_file"], "w1.stdout")
++
++        gate = worker["gate"]
++        self.assertIn("passed", gate)
++        self.assertIn("results", gate)
++        result = gate["results"][0]
++        self.assertIn("name", result)
++        self.assertIn("exit_code", result)
++        self.assertIn("autopsy", result)
++
++        # base_commit should be a valid SHA (40 hex chars)
++        self.assertRegex(data["base_commit"], r"^[0-9a-f]{40}$")
++
++
++class TestDirtyTreeRejected(TestRunnerBase):
++    """Dirty working tree is rejected with a clear error."""
++
++    def test_dirty_tree_rejected(self):
++        cfg = _write_config(self.repo, _fake_worker_cmd())
++        brief = _write_task_brief(self.repo, "task-dirty")
++        _commit_all(self.repo)  # Commit all files first
++
++        # Now make the tree dirty AFTER committing
++        dirty_file = os.path.join(self.repo, "dirty.txt")
++        with open(dirty_file, "w") as fh:
++            fh.write("uncommitted\n")
++
++        old_cwd = os.getcwd()
++        try:
++            os.chdir(self.repo)
++            from farnsworth.runner import run_task
++            with self.assertRaises(SystemExit) as ctx:
++                run_task(brief, cfg)
++            # Should exit non-zero
++            self.assertNotEqual(ctx.exception.code, 0)
++            # The exit message should mention the dirty state
++            msg = str(ctx.exception.code)
++            self.assertIn("clean", msg.lower())
++        finally:
++            os.chdir(old_cwd)
++
++
++class TestStdoutStderrFiles(TestRunnerBase):
++    """Worker stdout and stderr are saved to the artifacts dir."""
++
++    def test_stdout_saved(self):
++        # Worker prints something to stdout
++        worker_cmd = [
++            sys.executable, "-c",
++            "import subprocess, os, sys; "
++            "sys.stdout.write('hello from worker'); "
++            "open('worker-output.txt', 'w').write('done'); "
++            "subprocess.run(['git', 'add', 'worker-output.txt']); "
++            "subprocess.run(['git', '-c', 'user.email=w@w.com', "
++            "'-c', 'user.name=Worker', 'commit', '-m', 'worker commit'])"
++        ]
++        cfg = _write_config(self.repo, worker_cmd)
++        brief = _write_task_brief(self.repo, "task-stdout")
++        _commit_all(self.repo)
++
++        _run_farnsworth(brief, cfg, self.repo)
++
++        stdout_path = os.path.join(
++            self.repo, ".farnsworth", "task-stdout", "w1.stdout"
++        )
++        stderr_path = os.path.join(
++            self.repo, ".farnsworth", "task-stdout", "w1.stderr"
++        )
++        self.assertTrue(os.path.exists(stdout_path))
++        self.assertTrue(os.path.exists(stderr_path))
++        with open(stdout_path) as fh:
++            content = fh.read()
++        self.assertIn("hello from worker", content)
++
++
++class TestMultipleGatesAllRun(TestRunnerBase):
++    """All gate entries run even if an earlier one fails."""
++
++    def test_all_gates_run(self):
++        gate_cmds = [
++            {"name": "fail-first", "command": ["false"]},
++            {"name": "pass-second", "command": ["true"]},
++        ]
++        cfg = _write_config(self.repo, _fake_worker_cmd(), gate_cmds=gate_cmds)
++        brief = _write_task_brief(self.repo, "task-multi-gate")
++        _commit_all(self.repo)
++
++        exit_code = _run_farnsworth(brief, cfg, self.repo)
++        self.assertEqual(exit_code, 1)  # overall failed
++
++        run_log_path = os.path.join(
++            self.repo, ".farnsworth", "task-multi-gate", "run.json"
++        )
++        with open(run_log_path) as fh:
++            data = json.load(fh)
++
++        results = data["workers"][0]["gate"]["results"]
++        self.assertEqual(len(results), 2)
++        self.assertEqual(results[0]["name"], "fail-first")
++        self.assertEqual(results[0]["exit_code"], 1)
++        self.assertEqual(results[1]["name"], "pass-second")
++        self.assertEqual(results[1]["exit_code"], 0)
++
++
++class TestPromptSubstitution(TestRunnerBase):
++    """The {prompt} placeholder in worker command is replaced with the briefing."""
++
++    def test_prompt_substitution(self):
++        # Worker receives {prompt} as a command-line argument and saves it to a file
++        worker_cmd_with_prompt = [
++            sys.executable, "-c",
++            "import sys, subprocess; "
++            "open('prompt-capture.txt', 'w').write(sys.argv[1]); "
++            "subprocess.run(['git', 'add', 'prompt-capture.txt']); "
++            "subprocess.run(['git', '-c', 'user.email=w@w.com', "
++            "'-c', 'user.name=Worker', 'commit', '-m', 'worker commit'])",
++            "{prompt}",  # This will be substituted with the actual prompt
++        ]
++        # Add a .code-tips.md to verify it appears in prompt
++        tips = os.path.join(self.repo, ".code-tips.md")
++        with open(tips, "w") as fh:
++            fh.write("# Tips\n- tip1\n")
++
++        cfg = _write_config(self.repo, worker_cmd_with_prompt)
++        brief = _write_task_brief(self.repo, "task-prompt")
++
++        # Commit all files so the tree is clean
++        _commit_all(self.repo)
++
++        _run_farnsworth(brief, cfg, self.repo)
++
++        # Check the worktree has prompt-capture.txt with the brief content
++        wt_path = os.path.join(self._tmpdir, "task-prompt-w1")
++        capture_file = os.path.join(wt_path, "prompt-capture.txt")
++        self.assertTrue(os.path.exists(capture_file),
++                        "prompt-capture.txt not found in worktree")
++        with open(capture_file) as fh:
++            content = fh.read()
++        self.assertIn("TASK:", content)
++        self.assertIn("tip1", content)
++
++
++class TestCodeTipsNotWritten(TestRunnerBase):
++    """The runner must never write .code-tips.md."""
++
++    def test_code_tips_not_written(self):
++        cfg = _write_config(self.repo, _fake_worker_cmd())
++        brief = _write_task_brief(self.repo, "task-notips")
++        _commit_all(self.repo)
++
++        _run_farnsworth(brief, cfg, self.repo)
++
++        tips_path = os.path.join(self.repo, ".code-tips.md")
++        # The runner never creates .code-tips.md (workers are read-only consumers)
++        self.assertFalse(
++            os.path.exists(tips_path),
++            ".code-tips.md must not be written by the runner",
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()

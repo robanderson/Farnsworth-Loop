@@ -1,0 +1,12 @@
+{
+  "task_id": "task-002",
+  "base_commit": "65af635",
+  "dispatched_at": "2026-06-11T21:55:00Z",
+  "workers": [
+    {"id": "w1", "model": "claude-haiku-4-5",  "worktree": "agent-a9694672c2f578880"},
+    {"id": "w2", "model": "claude-haiku-4-5",  "worktree": "agent-af15b10be788aee50"},
+    {"id": "w3", "model": "claude-sonnet-4-6", "worktree": "agent-aa434e52fc98a8cd8"},
+    {"id": "w4", "model": "claude-sonnet-4-6", "worktree": "agent-a9351e60dc7053642"},
+    {"id": "w5", "model": "claude-opus-4-8",   "worktree": "agent-ade1fa91780746c4c"}
+  ]
+}
