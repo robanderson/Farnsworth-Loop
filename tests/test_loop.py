@@ -91,7 +91,7 @@ class LoopTestBase(unittest.TestCase):
         _git(["commit", "-m", "add brief"], self.repo)
         return brief_path
 
-    def _config_file(self, gate):
+    def _config_file(self, gate, reviewer=None):
         """Write a config with the fake worker and the given gate list."""
         cfg = {
             "worker": {
@@ -99,6 +99,8 @@ class LoopTestBase(unittest.TestCase):
             },
             "gate": gate,
         }
+        if reviewer is not None:
+            cfg["reviewer"] = reviewer
         cfg_path = os.path.join(self.repo, "farnsworth.json")
         with open(cfg_path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh)
@@ -106,8 +108,9 @@ class LoopTestBase(unittest.TestCase):
         _git(["commit", "-m", "add config"], self.repo)
         return cfg_path
 
-    def _track_worktree(self, task_id):
-        wt = os.path.join(self.tmp, "{0}-w1".format(task_id))
+    def _track_worktree(self, worktree_id):
+        """Track a worktree for cleanup (e.g., 'task-042-w1')."""
+        wt = os.path.join(self.tmp, worktree_id)
         self._worktrees.append(wt)
         return wt
 
@@ -123,8 +126,10 @@ class TestGatePass(LoopTestBase):
     def test_worktree_created_and_gate_passes(self):
         brief = self._write_brief()
         gate = [{"name": "tests", "command": ["python3", "-c", "import sys; sys.exit(0)"]}]
-        cfg = self._config_file(gate)
-        self._track_worktree("task-042")
+        # M1 tests need a fake reviewer since candidates now trigger review.
+        fake_reviewer = {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]}
+        cfg = self._config_file(gate, reviewer=fake_reviewer)
+        self._track_worktree("task-042-w1")
 
         run_log = run(brief, config_path=cfg, cwd=self.repo)
 
@@ -168,6 +173,7 @@ class TestGatePass(LoopTestBase):
         )
         cfg = {
             "worker": {"command": ["python3", "-c", echo_worker, "{prompt}"]},
+            "reviewer": {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]},
             "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
         }
         cfg_path = os.path.join(self.repo, "farnsworth.json")
@@ -175,7 +181,7 @@ class TestGatePass(LoopTestBase):
             json.dump(cfg, fh)
         _git(["add", "-A"], self.repo)
         _git(["commit", "-m", "cfg"], self.repo)
-        self._track_worktree("task-042")
+        self._track_worktree("task-042-w1")
 
         run(brief, config_path=cfg_path, cwd=self.repo)
 
@@ -195,10 +201,12 @@ class TestGateFail(LoopTestBase):
             {"name": "tests", "command": ["python3", "-c", "import sys; sys.stderr.write('boom\\n'); sys.exit(1)"]},
             {"name": "lint", "command": ["python3", "-c", "import sys; sys.exit(0)"]},
         ]
+        # When gate fails, no review is needed (no candidates).
         cfg = self._config_file(gate)
-        self._track_worktree("task-042")
+        self._track_worktree("task-042-w1")
 
         run_log = run(brief, config_path=cfg, cwd=self.repo)
+        self._track_worktree("task-042-w1")
         gate_res = run_log["workers"][0]["gate"]
 
         self.assertFalse(gate_res["passed"])
@@ -216,10 +224,12 @@ class TestRunLogSchema(LoopTestBase):
     def test_schema_fields_present(self):
         brief = self._write_brief(name="task-099.md")
         gate = [{"name": "tests", "command": ["python3", "-c", ""]}]
-        cfg = self._config_file(gate)
+        fake_reviewer = {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]}
+        cfg = self._config_file(gate, reviewer=fake_reviewer)
         self._track_worktree("task-099")
 
         run_log = run(brief, config_path=cfg, cwd=self.repo)
+        self._track_worktree("task-099-w1")
 
         # Top-level fields.
         for key in ("task_id", "started_at", "finished_at", "base_commit", "workers"):
@@ -228,7 +238,7 @@ class TestRunLogSchema(LoopTestBase):
         self.assertEqual(len(run_log["base_commit"]), 40)
 
         worker = run_log["workers"][0]
-        for key in ("id", "branch", "worktree", "exit_code", "stdout_file", "gate"):
+        for key in ("id", "branch", "worktree", "exit_code", "stdout_file", "gate", "candidate_label"):
             self.assertIn(key, worker)
         self.assertEqual(worker["id"], "w1")
         self.assertEqual(worker["branch"], "task-099-w1")
@@ -254,10 +264,12 @@ class TestRunLogSchema(LoopTestBase):
     def test_does_not_write_code_tips(self):
         brief = self._write_brief()
         gate = [{"name": "tests", "command": ["python3", "-c", ""]}]
-        cfg = self._config_file(gate)
-        self._track_worktree("task-042")
+        fake_reviewer = {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]}
+        cfg = self._config_file(gate, reviewer=fake_reviewer)
+        self._track_worktree("task-042-w1")
 
         run(brief, config_path=cfg, cwd=self.repo)
+        self._track_worktree("task-042-w1")
 
         # The loop must never author .code-tips.md (workers are read-only).
         self.assertFalse(
@@ -306,18 +318,466 @@ class TestPreconditions(LoopTestBase):
         self.assertIn("branch already exists", str(ctx.exception).lower())
 
 
+class TestMultiWorkerParallel(LoopTestBase):
+    """Test M2: multi-worker dispatch with gate and review."""
+
+    def test_two_passing_one_failing_worker(self):
+        """Two workers pass gate; review is called with multiple candidates."""
+        brief = self._write_brief(name="task-m2.md", body="task body")
+
+        # Config with 2 workers that both pass gate.
+        passing_worker_py = FAKE_WORKER_PY
+        gate = [{"name": "tests", "command": ["python3", "-c", "import sys; sys.exit(0)"]}]
+
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", passing_worker_py]},
+                {"id": "w2", "command": ["python3", "-c", passing_worker_py]},
+            ],
+            "reviewer": {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]},
+            "gate": gate,
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "add m2 config"], self.repo)
+
+        # Track worktrees.
+        self._track_worktree("task-m2-w1")
+        self._track_worktree("task-m2-w2")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        # Both workers in the log.
+        self.assertEqual(len(run_log["workers"]), 2)
+        w1 = [w for w in run_log["workers"] if w["id"] == "w1"][0]
+        w2 = [w for w in run_log["workers"] if w["id"] == "w2"][0]
+
+        # Both passed gate.
+        self.assertTrue(w1["gate"]["passed"])
+        self.assertTrue(w2["gate"]["passed"])
+
+        # Both are candidates with different labels.
+        self.assertIsNotNone(w1["candidate_label"])
+        self.assertIsNotNone(w2["candidate_label"])
+        self.assertNotEqual(w1["candidate_label"], w2["candidate_label"])
+
+        # Diffs exist for both candidates.
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-m2")
+        for label in (w1["candidate_label"], w2["candidate_label"]):
+            diff_path = os.path.join(artifact_dir, "candidates", "{0}.diff".format(label))
+            self.assertTrue(os.path.exists(diff_path))
+            with open(diff_path, "r", encoding="utf-8") as fh:
+                diff = fh.read()
+            self.assertIn("worker_output.txt", diff)  # Fake worker creates this file
+
+        # Review happened.
+        self.assertIsNotNone(run_log.get("review"))
+        review = run_log["review"]
+        self.assertIsNotNone(review["verdict"])
+        verdict = review["verdict"]
+        self.assertIn(verdict["outcome"], ("adopt", "synthesize", "escalate"))
+        if verdict["outcome"] == "adopt":
+            self.assertIn(verdict["candidate"], (w1["candidate_label"], w2["candidate_label"]))
+
+    def test_briefing_to_reviewer_contains_no_worker_ids(self):
+        """Reviewer briefing must not contain worker ids."""
+        brief = self._write_brief(name="task-m2.md", body="task body")
+
+        # A reviewer that records the briefing it receives.
+        reviewer_record_py = (
+            "exec(\"import sys,json,os,glob\\n"
+            "briefing = sys.argv[1] if len(sys.argv) > 1 else ''\\n"
+            "open('reviewer_briefing.txt', 'w').write(briefing)\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "if task_dirs:\\n"
+            "  task_dir=task_dirs[0]\\n"
+            "  with open(os.path.join(task_dir, 'verdict.json'), 'w') as f:\\n"
+            "    json.dump({'outcome': 'escalate', 'candidate': None, 'reasoning': 'test'}, f)\")"
+        )
+
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", reviewer_record_py, "{prompt}"]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "add config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        # Check the briefing passed to reviewer (written to repo root).
+        with open(os.path.join(self.repo, "reviewer_briefing.txt"), "r", encoding="utf-8") as fh:
+            reviewer_briefing = fh.read()
+
+        # Must contain the task brief text and candidate labels.
+        self.assertIn("task body", reviewer_briefing)
+        self.assertIn("Candidate", reviewer_briefing)
+
+        # Must NOT contain worker ids.
+        self.assertNotIn("w1", reviewer_briefing)
+        self.assertNotIn("w2", reviewer_briefing)
+
+        # The mapping is never leaked.
+        self.assertNotIn("w1 -> A", reviewer_briefing)
+
+    def test_all_workers_fail_gate_no_review(self):
+        """If all workers fail gate, no review is called; exit 1."""
+        brief = self._write_brief(name="task-m2.md")
+
+        failing_gate = [
+            {"name": "tests", "command": ["python3", "-c", "import sys; sys.exit(1)"]}
+        ]
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+                {"id": "w2", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["echo", "should-not-run"]},
+            "gate": failing_gate,
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "add config"], self.repo)
+        self._track_worktree("task-m2-w1")
+        self._track_worktree("task-m2-w2")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        # No candidates.
+        for worker in run_log["workers"]:
+            self.assertIsNone(worker["candidate_label"])
+
+        # No review.
+        self.assertIsNone(run_log.get("review"))
+
+    def test_legacy_single_worker_still_end_to_end(self):
+        """Legacy single-worker config still works end to end."""
+        brief = self._write_brief(name="task-legacy.md")
+
+        # Use legacy "worker" key instead of "workers".
+        cfg_dict = {
+            "worker": {
+                "command": ["python3", "-c", FAKE_WORKER_PY],
+            },
+            "reviewer": {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]},
+            "gate": [{"name": "tests", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-legacy-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        # Single worker with id "w1".
+        self.assertEqual(len(run_log["workers"]), 1)
+        self.assertEqual(run_log["workers"][0]["id"], "w1")
+        self.assertTrue(run_log["workers"][0]["gate"]["passed"])
+
+    def test_verdict_adoption_recorded(self):
+        """Adopt verdict is parsed and recorded in run.json."""
+        brief = self._write_brief(name="task-m2.md")
+
+        # Use a custom verdict writer that uses the generic approach.
+        adopting_reviewer_py = (
+            "exec(\"import sys,json,os\\n"
+            "import glob\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "if task_dirs:\\n"
+            "  task_dir=task_dirs[0]\\n"
+            "  verdict_path=os.path.join(task_dir, 'verdict.json')\\n"
+            "  with open(verdict_path, 'w') as f:\\n"
+            "    json.dump({'outcome': 'adopt', 'candidate': 'A', 'reasoning': 'looks good'}, f)\")"
+        )
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", adopting_reviewer_py, "{prompt}"]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        verdict = run_log["review"]["verdict"]
+        self.assertEqual(verdict["outcome"], "adopt")
+        self.assertEqual(verdict["candidate"], "A")
+        self.assertIn("looks", verdict["reasoning"])
+
+    def test_verdict_synthesize_recorded(self):
+        """Synthesize verdict is parsed and recorded."""
+        brief = self._write_brief(name="task-m2.md")
+
+        synth_reviewer_py = (
+            "exec(\"import sys,json,os\\n"
+            "import glob\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "if task_dirs:\\n"
+            "  task_dir=task_dirs[0]\\n"
+            "  verdict_path=os.path.join(task_dir, 'verdict.json')\\n"
+            "  with open(verdict_path, 'w') as f:\\n"
+            "    json.dump({'outcome': 'synthesize', 'candidate': None, 'reasoning': 'combining ideas'}, f)\")"
+        )
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", synth_reviewer_py, "{prompt}"]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        verdict = run_log["review"]["verdict"]
+        self.assertEqual(verdict["outcome"], "synthesize")
+        self.assertIsNone(verdict["candidate"])
+
+    def test_verdict_escalate_recorded(self):
+        """Escalate verdict is parsed and recorded."""
+        brief = self._write_brief(name="task-m2.md")
+
+        esc_reviewer_py = (
+            "exec(\"import sys,json,os\\n"
+            "import glob\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "if task_dirs:\\n"
+            "  task_dir=task_dirs[0]\\n"
+            "  verdict_path=os.path.join(task_dir, 'verdict.json')\\n"
+            "  with open(verdict_path, 'w') as f:\\n"
+            "    json.dump({'outcome': 'escalate', 'candidate': None, 'reasoning': 'spec unclear'}, f)\")"
+        )
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", esc_reviewer_py]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        verdict = run_log["review"]["verdict"]
+        self.assertEqual(verdict["outcome"], "escalate")
+        self.assertIsNone(verdict["candidate"])
+
+    def test_invalid_verdict_rejects(self):
+        """Invalid verdict.json causes LoopError."""
+        brief = self._write_brief(name="task-m2.md")
+
+        bad_verdict_py = (
+            "exec(\"import sys,json,os\\n"
+            "import glob\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "if task_dirs:\\n"
+            "  task_dir=task_dirs[0]\\n"
+            "  verdict_path=os.path.join(task_dir, 'verdict.json')\\n"
+            "  with open(verdict_path, 'w') as f:\\n"
+            "    json.dump({'outcome': 'unknown', 'candidate': None, 'reasoning': 'test'}, f)\")"
+        )
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", bad_verdict_py]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        with self.assertRaises(LoopError) as ctx:
+            run(brief, config_path=cfg_path, cwd=self.repo)
+        self.assertIn("outcome", str(ctx.exception).lower())
+
+    def test_adopt_with_bad_label_rejects(self):
+        """Adopt verdict with invalid candidate label is rejected."""
+        brief = self._write_brief(name="task-m2.md")
+
+        bad_label_py = (
+            "exec(\"import sys,json,os\\n"
+            "import glob\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "if task_dirs:\\n"
+            "  task_dir=task_dirs[0]\\n"
+            "  verdict_path=os.path.join(task_dir, 'verdict.json')\\n"
+            "  with open(verdict_path, 'w') as f:\\n"
+            "    json.dump({'outcome': 'adopt', 'candidate': 'Z', 'reasoning': 'oops'}, f)\")"
+        )
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", bad_label_py]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        with self.assertRaises(LoopError) as ctx:
+            run(brief, config_path=cfg_path, cwd=self.repo)
+        self.assertIn("candidate", str(ctx.exception).lower())
+
+    def test_run_json_equals_disk(self):
+        """run.json on disk equals the returned dict."""
+        brief = self._write_brief(name="task-m2.md")
+
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg_dict, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "config"], self.repo)
+        self._track_worktree("task-m2-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-m2")
+        with open(os.path.join(artifact_dir, "run.json"), "r", encoding="utf-8") as fh:
+            disk = json.load(fh)
+
+        self.assertEqual(disk, run_log)
+
+
+# Fake reviewer that writes a valid verdict.
+# Reads briefing from argv[1] and extracts task_id.
+FAKE_REVIEWER_PY = (
+    "exec(\"import sys,json,os\\n"
+    "briefing=sys.argv[1] if len(sys.argv)>1 else ''\\n"
+    "import glob\\n"
+    "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+    "if task_dirs:\\n"
+    "  task_dir=task_dirs[0]\\n"
+    "  verdict_path=os.path.join(task_dir, 'verdict.json')\\n"
+    "  with open(verdict_path, 'w') as f:\\n"
+    "    json.dump({'outcome': 'adopt', 'candidate': 'A', 'reasoning': 'test'}, f)\")"
+)
+
+
 class TestConfig(unittest.TestCase):
     def test_default_config_when_absent(self):
         cfg = config.Config.load(None)
-        self.assertEqual(cfg.worker_command[0], "claude")
-        self.assertTrue(any("{prompt}" in a for a in cfg.worker_command))
+        # New default uses "workers" list with one entry.
+        self.assertEqual(len(cfg.workers), 1)
+        self.assertEqual(cfg.workers[0]["id"], "w1")
+        self.assertTrue(any("{prompt}" in a for a in cfg.workers[0]["command"]))
         self.assertEqual(cfg.gate[0]["name"], "tests")
 
     def test_invalid_config_rejected(self):
         with self.assertRaises(config.ConfigError):
-            config.Config.from_dict({"worker": {"command": []}})
+            config.Config.from_dict({"workers": []})
         with self.assertRaises(config.ConfigError):
-            config.Config.from_dict({"gate": []})
+            config.Config.from_dict({"workers": [{"id": "w1", "command": []}]})
+
+    def test_legacy_single_worker_still_works(self):
+        """Back-compat: single 'worker' becomes workers[0] with id w1."""
+        cfg_dict = {
+            "worker": {"command": ["test", "{prompt}"]},
+            "gate": [{"name": "noop", "command": ["true"]}],
+        }
+        cfg = config.Config.from_dict(cfg_dict)
+        self.assertEqual(len(cfg.workers), 1)
+        self.assertEqual(cfg.workers[0]["id"], "w1")
+        self.assertEqual(cfg.workers[0]["command"], ["test", "{prompt}"])
+
+    def test_new_workers_list_schema(self):
+        """New schema with multiple workers."""
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["cmd1", "{prompt}"]},
+                {"id": "w2", "command": ["cmd2"]},
+            ],
+            "gate": [{"name": "tests", "command": ["pytest"]}],
+        }
+        cfg = config.Config.from_dict(cfg_dict)
+        self.assertEqual(len(cfg.workers), 2)
+        self.assertEqual(cfg.workers[0]["id"], "w1")
+        self.assertEqual(cfg.workers[1]["id"], "w2")
+
+    def test_worker_id_must_be_filesystem_safe(self):
+        """Worker ids must be alphanumeric or underscore."""
+        cfg_dict = {
+            "workers": [
+                {"id": "w1-dash", "command": ["cmd"]},
+            ]
+        }
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.Config.from_dict(cfg_dict)
+        self.assertIn("filesystem-safe", str(ctx.exception))
+
+    def test_duplicate_worker_ids_rejected(self):
+        """Duplicate worker ids are an error."""
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["cmd1"]},
+                {"id": "w1", "command": ["cmd2"]},
+            ]
+        }
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.Config.from_dict(cfg_dict)
+        self.assertIn("duplicate", str(ctx.exception))
+
+    def test_reviewer_config_optional(self):
+        """Reviewer is optional in config."""
+        cfg_dict = {
+            "workers": [{"id": "w1", "command": ["cmd"]}],
+            "gate": [],
+        }
+        cfg = config.Config.from_dict(cfg_dict)
+        self.assertIsNone(cfg.reviewer)
+
+    def test_reviewer_config_with_command(self):
+        """Reviewer can be configured with a command."""
+        cfg_dict = {
+            "workers": [{"id": "w1", "command": ["cmd"]}],
+            "reviewer": {"command": ["reviewer", "{prompt}"]},
+            "gate": [],
+        }
+        cfg = config.Config.from_dict(cfg_dict)
+        self.assertIsNotNone(cfg.reviewer)
+        self.assertEqual(cfg.reviewer["command"], ["reviewer", "{prompt}"])
 
 
 if __name__ == "__main__":

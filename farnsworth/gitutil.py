@@ -76,3 +76,16 @@ def branch_exists(branch, cwd):
 def add_worktree(path, branch, cwd):
     """Create a new worktree at ``path`` on a new branch ``branch``."""
     run_git(["worktree", "add", str(path), "-b", branch], cwd)
+
+
+def write_diff(base_commit, worktree_abs, output_path, repo_root):
+    """Write the diff from base_commit to worktree-HEAD into output_path.
+
+    The diff is written relative to the repo root.
+    """
+    proc = run_git(
+        ["diff", "{0}..HEAD".format(base_commit)],
+        worktree_abs,
+    )
+    with open(output_path, "w", encoding="utf-8") as fh:
+        fh.write(proc.stdout)
