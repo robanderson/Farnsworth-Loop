@@ -1,0 +1,19 @@
+{
+  "worker": {
+    "command": [
+      "claude",
+      "-p",
+      "{prompt}",
+      "--bare",
+      "--model",
+      "claude-haiku-4-5",
+      "--permission-mode",
+      "acceptEdits",
+      "--output-format",
+      "json"
+    ]
+  },
+  "gate": [
+    {"name": "tests", "command": ["python3", "-m", "unittest", "discover"]}
+  ]
+}
