@@ -1,0 +1,26 @@
+{
+  "mapping": {
+    "A": "w5",
+    "B": "w3",
+    "C": "w1",
+    "D": "w2",
+    "E": "w4"
+  },
+  "models": {
+    "A": "opus-4.8",
+    "B": "sonnet-4.6",
+    "C": "haiku-4.5",
+    "D": "haiku-4.5",
+    "E": "sonnet-4.6"
+  },
+  "agent_tokens": {
+    "A": 31029,
+    "B": 41525,
+    "C": 76184,
+    "D": 31016,
+    "E": 43175
+  },
+  "reviewer_tokens": 112030,
+  "unsealed": "post-verdict",
+  "note": "manual agent dispatch; see orchestrator-notes.md"
+}

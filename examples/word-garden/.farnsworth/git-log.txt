@@ -1,0 +1,19 @@
+* 7ab2db4 Orchestrator log: process findings from tasks 001-002
+* 7579e00 task-002 audit: run log and attribution (unsealed post-verdict)
+* 5af034e Good news, everyone! UI layer truths distilled: pure render/IO split held; reuse engine MSG_* constants in the UI; ASCII stage table must keep five distinct glyphs; weeds are a bare count, never a fraction of water
+*   282c04d Merge task-002: Word Garden UI, main loop, packaging (adopted candidate A)
+|\  
+| * c8e512f task-002: add terminal UI, main loop, packaging, and README
+* | 94401f8 task-002 verdict: ADOPT candidate A (Word Garden UI)
+* | a5164cf task-002: anonymized candidate diffs and gate notes (3/3 gate pass); task-001 blind sketch, gate runner
+|/  
+* 08fda54 task-002 brief: UI, main loop, packaging (triaged 3-worker tournament)
+* 7cb2dea task-001 audit: run log and attribution (unsealed post-verdict)
+* b1c647a Good news, everyone! is_lost needs the not-won guard; win before loss in apply_guess; one difficulty table; message constants; test public helpers directly
+*   ac41700 Merge task-001: Word Garden core engine (adopted candidate A)
+|\  
+| * a795031 Implement Word Garden core: game logic, words, tests (task-001)
+* | 29e540e task-001 verdict: ADOPT candidate A (Word Garden core engine)
+* | ad882a9 task-001: anonymized candidate diffs and gate notes (5/5 gate pass)
+|/  
+* 2252efa Seed Word Garden project: spec, fleet config, task-001 brief

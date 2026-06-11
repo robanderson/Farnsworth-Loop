@@ -1,0 +1,27 @@
+{
+  "A": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "passed": true
+  },
+  "B": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "passed": true
+  },
+  "C": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "passed": true
+  },
+  "D": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "passed": true
+  },
+  "E": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "passed": true
+  }
+}

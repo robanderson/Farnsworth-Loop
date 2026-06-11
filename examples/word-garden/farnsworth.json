@@ -1,0 +1,31 @@
+{
+  "workers": [
+    {
+      "id": "w1",
+      "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-haiku-4-5", "--permission-mode", "acceptEdits", "--output-format", "json"]
+    },
+    {
+      "id": "w2",
+      "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-haiku-4-5", "--permission-mode", "acceptEdits", "--output-format", "json"]
+    },
+    {
+      "id": "w3",
+      "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits", "--output-format", "json"]
+    },
+    {
+      "id": "w4",
+      "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits", "--output-format", "json"]
+    },
+    {
+      "id": "w5",
+      "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-opus-4-8", "--permission-mode", "acceptEdits", "--output-format", "json"]
+    }
+  ],
+  "reviewer": {
+    "command": ["claude", "-p", "{prompt}", "--bare", "--model", "claude-opus-4-8", "--permission-mode", "acceptEdits", "--output-format", "json"]
+  },
+  "gate": [
+    {"name": "tests", "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]},
+    {"name": "compile", "command": ["python3", "-m", "compileall", "-q", "word_garden"]}
+  ]
+}

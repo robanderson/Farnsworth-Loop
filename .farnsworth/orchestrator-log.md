@@ -104,3 +104,24 @@ Win rate by model: Opus 1, Haiku 1, Sonnet 0.
 The chart that matters (gate success over merged tasks) needs more points;
 the leading indicator we can already see is field quality: violations per
 round went 2 -> 0 once tips entered the briefing.
+
+---
+
+## Word Garden example — first external project (2026-06-11)
+
+The loop's first run against a project that is not itself:
+`examples/word-garden/`, a terminal word-guessing game built in two
+iterations (5-worker tournament for the core engine, triaged 3-worker
+tournament for the UI; both verdicts ADOPT). Full forensics and the
+process report live with the example: `examples/README.md` and
+`examples/word-garden/.farnsworth/orchestrator-log.md`.
+
+Headline: the thesis generalized. No-tips round won by Opus; tips-in-
+briefing round won by Sonnet over Opus, with field defects falling from
+one gate-passing logic bug to zero. New process lessons folded into the
+PRD (Section 12, risk table, Section 7 measurement notes): distill tips
+in contract language, not advisory language; triage lowers absolute cost
+but raises the reviewer's share of spend; per-task gate extensions are
+worth first-class support; manual agent dispatch is the working fallback
+where nested `claude -p` cannot authenticate; seed repos with
+`commit.gpgsign=false` under signing-enforced hosts.

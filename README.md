@@ -150,6 +150,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Measurement note from dogfooding: gate rate saturated immediately (5/5 both rounds), so it is a weak early signal on small tasks. The discriminating early metrics turned out to be field quality (spec/hygiene violations per round: 2 then 0) and reviewer-found defects in gate-passing candidates (2 per round so far) — the gate cannot see contract faithfulness. Track these alongside the headline chart.*
 
+*Second measurement note from the Word Garden example: track per-ATTEMPT cost alongside per-model win rate — in the 5-way round, Opus won with the fewest tokens of the field (~31k, 12 tool calls) while a Haiku burned ~76k/64 calls on a weaker candidate; "cheap model" and "cheap attempt" are different quantities. And under triage the reviewer's SHARE of spend rises (50% -> 68% observed) even as absolute cost falls, because review depth is fixed while the field shrinks.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -165,6 +167,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
+|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example                  |
+|Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 
 ## 9. Milestones
 
@@ -210,6 +214,37 @@ What we learned, in order of importance:
 3. **Tips raise the floor, fast.** Hygiene/spec violations went 2 → 0 in one cycle, including in the same model tier that committed them.
 4. **Reviewer spend is the scaling pressure** (~half of worker spend per task). The triage rule (Section 8) and consolidation pass (Section 6) are economic necessities, not nice-to-haves.
 5. **Weak tests are the blind spot.** A worker's bug survived its own suite because the test asserted only the negative. The distilled rule — assert the positive — is now in every future briefing.
+
+## 12. First External Project: Word Garden (examples/word-garden)
+
+The loop's first non-self subject: a small terminal word-guessing game,
+built in two iterations on 2026-06-11 (full forensic record and process
+report in [`examples/`](examples/README.md)). Run in manual agent-dispatch
+mode (Section 8, auth risk row); protocol otherwise per this PRD.
+
+| Metric | task-001 (no tips, 5 workers) | task-002 (21 tips, 3 workers triaged) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 3/3 |
+| Correctness bugs found in gate-passing field | 1 | 0 |
+| Verdict | adopt | adopt |
+| Winning model | **Opus 4.8** | **Sonnet 4.6** |
+| Worker agent tokens | ~223k | ~122k |
+| Reviewer agent tokens (share) | ~112k (50%) | ~83k (68%) |
+
+What it added to the loop's evidence base:
+
+1. **The thesis generalizes.** Third consecutive round across two projects
+   where the win moved down the cost ladder exactly when distilled tips
+   entered the briefing — and the field's defect rate fell to zero.
+2. **Tips need contract language.** Round-1 lessons phrased as "MUST"
+   were universally absorbed; the one phrased as "prefer..." was missed by
+   all three round-2 workers. The reviewer now distills imperatively.
+3. **Triage trade-off quantified.** Absolute cost down ~45%; reviewer share
+   of spend up 50% -> 68%. Consolidation and review-depth scaling are the
+   binding economic constraints, exactly as Section 8 predicted.
+4. **Per-task gate extensions work.** Cheap orchestrator-added mechanical
+   checks (piped-EOF exit, base-files-untouched) belong in the gate config
+   as first-class per-task entries — queued for M4's triage work.
 
 -----
 
