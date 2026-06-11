@@ -1,8 +1,10 @@
+# Good News, Everyone!
+
 # Farnsworth Loop: Reference Implementation PRD
 
 **Author:** Rob Anderson
 **Date:** 12 June 2026
-**Status:** Draft v1.0
+**Status:** Draft v1.1 (revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date)
 **Repo:** farnsworth-loop
 
 -----
@@ -18,6 +20,8 @@ Agent loops differ on one axis: what flows through the feedback path.
 The defining property: **failures are not wasted tokens, they are gotchas passed forward.** Knowledge compounds in the context layer, where it is inspectable, diffable, and versioned in git alongside the code it describes.
 
 This PRD specifies a minimal reference implementation using the Anthropic ecosystem only.
+
+> **Dogfooding status:** M1 and M2 were themselves built by running the loop — five blind parallel workers per task, mechanical gate, anonymized Opus review, verdict, distillation. The thesis has its first data: the round-1 winner (empty tips file) was Opus; the round-2 winner (14 distilled lessons in the briefing) was Haiku. Same models, better project. See Section 11 and `.farnsworth/orchestrator-log.md`.
 
 ## 2. Core Loop
 
@@ -55,7 +59,7 @@ All roles run Claude Code headless (`claude -p`) within the Anthropic ecosystem.
 |Worker                |Sonnet 4.6 (`claude-sonnet-4-6`)|2    |Blind implementation attempts                                                                        |
 |Worker                |Opus 4.8 (`claude-opus-4-8`)    |1    |Blind implementation attempts (strongest independent candidate)                                      |
 
-Worker diversity note: within one model family, diversity comes from capability tiers rather than architecture. The 2x Haiku / 2x Sonnet / 1x Opus mix is also an experiment in itself: per-model win rates (Section 7) will show whether cheap workers plus a strong reviewer match expensive workers, which is the economic question the loop exists to answer.
+Worker diversity note: within one model family, diversity comes from capability tiers rather than architecture. The 2x Haiku / 2x Sonnet / 1x Opus mix is also an experiment in itself: per-model win rates (Section 7) will show whether cheap workers plus a strong reviewer match expensive workers, which is the economic question the loop exists to answer. *Early returns (Section 11): after one distillation cycle, a Haiku worker won the tournament outright.*
 
 ## 4. Mechanism
 
@@ -107,7 +111,7 @@ Rules:
 
 ### 4.3 State and audit
 
-All loop state is file-based and inspectable: task briefs, candidate diffs, gate results, review documents, verdicts, and the tips file all live in the repo (under `.farnsworth/` for per-task artifacts). No database. A human can reconstruct any decision from git history alone.
+All loop state is file-based and inspectable: task briefs, candidate diffs, gate results, review documents, verdicts, and the tips file all live in the repo (under `.farnsworth/` for per-task artifacts). No database. A human can reconstruct any decision from git history alone. The orchestrator additionally keeps a running process-findings journal in `.farnsworth/orchestrator-log.md`, written after each merge.
 
 ## 5. MVP Scope
 
@@ -144,6 +148,8 @@ Explicit non-goals (MVP):
 
 All metrics derive from the per-task JSON logs; a single script renders the dashboard. The chart that matters: gate success rate (y) against merged task count (x). Up and to the right means Farnsworth is learning.
 
+*Measurement note from dogfooding: gate rate saturated immediately (5/5 both rounds), so it is a weak early signal on small tasks. The discriminating early metrics turned out to be field quality (spec/hygiene violations per round: 2 then 0) and reviewer-found defects in gate-passing candidates (2 per round so far) — the gate cannot see contract faithfulness. Track these alongside the headline chart.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -155,13 +161,16 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Workers editing their own briefing      |`.code-tips.md` writable by reviewer role only; enforced in dispatch wrapper                                                                                             |
 |Frankenstein merges                     |Verdict is select-or-author, never splice; cross-candidate ideas only via instructed revision of one coherent base                                                       |
 |Runaway cost on routine tasks           |Tournament is for ambiguous/consequential/previously-failed tasks; orchestrator may dispatch a single Sonnet worker for routine ones (triage rule in orchestrator prompt)|
+|Reviewer cost dominates                 |*(observed in dogfooding: reviewer ~51–54% of worker spend)* Triage rule plus consolidation keep review depth where it pays; routine tasks skip the tournament            |
+|Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
+|Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
 
 ## 9. Milestones
 
-1. **M1, Skeleton:** dispatch + worktrees + gate, single Haiku worker, no review. Proves plumbing.
-1. **M2, Tournament:** full 5-worker blind dispatch, anonymized review, three-outcome verdict, manual merge.
-1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass. The loop is now a Farnsworth Loop.
+1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
+1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
+1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI. (The lifecycle is already running manually — two distillation commits so far — M3 moves it into the tool.)
 1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule.
 1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README.
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
@@ -170,16 +179,37 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 Later agents and reviewers score the implementation against this checklist:
 
-- [ ] Workers are blind: no candidate ever enters another worker’s context in the same round.
-- [ ] Workers never write `.code-tips.md`.
-- [ ] Review is anonymized and order-randomized.
-- [ ] Every verdict is exactly one of adopt / synthesize / escalate, recorded in the task log.
-- [ ] Reviewer’s blind sketch exists before candidate review in every synthesize verdict.
-- [ ] Every tips entry has date + provenance.
-- [ ] Round 2 workers receive updated tips but no round 1 diffs.
-- [ ] All decisions reconstructible from git history alone (no hidden state).
-- [ ] A human can read `.code-tips.md` in under two minutes (consolidation is working).
-- [ ] Gate-success-over-time chart exists and is generated from real run logs.
+- [x] Workers are blind: no candidate ever enters another worker’s context in the same round. *(tasks 001–002: isolated worktrees, no cross-contamination)*
+- [x] Workers never write `.code-tips.md`. *(one task-001 worker committed the seed file byte-identical — flagged in review, rule distilled, zero recurrence in task-002)*
+- [x] Review is anonymized and order-randomized. *(labels shuffled; attribution sealed outside the repo until post-verdict)*
+- [x] Every verdict is exactly one of adopt / synthesize / escalate, recorded in the task log. *(2/2 recorded in run.json)*
+- [x] Reviewer’s blind sketch exists before candidate review in every synthesize verdict. *(blind sketch produced in both reviews, though both verdicts were adopt)*
+- [x] Every tips entry has date + provenance.
+- [ ] Round 2 workers receive updated tips but no round 1 diffs. *(not yet exercised — no divergence trigger so far)*
+- [x] All decisions reconstructible from git history alone (no hidden state).
+- [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
+- [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; two data points banked)*
+
+## 11. Dogfooding Findings (tasks 001–002)
+
+The loop built itself: M1 and M2 were each produced by a manually-orchestrated Farnsworth iteration (the orchestrator and reviewer were agents; the tool under construction became the thing it automates). Full process journal: `.farnsworth/orchestrator-log.md`. Per-task forensics: `.farnsworth/task-001/`, `.farnsworth/task-002/`.
+
+| Metric | task-001 (empty tips) | task-002 (14 lessons injected) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 5/5 |
+| Spec/hygiene violations in field | 2 | 0 |
+| Verdict | adopt | adopt |
+| Winning model | **Opus 4.8** | **Haiku 4.5** |
+| Worker tokens | ~244k | ~390k |
+| Reviewer tokens | ~124k | ~212k |
+
+What we learned, in order of importance:
+
+1. **The thesis held on first contact.** With an empty tips file, the strongest model won. One distillation cycle later, the cheapest model won — on contract faithfulness, against two Sonnets and an Opus. The models never got smarter; the briefing did.
+2. **The gate filters mechanics; the review filters meaning.** All ten candidates across both rounds passed the gate. The review then found, in gate-passing code: spec deviations, a silently-dropped-autopsy logic bug, and a run.json contract violation. Semantic review is not optional polish — it is the loop's actual quality filter.
+3. **Tips raise the floor, fast.** Hygiene/spec violations went 2 → 0 in one cycle, including in the same model tier that committed them.
+4. **Reviewer spend is the scaling pressure** (~half of worker spend per task). The triage rule (Section 8) and consolidation pass (Section 6) are economic necessities, not nice-to-haves.
+5. **Weak tests are the blind spot.** A worker's bug survived its own suite because the test asserted only the negative. The distilled rule — assert the positive — is now in every future briefing.
 
 -----
 
