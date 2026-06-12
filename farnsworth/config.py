@@ -13,7 +13,11 @@ import os
 
 DEFAULT_CONFIG_NAME = "farnsworth.json"
 
-# Used when no config file is found. Mirrors the schema in the task brief.
+# Used when no config file is found. The worker command is the form
+# word-garden-4's pre-flight proved runnable: `--setting-sources ""` isolates
+# without killing OAuth/keychain auth the way `--bare` does, and the scoped
+# --allowedTools grants are what headless acceptEdits workers need to test
+# and commit (PRD Section 8, the two config-fatality rows).
 DEFAULT_CONFIG = {
     "workers": [
         {
@@ -22,11 +26,15 @@ DEFAULT_CONFIG = {
                 "claude",
                 "-p",
                 "{prompt}",
-                "--bare",
+                "--setting-sources",
+                "",
                 "--model",
                 "claude-haiku-4-5",
                 "--permission-mode",
                 "acceptEdits",
+                "--allowedTools",
+                "Bash(python3:*)",
+                "Bash(git:*)",
                 "--output-format",
                 "json",
             ],
@@ -290,14 +298,17 @@ class Config:
         return cls(workers, reviewer, normalized_gate, goal)
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, explicit=False):
         """Load config from ``path``; fall back to DEFAULT_CONFIG if absent.
 
-        If ``path`` is provided explicitly but does not exist, that is an
-        error. If ``path`` is the default location and is absent, the built-in
-        DEFAULT_CONFIG is used.
+        When ``explicit`` is true a missing ``path`` is a ConfigError: a
+        typo'd ``--config`` must never silently dispatch the built-in
+        default fleet (a dispatch config is a runtime contract — PRD
+        Section 8). Only the default location may fall back when absent.
         """
         if path is None or not os.path.exists(path):
+            if explicit and path is not None:
+                raise ConfigError("config not found: {0}".format(path))
             return cls.from_dict(DEFAULT_CONFIG)
         with open(path, "r", encoding="utf-8") as fh:
             try:

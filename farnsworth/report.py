@@ -25,6 +25,10 @@ def _gate_cell(worker):
     return "FAIL"
 
 
+def _cost_cell(cost):
+    return "${0:.2f}".format(cost) if isinstance(cost, (int, float)) else "-"
+
+
 def summary_table(run_log):
     """Render the short what-happened table for one task run."""
     review = run_log.get("review")
@@ -46,26 +50,50 @@ def summary_table(run_log):
             run_log["finished_at"],
         )
     )
+    divergence = run_log.get("divergence")
+    if divergence and isinstance(divergence.get("score"), (int, float)):
+        lines.append("")
+        lines.append(
+            "Field divergence ({0}): {1:.2f} across {2} candidates.".format(
+                divergence.get("metric", "?"),
+                divergence["score"],
+                divergence.get("candidates", "?"),
+            )
+        )
     lines.append("")
-    lines.append("| Worker | Focus | Exit | Gate | Candidate | Result |")
-    lines.append("|---|---|---:|---|---|---|")
+    # Costs render only when at least one is on record, so legacy logs keep
+    # their original table shape.
+    with_cost = any(
+        isinstance(w.get("cost_usd"), (int, float)) for w in run_log["workers"]
+    )
+    if with_cost:
+        lines.append("| Worker | Focus | Exit | Gate | Candidate | Cost | Result |")
+        lines.append("|---|---|---:|---|---|---:|---|")
+    else:
+        lines.append("| Worker | Focus | Exit | Gate | Candidate | Result |")
+        lines.append("|---|---|---:|---|---|---|")
     for worker in run_log["workers"]:
         label = worker.get("candidate_label") or "-"
         result = "ADOPTED" if adopted is not None and label == adopted else ""
         exit_code = worker.get("exit_code")
-        lines.append(
-            "| {0} | {1} | {2} | {3} | {4} | {5} |".format(
-                worker["id"],
-                worker.get("focus") or "-",
-                # Delegate-mode agents are managed by the host session and
-                # have no recorded exit code.
-                "-" if exit_code is None else exit_code,
-                _gate_cell(worker),
-                label,
-                result,
-            )
-        )
+        cells = [
+            worker["id"],
+            worker.get("focus") or "-",
+            # Delegate-mode agents are managed by the host session and
+            # have no recorded exit code.
+            "-" if exit_code is None else exit_code,
+            _gate_cell(worker),
+            label,
+        ]
+        if with_cost:
+            cells.append(_cost_cell(worker.get("cost_usd")))
+        cells.append(result)
+        lines.append("| " + " | ".join(str(c) for c in cells) + " |")
     lines.append("")
+    review_cost = review.get("cost_usd") if isinstance(review, dict) else None
+    if isinstance(review_cost, (int, float)):
+        lines.append("Reviewer cost: {0}.".format(_cost_cell(review_cost)))
+        lines.append("")
 
     if review is None and verdict is None:
         lines.append("No candidates passed the gate; no review was run.")

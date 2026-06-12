@@ -4,8 +4,25 @@
 
 **Author:** Rob Anderson
 **Date:** 12 June 2026
-**Status:** Draft v1.1 (revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date)
+**Status:** Draft v1.2 (v1.1 revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date; v1.2 folds in the 12 June hardening pass: preflight, metrics, adopt, recorded divergence, mechanical hygiene gate, cost capture, goal artifacts)
 **Repo:** farnsworth-loop
+
+-----
+
+## Quickstart
+
+```bash
+cd your-project                  # a clean git repo with farnsworth.json
+python3 -m farnsworth preflight  # canary the fleet config BEFORE spending
+python3 -m farnsworth run tasks/task-001.md   # dispatch -> gate -> review
+python3 -m farnsworth report task-001         # the thirty-second table
+python3 -m farnsworth adopt task-001 --clean  # merge winner, install tips, sweep
+python3 -m farnsworth done       # goal probe: exit 0 done / 1 keep looping
+python3 -m farnsworth metrics    # cross-run health table from all run.json
+```
+
+Sections 1–2 are the why and the protocol; Section 5 is the CLI's scope;
+the `examples/` directory holds complete forensic records of real runs.
 
 -----
 
@@ -170,7 +187,15 @@ Rules:
   acceptance criteria are met by the merged state (the same
   gate-vs-review division as Section 2's steps — the done checks filter
   mechanics, the reviewer filters meaning). Both halves are required to
-  stop with outcome DONE.
+  stop with outcome DONE. Both halves leave artifacts: every probe writes
+  `.farnsworth/done-checks.json` (git history is the series — the raw
+  material for STALLED detection), and a mechanical pass writes
+  `.farnsworth/attestation-briefing.md`, the reviewer protocol for the
+  semantic half (enumerate criteria, verify empirically, write
+  `attestation.md` + `attestation.json` with `goal_met`). The CLI writes
+  the protocol for the same reason it writes the review briefing: a
+  protocol traveling inside an orchestrator prompt is a protocol that
+  drifts.
 - **Exactly four exits.** DONE (both halves pass); ESCALATED (a change
   request blocks all remaining work pending a human); STOPPED (a
   human-set budget or iteration cap ran out); STALLED (no measurable
@@ -311,7 +336,9 @@ artifact, and re-dispatches only the phases whose artifacts are missing.
 
 All loop state is file-based and inspectable: task briefs, candidate diffs, gate results, review documents, verdicts, and the tips file all live in the repo (under `.farnsworth/` for per-task artifacts). No database. A human can reconstruct any decision from git history alone. The orchestrator additionally keeps a running process-findings journal in `.farnsworth/orchestrator-log.md`, written after each merge.
 
-Every run additionally produces a short what-happened table — one row per worker (id, focus, exit, gate, candidate label, ADOPTED marker) plus the verdict and reasoning — written to `.farnsworth/<task-id>/summary.md`, printed at the end of `farnsworth run`, and reprintable any time with `farnsworth report <task-id>`. The table is the thirty-second read; `run.json` remains the contract of record.
+Every run additionally produces a short what-happened table — one row per worker (id, focus, exit, gate, candidate label, ADOPTED marker, dollar cost when recorded) plus the verdict and reasoning — written to `.farnsworth/<task-id>/summary.md`, printed at the end of `farnsworth run`, and reprintable any time with `farnsworth report <task-id>`. The table is the thirty-second read; `run.json` remains the contract of record.
+
+Three more fields ride in `run.json` since v1.2: per-worker `cost_usd` (parsed from the worker's `--output-format json` stdout in subprocess mode; in delegate mode an orchestrator-recorded ledger field, since host-session subagents have no cost stream), the review's `cost_usd`, and a top-level `divergence` block — the round's content-based field-divergence score (mean pairwise token-Jaccard distance across candidate diffs). The divergence number is RECORDED, not yet acted on: four runs proved file footprints identical even under deliberate diversification, so the M4 trigger threshold must be calibrated from accumulated content-based scores before two-round mode can wire to it. `farnsworth metrics` aggregates all of this across every recorded run.
 
 Whenever a verdict merges code, the summary also carries a reviewer-authored **progression note** (`review.progression` in `run.json`): how the merged code advances the previously adopted baseline — what it built on, what is new, what got better relative to the prior merged state, and which distilled lessons it visibly absorbed. The verdict reasoning explains why the winner beat the *field*; the progression note explains how the *project* moved. Without it, a reader of task-N's summary learns who won round N but not what round N added to rounds 1..N-1 — the exact question an outside user asks first. The reviewer writes it post-verdict (it has the cross-candidate and cross-task view); the orchestrator records it in `run.json` so `farnsworth report` reproduces it from the log alone. Under a re-shot task (Section 2.3) the baseline is the previous *attempt*, and the progression note becomes the loop's learning measurement itself: how attempt 2 improved on attempt 1.
 
@@ -330,7 +357,12 @@ In scope:
 - JSON run log per task with per-model costs (from `--output-format json`)
 - Run summary table: `.farnsworth/<task-id>/summary.md` + `farnsworth report <task-id>`, including the reviewer's progression note on merging verdicts (Section 4.4)
 - Housekeeping: per-command `timeout_seconds` and `farnsworth clean <task-id>` (Section 4.3)
-- Loop termination contract: `goal` config + `farnsworth done` (Section 2.4)
+- Loop termination contract: `goal` config + `farnsworth done` (Section 2.4), with recorded probe results and a CLI-written attestation briefing
+- `farnsworth preflight`: mechanical canary of the fleet config — parse, clean tree, green gate at base, and per-worker edit+commit capability in a scratch worktree (the two observed config-fatality classes) — before a tournament spends real money
+- `farnsworth adopt <task-id> [--clean]`: merge the verdict's winner, install the reviewer's `code-tips.next.md`, surface `seed-tips.next.md` for seed-pile routing, count adopted tasks toward the Section 6 consolidation cadence
+- `farnsworth metrics [root ...]`: the cross-run health table (Section 7) aggregated from every `run.json` on disk
+- Mechanical hygiene gate: candidates that modify `.code-tips.md`, the fleet config, or the task brief fail the gate with an autopsy, in both dispatch modes
+- Per-worker `cost_usd` capture (subprocess mode) and recorded content-based `divergence` per round (Section 4.4)
 
 Explicit non-goals (MVP):
 
@@ -342,7 +374,7 @@ Explicit non-goals (MVP):
 
 ## 6. Maintenance Loops
 
-- **Consolidation pass:** every N merged tasks (default 10), the reviewer audits `.code-tips.md` against the current codebase: merge duplicates, retire stale entries (with a tombstone note in the commit), and compress. This is doc-rot management as a first-class scheduled job.
+- **Consolidation pass:** every N merged tasks (default 10), the reviewer audits `.code-tips.md` against the current codebase: merge duplicates, retire stale entries (with a tombstone note in the commit), and compress. This is doc-rot management as a first-class scheduled job. *(The cadence is now counted: `farnsworth adopt` tallies adopted tasks from the run logs and announces when the pass is due — nothing counted N before, which is why no consolidation was ever triggered.)*
 - **Escalation queue:** CRs filed by the reviewer accumulate as issues for human ratification. The loop may continue on unaffected tasks while a CR is pending.
 
 ## 7. Metrics (the loop’s own health)
@@ -393,14 +425,17 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |`--bare` workers cannot authenticate on subscription hosts|*(observed: Word Garden 4 pre-flight — `--bare` never reads OAuth/keychain, so every dispatch dies "Not logged in")* Use `--setting-sources ""` for isolation instead; reserve `--bare` for API-key/apiKeyHelper hosts. Canary-test the config before any tournament|
 |Headless permission mode starves workers of tools|*(observed: Word Garden 4 pre-flight — headless `acceptEdits` denies ALL Bash; workers could edit but not test or commit, so every candidate would gate empty)* Scoped `--allowedTools "Bash(python3:*)" "Bash(git:*)"` in the worker command; a `farnsworth preflight` canary command is queued|
 |Gate passes a worker that never committed|*(observed live: Word Garden 4 task-002 — a worker left all its work untracked; the gate ran in the worktree and passed while the candidate diff `base..HEAD` was empty, so the briefing vouched for a 0-line candidate)* Enforced in code since 2026-06-12: no commits on the branch = gate failure with autopsy, uncommitted work archived to `<id>-uncommitted.diff`, empty diffs never take a label. The reviewer's empirical probe is the backstop and caught it live|
+|Typo'd `--config` silently dispatches the default fleet|*(found in review 2026-06-12: `Config.load` fell back to the built-in default config — whose old form carried the `--bare` flag proven 100% fatal — whenever the named path was missing, contradicting its own docstring)* Fixed in code: an explicitly named config that does not exist is an error in every subcommand; relative `--config` paths anchor at the repo root uniformly; the built-in default worker command now uses the word-garden-4-proven `--setting-sources ""` + scoped `--allowedTools` form. `farnsworth preflight` is the standing defence|
+|Workers briefed without rules of engagement (subprocess mode)|*(found in review 2026-06-12: the worker preamble — commit contract, tips-file hygiene, blindness — existed only in delegate dispatch; word-garden-4's non-committing worker was a subprocess run)* The preamble is shared by both dispatch modes, and the hygiene rules are also enforced mechanically: a candidate whose commits touch `.code-tips.md`, the fleet config, or the task brief fails the gate with an autopsy|
+|Re-gating serves stale labels to the reviewer|*(found in review 2026-06-12: `farnsworth gate` re-runs — the documented recovery for hung subagents — reshuffled labels but left previous labels' diffs in `candidates/` and never refreshed an existing review environment)* Fixed in code: re-gate sweeps the candidates dir before relabeling and refreshes the served diffs in an already-constructed review env — the word-garden-5 briefed-path bug class, closed from the other side|
 
 ## 9. Milestones
 
 1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
 1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
-1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips. *(Three pieces shipped 2026-06-12 and live-validated in Word Garden 5: the CLI review briefing now instructs the reviewer to produce `code-tips.next.md` — the complete next tips file, installed by the orchestrator post-merge; seed v2 carried the first GENERALIZED entry, which suppressed its defect class across the whole field; and the seed pile is now a first-class artifact at [`seed-tips.md`](seed-tips.md) — copy it into a new project's `.code-tips.md` before round 1, and route every "general form" a reviewer distills back into it. Word Garden 4 added the boundary from the other side: a seed transfers MECHANICAL rule classes — its argparse entry suppressed run 2's defect — but not SEMANTIC state contracts, whose defect class recurred until the project's own round 1 distilled the specific tip; see Section 15.)*
-1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from four runs — including Word Garden 5 at whole-program grain: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks. Word Garden 4's live tournament added: foci modulate style, not the correctness floor — the test-rigor-focused Haiku still shipped the flag-only-assertion defect, so tier dominates focus. Disagreement-scaled review depth is queued here too: run 4's reviewer cost crossed 100% of worker spend in dollar terms.)*
-1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six prior recorded runs. Word Garden 4 added the first dollar-true cost rows from live `--output-format json` runs.)*
+1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips — and since 2026-06-12 the CLI's review briefing carries that instruction itself (general forms go to `seed-tips.next.md`, which `farnsworth adopt` surfaces for routing into the seed pile; the tips install is mechanized by `adopt` too). *(Three pieces shipped 2026-06-12 and live-validated in Word Garden 5: the CLI review briefing now instructs the reviewer to produce `code-tips.next.md` — the complete next tips file, installed by the orchestrator post-merge; seed v2 carried the first GENERALIZED entry, which suppressed its defect class across the whole field; and the seed pile is now a first-class artifact at [`seed-tips.md`](seed-tips.md) — copy it into a new project's `.code-tips.md` before round 1, and route every "general form" a reviewer distills back into it. Word Garden 4 added the boundary from the other side: a seed transfers MECHANICAL rule classes — its argparse entry suppressed run 2's defect — but not SEMANTIC state contracts, whose defect class recurred until the project's own round 1 distilled the specific tip; see Section 15.)*
+1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from four runs — including Word Garden 5 at whole-program grain: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks. The content-based metric shipped 2026-06-12: mean pairwise token-Jaccard distance over candidate diffs, recorded as `divergence` in every run.json — recording-only until enough rounds calibrate a trigger threshold. Word Garden 4's live tournament added: foci modulate style, not the correctness floor — the test-rigor-focused Haiku still shipped the flag-only-assertion defect, so tier dominates focus. Disagreement-scaled review depth is queued here too: run 4's reviewer cost crossed 100% of worker spend in dollar terms.)*
+1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six prior recorded runs. Word Garden 4 added the first dollar-true cost rows from live `--output-format json` runs — and the CLI now parses `total_cost_usd` into run.json itself. Second piece shipped 2026-06-12: `farnsworth metrics` aggregates every run.json under the given roots into the cross-run table — verdict distribution, gate-rate-over-tasks chart data, per-model wins, divergence, dollar costs. Rendering the chart image remains open.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 
 ## 10. Acceptance Criteria (faithfulness contract)
@@ -416,7 +451,7 @@ Later agents and reviewers score the implementation against this checklist:
 - [ ] Round 2 workers receive updated tips but no round 1 diffs. *(not yet exercised — no divergence trigger so far)*
 - [x] All decisions reconstructible from git history alone (no hidden state).
 - [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
-- [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; six data points banked)*
+- [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; the chart DATA now comes from `farnsworth metrics` over the banked run logs — the rendered chart itself is still open)*
 - [x] Every run yields a `summary.md` table a human can read in thirty seconds; `farnsworth report <task-id>` reprints it from `run.json` alone.
 - [x] Every merging verdict's summary carries a progression note explaining how the adopted code advances the previously adopted baseline, not just why it beat the field. *(introduced 2026-06-12 after Word Garden 3; present for both of that run's tasks)*
 - [x] Focus directives never reach the reviewer attributed to a candidate or worker id; each worker sees only its own focus.
