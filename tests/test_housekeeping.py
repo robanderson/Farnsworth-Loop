@@ -154,7 +154,12 @@ class TestClean(LoopTestBase):
 
         report = clean("task-042", cwd=self.repo)
 
-        self.assertEqual(report["removed_worktrees"], [worktree])
+        # Compare resolved paths: git canonicalizes symlinked tempdirs
+        # (macOS /var -> /private/var) in worktree paths.
+        self.assertEqual(
+            [os.path.realpath(p) for p in report["removed_worktrees"]],
+            [os.path.realpath(worktree)],
+        )
         self.assertEqual(report["removed_branches"], ["task-042-w1"])
         self.assertEqual(report["skipped"], [])
         self.assertFalse(os.path.exists(worktree))
@@ -186,7 +191,10 @@ class TestClean(LoopTestBase):
         self.assertTrue(os.path.isdir(worktree))
 
         report = clean("task-042", cwd=self.repo, force=True)
-        self.assertEqual(report["removed_worktrees"], [worktree])
+        self.assertEqual(
+            [os.path.realpath(p) for p in report["removed_worktrees"]],
+            [os.path.realpath(worktree)],
+        )
         self.assertFalse(os.path.exists(worktree))
 
     def test_clean_ignores_other_tasks_and_main_worktree(self):
@@ -208,7 +216,11 @@ class TestClean(LoopTestBase):
             fh.write("{}")
 
         report = clean("task-042", cwd=self.repo)
-        self.assertEqual(report["removed_review_env"], review_env)
+        # realpath: git/getcwd canonicalize symlinked tempdirs on macOS.
+        self.assertEqual(
+            os.path.realpath(report["removed_review_env"]),
+            os.path.realpath(review_env),
+        )
         self.assertFalse(os.path.exists(review_env))
 
     def test_clean_keeps_review_env_without_verdict_unless_forced(self):
@@ -223,11 +235,17 @@ class TestClean(LoopTestBase):
         self.assertIsNone(report["removed_review_env"])
         self.assertTrue(os.path.isdir(review_env))
         self.assertTrue(
-            any(e["path"] == review_env for e in report["skipped"])
+            any(
+                os.path.realpath(e["path"]) == os.path.realpath(review_env)
+                for e in report["skipped"]
+            )
         )
 
         report = clean("task-042", cwd=self.repo, force=True)
-        self.assertEqual(report["removed_review_env"], review_env)
+        self.assertEqual(
+            os.path.realpath(report["removed_review_env"]),
+            os.path.realpath(review_env),
+        )
         self.assertFalse(os.path.exists(review_env))
 
     def test_cli_clean_exit_codes(self):
@@ -244,3 +262,33 @@ class TestClean(LoopTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCleanFromInsideWorktree(LoopTestBase):
+    def test_clean_resolves_main_repo_from_linked_worktree(self):
+        # Reproduces the word-garden-4 task-002 sweep failure: clean invoked
+        # with cwd INSIDE a linked worktree must target the main repo, not
+        # protect the worktree as "the main worktree" while deleting its
+        # branch out from under it.
+        brief = self._write_brief(name="task-042.md")
+        cfg_path = self._config_file_dict(
+            {
+                "workers": [
+                    {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]}
+                ],
+                "gate": FAIL_GATE,
+            }
+        )
+        worktree = os.path.join(self.tmp, "task-042-w1")
+        self._worktrees.append(worktree)
+        run(brief, config_path=cfg_path, cwd=self.repo)
+        self.assertTrue(os.path.isdir(worktree))
+
+        report = clean("task-042", cwd=worktree, force=True)
+
+        self.assertEqual(report["skipped"], [])
+        self.assertEqual(len(report["removed_worktrees"]), 1)
+        self.assertIn("task-042-w1", report["removed_branches"])
+        self.assertFalse(os.path.exists(worktree))
+        # The main repo is untouched.
+        self.assertTrue(os.path.isdir(os.path.join(self.repo, ".git")))

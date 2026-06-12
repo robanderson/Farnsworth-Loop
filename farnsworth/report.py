@@ -52,11 +52,14 @@ def summary_table(run_log):
     for worker in run_log["workers"]:
         label = worker.get("candidate_label") or "-"
         result = "ADOPTED" if adopted is not None and label == adopted else ""
+        exit_code = worker.get("exit_code")
         lines.append(
             "| {0} | {1} | {2} | {3} | {4} | {5} |".format(
                 worker["id"],
                 worker.get("focus") or "-",
-                worker["exit_code"],
+                # Delegate-mode agents are managed by the host session and
+                # have no recorded exit code.
+                "-" if exit_code is None else exit_code,
                 _gate_cell(worker),
                 label,
                 result,

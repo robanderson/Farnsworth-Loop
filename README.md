@@ -111,7 +111,7 @@ attempt-1 diffs (the Section 2.2 rule, promoted from a
 divergence-triggered exception to an explicit design choice). Attempt 2
 REPLACES attempt 1; the attempt-1 → attempt-2 delta on an identical
 problem is the cleanest direct measurement of "the project got smarter"
-the loop can produce. Word Garden 5 (Section 15) ran the whole-program
+the loop can produce. Word Garden 5 (Section 16) ran the whole-program
 grain as re-shot attempt 1 under the Section 2.4 goal contract — and
 the goal was met in one iteration, so attempt 2 never triggered. That
 is the re-shot priced correctly: it is a CONTINGENT grain, dispatched
@@ -210,7 +210,44 @@ TASK: $(cat task-brief.md)" \
   --output-format json
 ```
 
-`--bare` keeps workers from inheriting orchestrator config (hooks, skills, CLAUDE.md). The worktree contains the blast radius of `acceptEdits`. Workers commit to their branch; the diff against main is the deliverable.
+`--bare` keeps workers from inheriting orchestrator config (hooks, skills, CLAUDE.md) — but note it also disables OAuth/keychain auth (Section 8), so subscription hosts use `--setting-sources ""` plus scoped `--allowedTools` instead. The worktree contains the blast radius of `acceptEdits`. Workers commit to their branch; the diff against main is the deliverable.
+
+### 4.1b Delegate dispatch (subscription-billed subagents)
+
+Subprocess `claude -p` bills to API / Agent-SDK credit. For Anthropic-model
+workers the default is now **delegate dispatch**: the Claude Code session
+that orchestrates the loop spawns one standard subagent per worker, which
+draws on the subscription instead. A worker entry carries `model` instead
+of `command` (`farnsworth.json` in this repo is the live example); the two
+forms are mutually exclusive per entry, and a fleet must be uniformly one
+mode. Subprocess dispatch remains the adapter for anything that is not an
+Anthropic model (GLM, Codex, local models — Section 5's non-goal stays
+open through `command`).
+
+A Python CLI cannot spawn host-session subagents, so delegate mode makes
+the loop PHASED around the two points where agents work, with every
+mechanical phase staying in the tool:
+
+```bash
+farnsworth run tasks/task-042.md   # worktrees + briefing files + ledger; exit 3
+# host session spawns one subagent per briefing (model per ledger, pinned
+# to its worktree, blind) — subscription billing
+farnsworth gate task-042           # commit check, gate, anonymize, review briefing; exit 3
+# host session spawns the reviewer subagent with review-briefing.md
+farnsworth finalize task-042       # validate verdict.json; run.json + summary.md; exit 0
+```
+
+The phase boundary stays the artifact, never the agent (Section 4.3):
+`gate` trusts only commits in worktrees, `finalize` trusts only a
+validating verdict.json — so hung, duplicated, or vanished subagents are
+absorbed by re-spawning and re-running the phase. The reviewer protocol
+(blind sketch, empirical verification, review.md, verdict, distillation)
+is written by the CLI into `review-briefing.md`, closing the gap where it
+previously had to travel inside the reviewer command template. Exit code 3
+("awaiting delegation") joins the 0/1/2 trichotomy. Known trade-off:
+delegate mode has no per-worker `total_cost_usd` stream, so cost rows in
+the summary come only from subprocess runs; the orchestrator notes
+delegate-round costs in the process log instead.
 
 ### 4.2 The knowledge artifact: `.code-tips.md`
 
@@ -283,6 +320,7 @@ Whenever a verdict merges code, the summary also carries a reviewer-authored **p
 In scope:
 
 - Single-task loop, CLI-invoked: `farnsworth run task-brief.md`
+- Delegate dispatch for Anthropic-model fleets (Section 4.1b): `run` -> `gate` -> `finalize` phases around host-session subagents, subscription-billed
 - Parallel blind dispatch to the 5-worker fleet via worktrees
 - Mechanical gate (configurable build/test/lint commands)
 - Anonymized review with three-outcome verdict
@@ -325,7 +363,9 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Fourth measurement note, from Word Garden 3 (Section 14): count defects per round in two ledgers — BEHAVIORAL bugs and CONTRACT-level deviations — and attribute each to whether a tips entry covered its class. Attribution is the seed experiment's real readout: in run 3, every defect class covered by a seed entry was absent from the field, and the one behavioral bug that shipped was exactly the lesson the domain-general curation rule had excluded from the seed. Also: with foci in play, record the winning FOCUS alongside the winning model; two rounds in, focus-task alignment predicts where candidates invest, not who wins.*
 
-*Fifth measurement note, from Word Garden 5 (Section 15): under the goal contract, add two ledger lines — ITERATIONS-TO-GOAL (the emergent cycle count; the loop's headline efficiency number once goals are the unit of work) and the ATTESTATION dispatch's cost (a fixed per-goal overhead, ~68k tokens in run 5, distinct from per-task review spend). And keep the two defect ledgers honest about novelty: run 5's field had ZERO defects in classes covered by tips, while all four defects found were in classes no tip yet covered (ASCII stage distinctness, dead constants) — the loop's residual defect rate is concentrated precisely where memory hasn't been yet, which is the learning thesis read from the other side.*
+*Fifth measurement note, from Word Garden 5 (Section 16): under the goal contract, add two ledger lines — ITERATIONS-TO-GOAL (the emergent cycle count; the loop's headline efficiency number once goals are the unit of work) and the ATTESTATION dispatch's cost (a fixed per-goal overhead, ~68k tokens in run 5, distinct from per-task review spend). And keep the two defect ledgers honest about novelty: run 5's field had ZERO defects in classes covered by tips, while all four defects found were in classes no tip yet covered (ASCII stage distinctness, dead constants) — the loop's residual defect rate is concentrated precisely where memory hasn't been yet, which is the learning thesis read from the other side.*
+
+*Sixth measurement note, from the fully CLI-dispatched run, Word Garden 4 (Section 15): with dollar-true costs (`total_cost_usd` from the JSON output), the reviewer crossed 100% of worker spend in a 5-way round ($3.61 vs $3.03) — manual-mode token shares understated review's weight. Empirical per-candidate verification is the dominant line item once dispatch is cheap and fast; review depth should scale with field DISAGREEMENT (convergent fields get spot-checks), queued for M4 alongside divergence measurement.*
 
 ## 8. Risks and Mitigations
 
@@ -341,8 +381,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Reviewer cost dominates                 |*(observed in dogfooding: reviewer ~51–54% of worker spend)* Triage rule plus consolidation keep review depth where it pays; routine tasks skip the tournament            |
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
-|Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
-|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example; UPDATED Word Garden 5: auth worked briefly — a real worker built and gate-passed via the CLI — then went intermittent, which is worse than absent: never trust a passing auth probe for a whole run)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for all recorded runs, with Word Garden 5 driving the CLI's own briefing/review-env/report/done code from manual mode                  |
+|Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit. Mitigated structurally: Anthropic-model fleets use delegate dispatch (Section 4.1b), which bills host-session subagents to the subscription; `claude -p` subprocess dispatch remains for non-Anthropic workers or API-key hosts                       |
+|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example; UPDATED Word Garden 5: auth worked briefly — a real worker built and gate-passed via the CLI — then went intermittent, which is worse than absent: never trust a passing auth probe for a whole run)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for most recorded runs, with Word Garden 5 driving the CLI's own briefing/review-env/report/done code from manual mode. Word Garden 4 (Section 15) ran fully CLI-dispatched on subscription OAuth before run 5 hit the intermittency — treat auth as per-run weather: canary every phase, fall back to delegate or manual dispatch when it turns                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 |Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |
 |Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
@@ -350,14 +390,17 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Reviewer environment leaks worker identity |*(observed: Word Garden 3; IMPLEMENTED in the CLI 2026-06-12, first live use Word Garden 5)* A naive clone for the reviewer carries worker-named branches (`task-001-w1`…), and `farnsworth.json` maps ids to models/foci. The CLI now constructs the review environment: exported base tree minus `farnsworth.json` and prior `.farnsworth/` artifacts, re-initialized as a fresh single-commit repo, plus labeled diffs + gate notes ONLY; reviewer artifacts are copied back post-verdict and `farnsworth clean` sweeps the env                                  |
 |Workers "improve" a required signature     |*(observed: Word Garden 3 — an extra `new_game_fn` param forfeited an otherwise-winning candidate)* Briefs and tips state required signatures are exact and CLOSED contracts; proposed improvements go to escalation or a follow-up task, never silently into the diff                          |
 |Pre-planned task pipeline masquerades as the loop|*(observed: a run-4 orchestrator pre-authored "task-001 engine, task-002 UI" before the first dispatch and treated finishing the list as finishing the job)* Section 2.4: one next task per cycle, derived from the goal gap post-merge; `farnsworth done` decides continuation, never a checklist|
+|`--bare` workers cannot authenticate on subscription hosts|*(observed: Word Garden 4 pre-flight — `--bare` never reads OAuth/keychain, so every dispatch dies "Not logged in")* Use `--setting-sources ""` for isolation instead; reserve `--bare` for API-key/apiKeyHelper hosts. Canary-test the config before any tournament|
+|Headless permission mode starves workers of tools|*(observed: Word Garden 4 pre-flight — headless `acceptEdits` denies ALL Bash; workers could edit but not test or commit, so every candidate would gate empty)* Scoped `--allowedTools "Bash(python3:*)" "Bash(git:*)"` in the worker command; a `farnsworth preflight` canary command is queued|
+|Gate passes a worker that never committed|*(observed live: Word Garden 4 task-002 — a worker left all its work untracked; the gate ran in the worktree and passed while the candidate diff `base..HEAD` was empty, so the briefing vouched for a 0-line candidate)* Enforced in code since 2026-06-12: no commits on the branch = gate failure with autopsy, uncommitted work archived to `<id>-uncommitted.diff`, empty diffs never take a label. The reviewer's empirical probe is the backstop and caught it live|
 
 ## 9. Milestones
 
 1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
 1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
-1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips. *(Three pieces shipped 2026-06-12 and live-validated in Word Garden 5: the CLI review briefing now instructs the reviewer to produce `code-tips.next.md` — the complete next tips file, installed by the orchestrator post-merge; seed v2 carried the first GENERALIZED entry, which suppressed its defect class across the whole field; and the seed pile is now a first-class artifact at [`seed-tips.md`](seed-tips.md) — copy it into a new project's `.code-tips.md` before round 1, and route every "general form" a reviewer distills back into it.)*
-1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from four runs — including Word Garden 5 at whole-program grain: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks.)*
-1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six recorded runs.)*
+1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips. *(Three pieces shipped 2026-06-12 and live-validated in Word Garden 5: the CLI review briefing now instructs the reviewer to produce `code-tips.next.md` — the complete next tips file, installed by the orchestrator post-merge; seed v2 carried the first GENERALIZED entry, which suppressed its defect class across the whole field; and the seed pile is now a first-class artifact at [`seed-tips.md`](seed-tips.md) — copy it into a new project's `.code-tips.md` before round 1, and route every "general form" a reviewer distills back into it. Word Garden 4 added the boundary from the other side: a seed transfers MECHANICAL rule classes — its argparse entry suppressed run 2's defect — but not SEMANTIC state contracts, whose defect class recurred until the project's own round 1 distilled the specific tip; see Section 15.)*
+1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from four runs — including Word Garden 5 at whole-program grain: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks. Word Garden 4's live tournament added: foci modulate style, not the correctness floor — the test-rigor-focused Haiku still shipped the flag-only-assertion defect, so tier dominates focus. Disagreement-scaled review depth is queued here too: run 4's reviewer cost crossed 100% of worker spend in dollar terms.)*
+1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six prior recorded runs. Word Garden 4 added the first dollar-true cost rows from live `--output-format json` runs.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 
 ## 10. Acceptance Criteria (faithfulness contract)
@@ -529,7 +572,60 @@ What it settled, sharpened, and surfaced:
    diversification; Haiku spending the field's most motion on a
    non-winning candidate (3 runs for 3).
 
-## 15. The Goal-Driven Run: Word Garden 5 (examples/word-garden-5)
+## 15. The CLI-Dispatched Run: Word Garden 4 (examples/word-garden-4)
+
+The run where the tool drove its own loop end to end (2026-06-12): same
+Word Garden spec, byte-identical task-001 brief, same fleet mix and gate
+as runs 1–2 — every worker and the reviewer dispatched as real `claude -p`
+subprocesses by `python3 -m farnsworth run`, on a host whose subscription
+OAuth let nested headless processes authenticate for the whole run (run 5
+later found that auth can turn intermittent; Section 8). Run 4 happened in
+parallel with run 3's session and independently exercised the same two
+extensions — focus-diversified dispatch (Section 2.1) and a cross-project
+tips seed (13 domain-general entries in round-1 `.code-tips.md`) — so its
+results double as a same-day replication of Section 14's. Full forensics:
+[`examples/word-garden-4/`](examples/word-garden-4/); process report in
+its `.farnsworth/orchestrator-log.md`.
+
+| Metric | task-001 (seed tips, 5 workers) | task-002 (seed + t1 tips, 3 triaged) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 3/3 (one vacuous — empty diff) |
+| Correctness bugs found in gate-passing field | 2 | 1 (+1 non-submission) |
+| Verdict | adopt | adopt |
+| Winning model (focus) | **Sonnet 4.6** (readability) | **Opus 4.8** (spec faithfulness) |
+| Worker cost / reviewer cost | $3.03 / $3.61 (119%) | $3.60 / $3.40 (94%) |
+| Wall clock | 13.5 min | 17 min |
+
+What the run established:
+
+1. **Configs are contracts; pre-flight them.** The fleet config recorded
+   since run 1 had never executed, and canary tests found it 100% fatal
+   twice over (`--bare` kills OAuth; headless `acceptEdits` denies Bash).
+   Two new risk-table rows and a queued `farnsworth preflight` command.
+2. **Seed tips transfer mechanical rules, not semantic ones.** The
+   predicted argparse defect did not recur (seed bans it verbatim); the
+   terminal-message defect class recurred anyway, same count and tier as
+   the seedless replication — the domain-specific state contract must
+   still be learned by THIS project's round 1. Both directions of
+   "memory is project-scoped" now have evidence.
+3. **Tier dominates focus.** First live focus round: foci measurably
+   diversified style and both adopted candidates came from focused
+   workers, but the test-rigor-focused Haiku still shipped the
+   flag-only-assertion defect. A focus is a lens, not a capability tier.
+4. **The loop caught — and now fixes — its own artifact-rule hole.** A
+   no-commit worker gated PASS while its candidate diff was empty; the
+   reviewer's empirical probe caught the 0-line "non-submission" and the
+   verdict survived. The CLI now enforces commits-as-artifact mechanically
+   (gate autopsy "no commits on branch", uncommitted work archived, empty
+   diffs never labeled), plus a second live fix: `clean` now resolves the
+   MAIN repo from inside a linked worktree. Defence in depth — a skeptical
+   review layer — is what made the mechanical hole survivable.
+5. **Wall-clock and dollars are now real numbers.** A full 5-worker
+   tournament with empirical review: 13.5 minutes, ~$6.6. The two-task
+   project: ~45 minutes, ~$13.6. The cheap-workers question (Section 3)
+   can now accumulate dollar-denominated evidence per round.
+
+## 16. The Goal-Driven Run: Word Garden 5 (examples/word-garden-5)
 
 The fifth Word Garden run (2026-06-12) and the first project executed
 under the Section 2.4 termination contract end to end: a goal brief +
@@ -589,7 +685,6 @@ What it settled and surfaced:
    candidate shipped the worst ASCII display); duplicate dispatches
    absorbed by the artifact-boundary rule — this run in the attestation
    phase, a new artifact type, the rule working generically.
-
 -----
 
 *Ralph persists. Karpathy measures. Farnsworth learns.*

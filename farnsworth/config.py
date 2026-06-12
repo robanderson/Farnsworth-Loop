@@ -78,6 +78,38 @@ def _parse_focus(obj, label):
     return focus.strip()
 
 
+def _parse_dispatch(entry, label):
+    """Return (command, model) for a worker/reviewer entry.
+
+    Exactly one of ``command`` (subprocess dispatch, e.g. ``claude -p`` or
+    any non-Anthropic CLI) or ``model`` (delegate dispatch: the host
+    session spawns a subagent on that Anthropic model, which bills to the
+    subscription rather than API credit) must be present.
+    """
+    command = entry.get("command")
+    model = entry.get("model")
+    if (command is None) == (model is None):
+        raise ConfigError(
+            "{0} must have exactly one of 'command' (subprocess dispatch) "
+            "or 'model' (delegate dispatch)".format(label)
+        )
+    if command is not None:
+        if not isinstance(command, list) or not command:
+            raise ConfigError(
+                "{0} command must be a non-empty list".format(label)
+            )
+        if not all(isinstance(arg, str) for arg in command):
+            raise ConfigError(
+                "{0} command entries must be strings".format(label)
+            )
+        return list(command), None
+    if not isinstance(model, str) or not model.strip():
+        raise ConfigError(
+            "{0} model must be a non-empty string".format(label)
+        )
+    return None, model.strip()
+
+
 def _parse_check_list(entries, label):
     """Validate a list of named commands (the gate or the goal's done checks).
 
@@ -114,13 +146,21 @@ class Config:
     """Parsed run configuration."""
 
     def __init__(self, workers, reviewer, gate, goal=None):
-        self.workers = workers  # list of {"id": str, "command": list}
-        self.reviewer = reviewer  # {"command": list} or None
+        self.workers = workers  # list of {"id": str, "command": list|None, "model": str|None}
+        self.reviewer = reviewer  # {"command": list|None, "model": str|None} or None
         self.gate = gate
         # Optional loop-termination contract (Section 2.4 of the PRD):
         # {"brief": str or None, "done": [check, ...]} or None when the
         # project has not declared a goal.
         self.goal = goal
+
+    @property
+    def mode(self):
+        """'delegate' when dispatch is via host-session subagents, else 'subprocess'.
+
+        Mixed fleets are rejected at parse time, so the first worker decides.
+        """
+        return "delegate" if self.workers[0]["model"] else "subprocess"
 
     @classmethod
     def from_dict(cls, data):
@@ -145,21 +185,11 @@ class Config:
                 if not isinstance(entry, dict):
                     raise ConfigError("each worker entry must be an object")
                 worker_id = entry.get("id")
-                command = entry.get("command")
                 if not isinstance(worker_id, str) or not worker_id:
                     raise ConfigError("worker id must be a non-empty string")
-                if not isinstance(command, list) or not command:
-                    raise ConfigError(
-                        "worker '{0}' command must be a non-empty list".format(
-                            worker_id
-                        )
-                    )
-                if not all(isinstance(arg, str) for arg in command):
-                    raise ConfigError(
-                        "worker '{0}' command entries must be strings".format(
-                            worker_id
-                        )
-                    )
+                command, model = _parse_dispatch(
+                    entry, "worker '{0}'".format(worker_id)
+                )
                 # Validate filesystem-safe id (alphanumeric and underscore).
                 if not all(c.isalnum() or c == "_" for c in worker_id):
                     raise ConfigError(
@@ -173,7 +203,8 @@ class Config:
                 workers.append(
                     {
                         "id": worker_id,
-                        "command": list(command),
+                        "command": command,
+                        "model": model,
                         "timeout": _parse_timeout(
                             entry, "worker '{0}'".format(worker_id)
                         ),
@@ -182,18 +213,22 @@ class Config:
                         ),
                     }
                 )
+            modes = {w["model"] is not None for w in workers}
+            if len(modes) > 1:
+                raise ConfigError(
+                    "workers must all use the same dispatch mode: either every "
+                    "entry has 'command' (subprocess) or every entry has "
+                    "'model' (delegate)"
+                )
         elif legacy_worker is not None:
             if not isinstance(legacy_worker, dict):
                 raise ConfigError("legacy worker must be an object")
-            command = legacy_worker.get("command")
-            if not isinstance(command, list) or not command:
-                raise ConfigError("worker.command must be a non-empty list")
-            if not all(isinstance(arg, str) for arg in command):
-                raise ConfigError("worker.command entries must be strings")
+            command, model = _parse_dispatch(legacy_worker, "worker")
             workers = [
                 {
                     "id": "w1",
-                    "command": list(command),
+                    "command": command,
+                    "model": model,
                     "timeout": _parse_timeout(legacy_worker, "worker"),
                     "focus": _parse_focus(legacy_worker, "worker"),
                 }
@@ -207,15 +242,17 @@ class Config:
         if reviewer_obj is not None:
             if not isinstance(reviewer_obj, dict):
                 raise ConfigError("reviewer must be an object")
-            reviewer_command = reviewer_obj.get("command")
-            if not isinstance(reviewer_command, list) or not reviewer_command:
-                raise ConfigError("reviewer.command must be a non-empty list")
-            if not all(isinstance(arg, str) for arg in reviewer_command):
-                raise ConfigError("reviewer.command entries must be strings")
+            command, model = _parse_dispatch(reviewer_obj, "reviewer")
             reviewer = {
-                "command": list(reviewer_command),
+                "command": command,
+                "model": model,
                 "timeout": _parse_timeout(reviewer_obj, "reviewer"),
             }
+            if (model is not None) != (workers[0]["model"] is not None):
+                raise ConfigError(
+                    "reviewer dispatch mode must match the workers' mode "
+                    "(subprocess 'command' vs delegate 'model')"
+                )
 
         # Parse gate.
         gate = data.get("gate")

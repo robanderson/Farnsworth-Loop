@@ -201,6 +201,55 @@ def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
     }
 
 
+def load_and_validate_verdict(artifact_dir, label_to_worker_id):
+    """Load ``verdict.json`` from ``artifact_dir`` and validate the contract.
+
+    The verdict is the review phase's artifact: outcome is exactly one of
+    adopt/synthesize/escalate; adopt names a real candidate label; the
+    other outcomes carry a null candidate. Raises LoopError otherwise.
+    """
+    verdict_path = os.path.join(artifact_dir, "verdict.json")
+    try:
+        with open(verdict_path, "r", encoding="utf-8") as fh:
+            verdict = json.load(fh)
+    except FileNotFoundError:
+        raise LoopError("reviewer did not write verdict.json")
+    except json.JSONDecodeError as exc:
+        raise LoopError("verdict.json is not valid JSON: {0}".format(exc))
+
+    if not isinstance(verdict, dict):
+        raise LoopError("verdict.json root must be a JSON object")
+    for field in ("outcome", "candidate", "reasoning"):
+        if field not in verdict:
+            raise LoopError("verdict.json missing '{0}' field".format(field))
+
+    outcome = verdict["outcome"]
+    candidate_label = verdict["candidate"]
+
+    if outcome not in ("adopt", "synthesize", "escalate"):
+        raise LoopError(
+            "verdict outcome must be one of adopt/synthesize/escalate, got: {0}".format(
+                outcome
+            )
+        )
+
+    if outcome == "adopt":
+        if not candidate_label or candidate_label not in label_to_worker_id:
+            raise LoopError(
+                "outcome is 'adopt' but candidate is missing or invalid: {0}".format(
+                    candidate_label
+                )
+            )
+    else:
+        # synthesize or escalate
+        if candidate_label is not None:
+            raise LoopError(
+                "outcome is '{0}' but candidate should be null, got: {1}".format(
+                    outcome, candidate_label
+                )
+            )
+    return verdict
+
 def review_env_path(task_id, repo_root):
     """Sibling directory holding the constructed review environment."""
     return os.path.join(
@@ -263,9 +312,12 @@ def _copy_back_review_artifacts(review_env, artifact_dir, task_id):
 
 
 def run(brief_path, config_path=None, cwd=None):
-    """Execute the multi-worker loop body with review.
+    """Execute the multi-worker loop body with review (subprocess dispatch).
 
     Returns the run-log dict. Raises LoopError on a precondition failure.
+    Delegate-mode configs must use the phased flow in ``delegate.py``
+    (prepare -> host session spawns subagents -> gate -> reviewer subagent
+    -> finalize); this entry point refuses them.
     """
     cwd = cwd or os.getcwd()
 
@@ -282,6 +334,12 @@ def run(brief_path, config_path=None, cwd=None):
         raise LoopError("task brief not found: {0}".format(brief_path))
 
     config = Config.load(config_path)
+    if config.mode == "delegate":
+        raise LoopError(
+            "config uses delegate dispatch (workers carry 'model'); use "
+            "'farnsworth run' to prepare, have the host session spawn the "
+            "subagents, then 'farnsworth gate' and 'farnsworth finalize'"
+        )
 
     task_id = task_id_from_brief(brief_path)
     parent = os.path.dirname(repo_root)
@@ -349,12 +407,42 @@ def run(brief_path, config_path=None, cwd=None):
         for worker_id, future in futures.items():
             worker_results[worker_id] = future.result()
 
-    # (e) Identify candidates (workers whose gate passed).
+    # (e) Identify candidates (workers whose gate passed AND committed).
+    #
+    # PRD 4.3: commits in the worktree are the phase artifact. The gate runs
+    # in the worktree, where uncommitted files execute fine — but the
+    # candidate diff is base..HEAD, so a no-commit worker would enter review
+    # as an empty diff the briefing vouches for (observed live: word-garden-4
+    # task-002). Enforce the artifact rule mechanically here, and archive the
+    # uncommitted work so a later `clean --force` cannot destroy the only
+    # copy of what the worker actually did.
     candidates = []
     failed_workers = []
     for i, worktree_spec in enumerate(worktree_specs):
         worker_id = worktree_spec["worker_id"]
         result = worker_results[worker_id]
+        if (
+            result["gate_passed"]
+            and gitutil.head_commit(worktree_spec["worktree_abs"]) == base_commit
+        ):
+            uncommitted = gitutil.snapshot_uncommitted_diff(
+                worktree_spec["worktree_abs"]
+            )
+            autopsy = "commits: no commits on branch"
+            if uncommitted.strip():
+                with open(
+                    os.path.join(
+                        artifact_dir, "{0}-uncommitted.diff".format(worker_id)
+                    ),
+                    "w",
+                    encoding="utf-8",
+                ) as fh:
+                    fh.write(uncommitted)
+                autopsy += " (uncommitted work archived)"
+            result["gate_passed"] = False
+            result["gate_results"].append(
+                {"name": "commits", "exit_code": 1, "autopsy": autopsy}
+            )
         if result["gate_passed"]:
             candidates.append(
                 {
@@ -371,21 +459,43 @@ def run(brief_path, config_path=None, cwd=None):
                 }
             )
 
-    # (f) Anonymize candidates: shuffle and assign labels A, B, C, ...
+    # (f) Anonymize candidates: shuffle, drop empty diffs, assign labels.
     random.shuffle(candidates)
     label_to_worker_id = {}
     label_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    for i, candidate in enumerate(candidates):
-        label = label_chars[i]
+    labeled = []
+    for candidate in candidates:
+        # Belt-and-braces companion to the commit check in (e): a candidate
+        # whose diff against base is empty (e.g. only an empty commit) has
+        # nothing to review and must not consume a label.
+        text = gitutil.diff_text(base_commit, candidate["worktree_abs"])
+        if not text.strip():
+            result = worker_results[candidate["worker_id"]]
+            result["gate_passed"] = False
+            result["gate_results"].append(
+                {
+                    "name": "candidate",
+                    "exit_code": 1,
+                    "autopsy": "candidate: empty diff against base",
+                }
+            )
+            failed_workers.append(
+                {
+                    "worker_id": candidate["worker_id"],
+                    "gate_results": result["gate_results"],
+                }
+            )
+            continue
+        label = label_chars[len(labeled)]
         label_to_worker_id[label] = candidate["worker_id"]
         candidate["label"] = label
 
-        # Write the diff for this candidate.
         diff_path = os.path.join(artifact_dir, "candidates", "{0}.diff".format(label))
         os.makedirs(os.path.dirname(diff_path), exist_ok=True)
-        gitutil.write_diff(
-            base_commit, candidate["worktree_abs"], diff_path, repo_root
-        )
+        with open(diff_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        labeled.append(candidate)
+    candidates = labeled
 
     # (g) Build run.json workers[] list for all workers (including non-candidates).
     run_workers = []
@@ -482,50 +592,7 @@ def run(brief_path, config_path=None, cwd=None):
             fh.write(reviewer_proc.stderr or "")
 
         # Parse and validate verdict.json.
-        verdict_path = os.path.join(artifact_dir, "verdict.json")
-        try:
-            with open(verdict_path, "r", encoding="utf-8") as fh:
-                verdict = json.load(fh)
-        except FileNotFoundError:
-            raise LoopError("reviewer did not write verdict.json")
-        except json.JSONDecodeError as exc:
-            raise LoopError("verdict.json is not valid JSON: {0}".format(exc))
-
-        # Validate verdict structure.
-        if not isinstance(verdict, dict):
-            raise LoopError("verdict.json root must be a JSON object")
-        if "outcome" not in verdict:
-            raise LoopError("verdict.json missing 'outcome' field")
-        if "candidate" not in verdict:
-            raise LoopError("verdict.json missing 'candidate' field")
-        if "reasoning" not in verdict:
-            raise LoopError("verdict.json missing 'reasoning' field")
-
-        outcome = verdict["outcome"]
-        candidate_label = verdict["candidate"]
-
-        if outcome not in ("adopt", "synthesize", "escalate"):
-            raise LoopError(
-                "verdict outcome must be one of adopt/synthesize/escalate, got: {0}".format(
-                    outcome
-                )
-            )
-
-        if outcome == "adopt":
-            if not candidate_label or candidate_label not in label_to_worker_id:
-                raise LoopError(
-                    "outcome is 'adopt' but candidate is missing or invalid: {0}".format(
-                        candidate_label
-                    )
-                )
-        else:
-            # synthesize or escalate
-            if candidate_label is not None:
-                raise LoopError(
-                    "outcome is '{0}' but candidate should be null, got: {1}".format(
-                        outcome, candidate_label
-                    )
-                )
+        verdict = load_and_validate_verdict(artifact_dir, label_to_worker_id)
 
     finished_at = _utcnow_iso()
 
