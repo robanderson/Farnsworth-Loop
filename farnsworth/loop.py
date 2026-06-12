@@ -49,6 +49,12 @@ Rules of engagement:
   current branch ({branch}) with clear messages. Your committed diff against
   the base commit is the deliverable; uncommitted work does not exist.
 - Run the project's tests yourself before finishing.
+- Time-box yourself: this round is EXPLORATION. Make one complete, honest
+  attempt; if something still fails after a couple of fix passes, COMMIT
+  what you have and note the gap in the commit message. Gate results
+  travel with your candidate as evidence, and an instructive incomplete
+  attempt beats an endless local debugging loop, which counts as no
+  attempt at all when the clock runs out.
 - Do the work YOURSELF, in this session: never spawn, launch, or delegate
   to sub-agents. A delegated attempt ends your turn with a completion
   claim and no commits, which counts as no attempt at all.
@@ -185,34 +191,59 @@ def hygiene_violations(base_commit, worktree_abs, protected):
     return sorted(changed & set(protected))
 
 
+# A gate command that blocks can hang the whole phase (observed live,
+# word-garden-6: a dead worker's abandoned test suite looped forever and a
+# 5-second gate ran 16+ minutes before a human killed it). Every gate
+# command therefore runs with stdin closed and a deadline: per-entry
+# ``timeout_seconds`` in the config, this default otherwise.
+GATE_TIMEOUT_DEFAULT = 300
+
+
 def _run_gate(gate, worktree):
     """Run every gate command in ``worktree`` and return (passed, results).
 
     All gates run even if an earlier one fails. Each result records the gate
-    name, the exit code, and a one-line autopsy.
+    name, the exit code, and a one-line autopsy. Commands get stdin from
+    /dev/null (interactive code under test must not block the gate) and are
+    killed at their deadline with exit code -1.
     """
     results = []
     passed = True
     for entry in gate:
         name = entry["name"]
-        proc = subprocess.run(
-            entry["command"],
-            cwd=str(worktree),
-            capture_output=True,
-            text=True,
-        )
-        autopsy = "{0}: exit {1}".format(name, proc.returncode)
-        if proc.returncode != 0:
+        timeout = entry.get("timeout") or GATE_TIMEOUT_DEFAULT
+        try:
+            proc = subprocess.run(
+                entry["command"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+            )
+            exit_code = proc.returncode
+            autopsy = "{0}: exit {1}".format(name, exit_code)
+            if exit_code != 0:
+                passed = False
+                # pytest and most linters report failures on stdout, unittest
+                # on stderr; an autopsy with no tail tells the reviewer
+                # nothing.
+                tail = _one_line(proc.stderr) or _one_line(proc.stdout)
+                if tail:
+                    autopsy = "{0} | {1}".format(autopsy, tail)
+        except subprocess.TimeoutExpired:
             passed = False
-            # pytest and most linters report failures on stdout, unittest on
-            # stderr; an autopsy with no tail tells the reviewer nothing.
-            tail = _one_line(proc.stderr) or _one_line(proc.stdout)
-            if tail:
-                autopsy = "{0} | {1}".format(autopsy, tail)
+            exit_code = -1
+            autopsy = (
+                "{0}: killed after {1}s timeout (a gate command must never "
+                "block: suspect stdin reads or an infinite loop)".format(
+                    name, timeout
+                )
+            )
         results.append(
             {
                 "name": name,
-                "exit_code": proc.returncode,
+                "exit_code": exit_code,
                 "autopsy": autopsy,
             }
         )

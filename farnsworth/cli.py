@@ -19,9 +19,18 @@ mechanical half of the goal is complete (writing the attestation briefing
 for the semantic half), 1 when the loop should keep cycling.
 
 Exit codes for ``run``/``gate``/``finalize``: 0 valid verdict, 1 no
-candidates passed the gate, 2 infrastructure/config error, 3 delegate
-dispatch prepared and awaiting host-session subagents (after ``run`` and
-``gate``). ``preflight``: 0 all checks pass, 1 any failed.
+candidates passed the gate, 2 infrastructure/config error, 3 PHASE
+BOUNDARY — the mechanical phase is complete and an agent phase is next
+(after ``run``: spawn the coders; after ``gate``: spawn the judge). The
+conductor at that boundary is the dynamic workflow script
+(``.claude/workflows/farnsworth-task.js``) or a host session running the
+skills. ``preflight``: 0 all checks pass, 1 any failed.
+
+``run``, ``gate``, ``finalize``, and ``done`` accept ``--json``: emit the
+phase's machine-readable record on stdout (the dispatch ledger, the gated
+ledger, the run log, the done outcome) instead of human-oriented text, so
+a workflow conductor's agents relay structured truth verbatim rather than
+paraphrasing terminal output. Exit codes are identical in both modes.
 """
 
 from __future__ import annotations
@@ -68,6 +77,15 @@ def _resolve_config(config_arg):
     return path
 
 
+def _json_flag(subparser):
+    subparser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the phase's machine-readable record (for workflow "
+        "conductors) instead of human-oriented output",
+    )
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="farnsworth",
@@ -78,7 +96,8 @@ def build_parser():
     run_p = sub.add_parser(
         "run",
         help="run one task (subprocess dispatch runs end-to-end; delegate "
-        "dispatch prepares worktrees + briefings and exits 3)",
+        "dispatch prepares worktrees + briefings and exits 3: phase "
+        "boundary, coder agents next)",
     )
     run_p.add_argument("brief", metavar="task-brief.md", help="path to the task brief")
     run_p.add_argument(
@@ -88,11 +107,13 @@ def build_parser():
             DEFAULT_CONFIG_NAME
         ),
     )
+    _json_flag(run_p)
 
     gate_p = sub.add_parser(
         "gate",
         help="delegate mode phase 2: gate worker worktrees, anonymize "
-        "candidates, write the review briefing (exit 3: awaiting reviewer)",
+        "candidates, write the review briefing (exit 3: phase boundary, "
+        "judge agent next)",
     )
     gate_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
     gate_p.add_argument(
@@ -102,6 +123,7 @@ def build_parser():
             DEFAULT_CONFIG_NAME
         ),
     )
+    _json_flag(gate_p)
 
     finalize_p = sub.add_parser(
         "finalize",
@@ -109,6 +131,7 @@ def build_parser():
         "run.json + summary.md",
     )
     finalize_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
+    _json_flag(finalize_p)
 
     preflight_p = sub.add_parser(
         "preflight",
@@ -176,7 +199,13 @@ def build_parser():
             DEFAULT_CONFIG_NAME
         ),
     )
+    _json_flag(done_p)
     return parser
+
+
+def _emit_json(payload):
+    """Print one machine-readable JSON object on stdout (conductor mode)."""
+    print(json.dumps(payload, indent=2))
 
 
 def _print_summary(run_log):
@@ -200,11 +229,18 @@ def main(argv=None):
             cfg = Config.load(config_path)
             if cfg.mode == "delegate":
                 ledger = delegate.prepare(args.brief, config_path=config_path)
+                if args.json:
+                    _emit_json(ledger)
+                    return 3
                 print(
-                    "Prepared {0} for delegate dispatch (subscription-billed "
-                    "subagents).".format(ledger["task_id"])
+                    "Phase boundary: {0} prepared for delegation "
+                    "(subscription-billed subagents).".format(
+                        ledger["task_id"]
+                    )
                 )
-                print("Spawn one subagent per worker, then run "
+                print("Spawn one farnsworth-coder subagent per worker (in "
+                      "parallel; the farnsworth-task workflow scripts "
+                      "this), then run "
                       "'farnsworth gate {0}':".format(ledger["task_id"]))
                 print("")
                 for worker in ledger["workers"]:
@@ -222,7 +258,10 @@ def main(argv=None):
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
 
-        _print_summary(run_log)
+        if args.json:
+            _emit_json(run_log)
+        else:
+            _print_summary(run_log)
 
         review = run_log.get("review")
         if review is None:
@@ -231,30 +270,30 @@ def main(argv=None):
             return 0
 
     if args.command == "gate":
+        def _gate_progress(line):
+            # In conductor mode stdout carries exactly one JSON object;
+            # live progress still streams, on stderr.
+            print(line, file=sys.stderr if args.json else sys.stdout, flush=True)
+
         try:
             ledger = delegate.gate(
-                args.task_id, config_path=_resolve_config(args.config)
+                args.task_id,
+                config_path=_resolve_config(args.config),
+                progress=_gate_progress,
             )
         except (LoopError, ConfigError, GitError) as exc:
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
-        for worker in ledger["workers"]:
-            gate_info = worker["gate"]
-            status = "PASS" if gate_info["passed"] else "FAIL"
-            autopsies = "; ".join(
-                r["autopsy"] for r in gate_info["results"] if r["exit_code"] != 0
-            )
-            print(
-                "  {0}  {1}{2}".format(
-                    worker["id"], status, "  ({0})".format(autopsies) if autopsies else ""
-                )
-            )
+        if args.json:
+            _emit_json(ledger)
+            return 1 if ledger["phase"] == "no-candidates" else 3
         if ledger["phase"] == "no-candidates":
             print("No candidates passed the gate; nothing to review.")
             return 1
         print(
-            "Candidates ready. Spawn the reviewer subagent (model={0}) "
-            "pinned to the review environment {1}, prompted with {2}, then "
+            "Phase boundary: candidates ready. Spawn the farnsworth-judge "
+            "subagent (model={0}) pinned to the review environment {1}, "
+            "prompted with {2}, then "
             "run 'farnsworth finalize {3}'.".format(
                 ledger["reviewer_model"],
                 ledger["review_env"],
@@ -270,7 +309,10 @@ def main(argv=None):
         except (LoopError, ConfigError, GitError) as exc:
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
-        _print_summary(run_log)
+        if args.json:
+            _emit_json(run_log)
+        else:
+            _print_summary(run_log)
         return 1 if run_log.get("review") is None else 0
 
     if args.command == "report":
@@ -311,15 +353,32 @@ def main(argv=None):
             return 2
 
         outcome = check_done(config.goal, repo_root)
-        for result in outcome["results"]:
-            print(result["autopsy"])
         record_path = record_done_outcome(outcome, repo_root)
-        print("recorded: {0}".format(os.path.relpath(record_path, repo_root)))
+        briefing_path = None
         if outcome["passed"]:
             briefing_path = write_attestation_briefing(config.goal, repo_root)
+        if args.json:
+            _emit_json(
+                {
+                    "passed": outcome["passed"],
+                    "results": outcome["results"],
+                    "recorded": os.path.relpath(record_path, repo_root),
+                    "attestation_briefing": (
+                        os.path.relpath(briefing_path, repo_root)
+                        if briefing_path
+                        else None
+                    ),
+                }
+            )
+            return 0 if outcome["passed"] else 1
+        for result in outcome["results"]:
+            print(result["autopsy"])
+        print("recorded: {0}".format(os.path.relpath(record_path, repo_root)))
+        if outcome["passed"]:
             print("GOAL COMPLETE (mechanical half): all done checks pass.")
             print(
-                "Dispatch the reviewer with {0} for the semantic half; "
+                "Dispatch the farnsworth-attestor subagent with {0} for "
+                "the semantic half; "
                 "exit DONE requires both (PRD Section 2.4).".format(
                     os.path.relpath(briefing_path, repo_root)
                 )

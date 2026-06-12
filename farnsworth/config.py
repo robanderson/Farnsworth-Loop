@@ -140,7 +140,15 @@ def _parse_check_list(entries, label):
             raise ConfigError(
                 "{0} command for '{1}' must be strings".format(label, name)
             )
-        normalized.append({"name": name, "command": list(command)})
+        normalized.append(
+            {
+                "name": name,
+                "command": list(command),
+                "timeout": _parse_timeout(
+                    entry, "{0} entry '{1}'".format(label, name)
+                ),
+            }
+        )
     return normalized
 
 

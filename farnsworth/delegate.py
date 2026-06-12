@@ -34,6 +34,7 @@ therefore harmless: re-spawn and re-run the phase.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import random
@@ -210,11 +211,61 @@ def prepare(brief_path, config_path=None, cwd=None):
     return ledger
 
 
-def gate(task_id, config_path=None, cwd=None):
+def _gate_one_worker(worker, config_gate, base_commit, artifact_dir, protected):
+    """Gate a single worker's worktree; returns (worktree_abs, passed, results).
+
+    Commit-as-artifact is checked FIRST (PRD 4.3): a no-commit worker is a
+    non-submission, and its worktree must never get to spend — or hang —
+    gate time. Observed live in word-garden-6: a killed worker's abandoned
+    test suite looped forever inside a gate run that was always going to
+    disqualify it, stalling the whole phase for 16+ minutes.
+    """
+    worktree_abs = worker["_worktree_abs"]
+
+    if gitutil.head_commit(worktree_abs) == base_commit:
+        uncommitted = gitutil.snapshot_uncommitted_diff(worktree_abs)
+        autopsy = "commits: no commits on branch (gate skipped)"
+        if uncommitted.strip():
+            with open(
+                os.path.join(
+                    artifact_dir, "{0}-uncommitted.diff".format(worker["id"])
+                ),
+                "w",
+                encoding="utf-8",
+            ) as fh:
+                fh.write(uncommitted)
+            autopsy += " (uncommitted work archived)"
+        return worktree_abs, False, [
+            {"name": "commits", "exit_code": 1, "autopsy": autopsy}
+        ]
+
+    gate_passed, gate_results = _run_gate(config_gate, worktree_abs)
+
+    if gate_passed:
+        # Hygiene contract, enforced mechanically (same rule as
+        # subprocess dispatch): tips file, fleet config, brief.
+        violations = hygiene_violations(base_commit, worktree_abs, protected)
+        if violations:
+            gate_passed = False
+            gate_results.append(
+                {
+                    "name": "hygiene",
+                    "exit_code": 1,
+                    "autopsy": "hygiene: modified protected file(s): "
+                    + ", ".join(violations),
+                }
+            )
+    return worktree_abs, gate_passed, gate_results
+
+
+def gate(task_id, config_path=None, cwd=None, progress=None):
     """Phase 3: enforce commits-as-artifact, gate, anonymize, review briefing.
 
     Returns the updated ledger. Idempotent: re-running re-derives gate
-    results and candidate diffs from the worktrees.
+    results and candidate diffs from the worktrees. Worktrees gate in
+    parallel, and ``progress`` (a callable taking one line of text) is
+    invoked as each worker's verdict lands — a silent multi-minute phase is
+    indistinguishable from a hung one.
     """
     cwd = cwd or os.getcwd()
     if not gitutil.is_git_repo(cwd):
@@ -229,8 +280,8 @@ def gate(task_id, config_path=None, cwd=None):
     protected = protected_paths(
         repo_root, os.path.join(repo_root, ledger["brief_path"]), config_path
     )
-    candidates = []
-    failed_workers = []
+
+    # All worktrees must exist before anything spends gate time.
     for worker in ledger["workers"]:
         worktree_abs = worker.get("worktree_abs") or os.path.join(
             os.path.dirname(repo_root), os.path.basename(worker["worktree"])
@@ -241,49 +292,44 @@ def gate(task_id, config_path=None, cwd=None):
                     worker["id"], worktree_abs
                 )
             )
+        worker["_worktree_abs"] = worktree_abs
 
-        gate_passed, gate_results = _run_gate(config.gate, worktree_abs)
-
-        # PRD 4.3: commits are the phase artifact. Same enforcement as
-        # subprocess mode — a no-commit worker is not a candidate, and its
-        # uncommitted leftovers are archived for the forensic record.
-        if (
-            gate_passed
-            and gitutil.head_commit(worktree_abs) == base_commit
-        ):
-            uncommitted = gitutil.snapshot_uncommitted_diff(worktree_abs)
-            autopsy = "commits: no commits on branch"
-            if uncommitted.strip():
-                with open(
-                    os.path.join(
-                        artifact_dir,
-                        "{0}-uncommitted.diff".format(worker["id"]),
-                    ),
-                    "w",
-                    encoding="utf-8",
-                ) as fh:
-                    fh.write(uncommitted)
-                autopsy += " (uncommitted work archived)"
-            gate_passed = False
-            gate_results.append(
-                {"name": "commits", "exit_code": 1, "autopsy": autopsy}
-            )
-
-        if gate_passed:
-            # Hygiene contract, enforced mechanically (same rule as
-            # subprocess dispatch): tips file, fleet config, brief.
-            violations = hygiene_violations(base_commit, worktree_abs, protected)
-            if violations:
-                gate_passed = False
-                gate_results.append(
-                    {
-                        "name": "hygiene",
-                        "exit_code": 1,
-                        "autopsy": "hygiene: modified protected file(s): "
-                        + ", ".join(violations),
-                    }
+    candidates = []
+    failed_workers = []
+    outcomes = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(ledger["workers"])
+    ) as executor:
+        futures = {
+            executor.submit(
+                _gate_one_worker,
+                worker,
+                config.gate,
+                base_commit,
+                artifact_dir,
+                protected,
+            ): worker["id"]
+            for worker in ledger["workers"]
+        }
+        for future in concurrent.futures.as_completed(futures):
+            worker_id = futures[future]
+            worktree_abs, gate_passed, gate_results = future.result()
+            outcomes[worker_id] = (worktree_abs, gate_passed, gate_results)
+            if progress is not None:
+                autopsies = "; ".join(
+                    r["autopsy"] for r in gate_results if r["exit_code"] != 0
+                )
+                progress(
+                    "  {0}  {1}{2}".format(
+                        worker_id,
+                        "PASS" if gate_passed else "FAIL",
+                        "  ({0})".format(autopsies) if autopsies else "",
+                    )
                 )
 
+    for worker in ledger["workers"]:
+        worktree_abs, gate_passed, gate_results = outcomes[worker["id"]]
+        del worker["_worktree_abs"]
         worker["gate"] = {"passed": gate_passed, "results": gate_results}
         worker["status"] = "gated"
         if gate_passed:
