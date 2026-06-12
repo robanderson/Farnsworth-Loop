@@ -1053,6 +1053,40 @@ class TestReviewEnvironment(LoopTestBase):
         # The collision was caught before any worktree was created.
         self.assertFalse(os.path.isdir(os.path.join(self.tmp, "task-rev-w1")))
 
+    def test_briefed_diff_paths_resolve_in_review_env(self):
+        """The paths the briefing names must exist where the reviewer runs.
+
+        Word Garden 5 lesson: a fake reviewer that GLOBS for artifacts
+        validates the plumbing but not the briefing contract -- the first
+        live reviewer followed the briefed path and found nothing there.
+        This test reads the briefing the way a real reviewer does.
+        """
+        reviewer_py = (
+            "exec(\"import sys,json,os,re,glob\\n"
+            "briefing = sys.argv[1] if len(sys.argv) > 1 else ''\\n"
+            "open('reviewer_briefing.txt','w').write(briefing)\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "task_dir=task_dirs[0]\\n"
+            "with open(os.path.join(task_dir,'verdict.json'),'w') as f:\\n"
+            "  json.dump({'outcome':'escalate','candidate':None,'reasoning':'t'}, f)\")"
+        )
+        self._run_with_recording_reviewer(reviewer_py)
+
+        env = os.path.join(self.tmp, "task-rev-review")
+        with open(os.path.join(env, "reviewer_briefing.txt"), "r", encoding="utf-8") as fh:
+            briefing = fh.read()
+        briefed_paths = [
+            line.split(": ", 1)[1].strip()
+            for line in briefing.splitlines()
+            if line.startswith("- Candidate ")
+        ]
+        self.assertTrue(briefed_paths, "briefing lists no candidates")
+        for path in briefed_paths:
+            self.assertTrue(
+                os.path.exists(os.path.join(env, path)),
+                "briefed diff path missing in review env: {0}".format(path),
+            )
+
     def test_review_briefing_carries_the_protocol(self):
         from farnsworth.loop import build_review_briefing
 

@@ -317,9 +317,15 @@ On a machine with an authenticated `claude` binary:
 git init my-word-garden && cd my-word-garden
 git config commit.gpgsign false   # if your host forces signing
 # copy in SPEC.md, farnsworth.json, .gitignore, tasks/ from this example
+cp /path/to/Farnsworth-Loop/seed-tips.md .code-tips.md   # cross-project seed (M3)
 git add -A && git commit -m "seed"
 PYTHONPATH=/path/to/Farnsworth-Loop python3 -m farnsworth run tasks/task-001.md
 ```
+
+For a goal-driven run (the word-garden-5 shape), also copy in `GOAL.md`
+and a `goal` block in `farnsworth.json`, then after every merge let
+`PYTHONPATH=... python3 -m farnsworth done` decide whether to derive the
+next task or stop.
 
 Then review the verdict, merge the winning branch, let the reviewer
 distill `.code-tips.md`, and dispatch task-002 the same way.
