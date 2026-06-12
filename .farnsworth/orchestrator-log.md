@@ -110,11 +110,11 @@ round went 2 -> 0 once tips entered the briefing.
 ## Word Garden example — first external project (2026-06-11)
 
 The loop's first run against a project that is not itself:
-`examples/word-garden/`, a terminal word-guessing game built in two
+`examples/word-garden-1/`, a terminal word-guessing game built in two
 iterations (5-worker tournament for the core engine, triaged 3-worker
 tournament for the UI; both verdicts ADOPT). Full forensics and the
 process report live with the example: `examples/README.md` and
-`examples/word-garden/.farnsworth/orchestrator-log.md`.
+`examples/word-garden-1/.farnsworth/orchestrator-log.md`.
 
 Headline: the thesis generalized. No-tips round won by Opus; tips-in-
 briefing round won by Sonnet over Opus, with field defects falling from

@@ -247,7 +247,7 @@ What we learned, in order of importance:
 4. **Reviewer spend is the scaling pressure** (~half of worker spend per task). The triage rule (Section 8) and consolidation pass (Section 6) are economic necessities, not nice-to-haves.
 5. **Weak tests are the blind spot.** A worker's bug survived its own suite because the test asserted only the negative. The distilled rule — assert the positive — is now in every future briefing.
 
-## 12. First External Project: Word Garden (examples/word-garden)
+## 12. First External Project: Word Garden (examples/word-garden-1)
 
 The loop's first non-self subject: a small terminal word-guessing game,
 built in two iterations on 2026-06-11 (full forensic record and process

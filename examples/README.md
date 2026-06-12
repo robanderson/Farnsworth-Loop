@@ -7,12 +7,12 @@ decision in each example is reconstructible from the files alone.
 
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
-| [`word-garden/`](word-garden/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
+| [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
 
 ## Word Garden — how this example was produced
 
 The game was developed end-to-end by two Farnsworth iterations on
-2026-06-11, from the spec in [`word-garden/SPEC.md`](word-garden/SPEC.md):
+2026-06-11, from the spec in [`word-garden-1/SPEC.md`](word-garden-1/SPEC.md):
 
 - **task-001 (core engine):** full 5-worker blind tournament
   (2x Haiku 4.5, 2x Sonnet 4.6, 1x Opus 4.8). Gate 5/5. Verdict: ADOPT —
@@ -27,7 +27,7 @@ The game was developed end-to-end by two Farnsworth iterations on
 Play it:
 
 ```bash
-cd examples/word-garden
+cd examples/word-garden-1
 python3 -m word_garden            # emoji mode
 python3 -m word_garden --ascii    # ASCII fallback
 python3 -m word_garden --difficulty hard
@@ -100,7 +100,7 @@ Process findings, distilled from `.farnsworth/orchestrator-log.md`:
 
 ## Reproducing with the CLI
 
-`word-garden/farnsworth.json` records the exact fleet this run emulated.
+`word-garden-1/farnsworth.json` records the exact fleet this run emulated.
 On a machine with an authenticated `claude` binary:
 
 ```bash
