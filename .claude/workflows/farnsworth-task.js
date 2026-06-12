@@ -24,12 +24,14 @@ export const meta = {
   name: 'farnsworth-task',
   description:
     'One Farnsworth Loop tournament round: prepare -> parallel blind ' +
-    'coders -> mechanical gate -> anonymized judge -> finalize/report',
+    'coders -> mechanical gate -> anonymized judge -> adversarial ' +
+    'verify -> finalize/report',
   phases: [
     { title: 'Prepare' },
     { title: 'Code' },
     { title: 'Gate' },
     { title: 'Judge' },
+    { title: 'Verify' },
     { title: 'Finalize' },
   ],
 };
@@ -50,11 +52,11 @@ function tier(modelId) {
 // ---- Phase 1: Prepare (CLI: worktrees, briefings, dispatch ledger) ----
 phase('Prepare');
 const ledger = await agent(
-  `cd ${repo} && run \`${pp}python3 -m farnsworth run ${brief}\`. ` +
-    'Exit code 3 is SUCCESS (awaiting delegation). If it exits 2 with a ' +
-    `collision error, run \`${pp}python3 -m farnsworth clean ${taskId}\` ` +
-    'once and retry. Then output the full contents of ' +
-    `${repo}/.farnsworth/${taskId}/dispatch.json.`,
+  `cd ${repo} && run \`${pp}python3 -m farnsworth run ${brief} --json\`. ` +
+    'Exit code 3 is SUCCESS (a phase boundary: coder agents are next). ' +
+    'If it exits 2 with a collision error, run ' +
+    `\`${pp}python3 -m farnsworth clean ${taskId}\` once and retry. ` +
+    'Relay the JSON it printed VERBATIM.',
   {
     model: 'haiku',
     schema: {
@@ -104,29 +106,31 @@ await parallel(
 // ---- Phase 3: Gate (CLI: commit check, mechanical gate, anonymize) ----
 phase('Gate');
 const gate = await agent(
-  `cd ${repo} && run \`${pp}python3 -m farnsworth gate ${taskId}\` and ` +
-    'report its exit code and per-worker PASS/FAIL lines. Exit 3 means ' +
-    'candidates are ready; exit 1 means none passed; exit 2 is an error. ' +
-    'On exit 3 also output the review environment path and the review ' +
-    'briefing path the command printed.',
+  `cd ${repo} && run \`${pp}python3 -m farnsworth gate ${taskId} --json\` ` +
+    '(per-worker progress streams on stderr; one JSON object lands on ' +
+    'stdout). Exit 3 means candidates are ready; exit 1 means none ' +
+    'passed; exit 2 is an error. Report the exit code and relay the JSON ' +
+    'VERBATIM.',
   {
     model: 'haiku',
     schema: {
       type: 'object',
       properties: {
         exit_code: { type: 'number' },
-        lines: { type: 'array', items: { type: 'string' } },
+        phase: { type: 'string' },
+        reviewer_model: { type: 'string' },
         review_env: { type: 'string' },
         review_briefing: { type: 'string' },
+        workers: { type: 'array' },
       },
-      required: ['exit_code', 'lines'],
+      required: ['exit_code', 'phase'],
     },
   }
 );
 if (gate.exit_code !== 3) {
   throw new Error(
-    `gate exited ${gate.exit_code}: ${gate.lines.join(' | ')} — ` +
-      'no review phase (fix or clean + re-dispatch, then rerun)'
+    `gate exited ${gate.exit_code} (phase=${gate.phase}) — no review ` +
+      'phase (fix or clean + re-dispatch, then rerun)'
   );
 }
 
@@ -155,20 +159,61 @@ const verdict = await agent(
   }
 );
 
-// ---- Phase 5: Finalize (CLI validates the verdict artifact) ----
+// ---- Phase 5: Verify (fresh eyes attack the verdict's claims) ----
+// The agent doing the judging must not be the last one to grade it: a
+// separate verifier tries to REFUTE the verdict's load-bearing claims
+// before anything merges (the June 2026 audit/judge/verify pattern).
+phase('Verify');
+const verification = await agent(
+  `You are an independent verifier; you are NOT the judge and must not ` +
+    `defer to it. cd into ${gate.review_env} and work only there. The ` +
+    `verdict under test: ${JSON.stringify(verdict)}. Read ` +
+    `.farnsworth/${taskId}/review.md, extract the verdict's LOAD-BEARING ` +
+    'claims (what makes the chosen candidate adequate, or the spec ' +
+    'broken), then attack them empirically: apply the relevant candidate ' +
+    "diff with `git apply`, run the project's tests and the specific " +
+    'scenarios the claims rest on, and actively try to refute each claim. ' +
+    'Return to base with `git reset --hard && git clean -fd -e ' +
+    '.farnsworth` when done. Never edit the review artifacts.',
+  {
+    model: 'sonnet',
+    schema: {
+      type: 'object',
+      properties: {
+        check: {
+          type: 'string',
+          enum: ['confirmed', 'overstated', 'refuted'],
+        },
+        evidence: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['check', 'evidence'],
+    },
+  }
+);
+if (verification.check === 'refuted') {
+  throw new Error(
+    'verdict REFUTED by independent verification: ' +
+      verification.evidence.join(' | ') +
+      ' — re-run the Judge phase with the refutation in hand'
+  );
+}
+
+// ---- Phase 6: Finalize (CLI validates the verdict artifact) ----
 phase('Finalize');
 const summary = await agent(
-  `cd ${repo} && run \`${pp}python3 -m farnsworth finalize ${taskId}\` ` +
-    `then \`${pp}python3 -m farnsworth report ${taskId}\`. If finalize ` +
-    'exits 2 the verdict artifact is missing/malformed: report that ' +
-    'verbatim instead of improvising. Output the report table verbatim.',
+  `cd ${repo} && run \`${pp}python3 -m farnsworth finalize ${taskId} ` +
+    `--json\` then \`${pp}python3 -m farnsworth report ${taskId}\`. If ` +
+    'finalize exits 2 the verdict artifact is missing/malformed: report ' +
+    'that verbatim instead of improvising. Output the report table ' +
+    'verbatim.',
   { model: 'haiku' }
 );
 
 return {
   task: taskId,
-  gate_lines: gate.lines,
+  gate_phase: gate.phase,
   verdict,
+  verification,
   summary,
   next:
     verdict.outcome === 'adopt'
