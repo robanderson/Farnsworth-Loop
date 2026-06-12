@@ -220,6 +220,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Third measurement note, from the Word Garden 2 replication (Section 13): defects-per-round in gate-passing candidates is the loop's primary EARLY learning signal — it improved under tips in both runs (1→0, 2→1) while the winning model's identity did not reproduce (metric 2 is long-horizon, noisy at one round per cell). Reviewer share also tracks worker economy, not just field size: a triaged round with heavy worker attempts kept the reviewer at ~55%, not the 68% seen before.*
 
+*Fourth measurement note, from the first live CLI run (Section 14): with dollar-true costs (`total_cost_usd` from the JSON output), the reviewer crossed 100% of worker spend in a 5-way round ($3.61 vs $3.03) — manual-mode token shares understated review's weight. Empirical per-candidate verification is the dominant line item once dispatch is cheap and fast; review depth should scale with field DISAGREEMENT (convergent fields get spot-checks), queued for M4 alongside divergence measurement.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -235,19 +237,22 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
-|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example                  |
+|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example. On hosts with subscription OAuth the CLI dispatches live (first proven: Word Garden 4, Section 14)                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 |Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |
 |Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
 |Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
+|`--bare` workers cannot authenticate on subscription hosts|*(observed: Word Garden 4 pre-flight — `--bare` never reads OAuth/keychain, so every dispatch dies "Not logged in")* Use `--setting-sources ""` for isolation instead; reserve `--bare` for API-key/apiKeyHelper hosts. Canary-test the config before any tournament|
+|Headless permission mode starves workers of tools|*(observed: Word Garden 4 pre-flight — headless `acceptEdits` denies ALL Bash; workers could edit but not test or commit, so every candidate would gate empty)* Scoped `--allowedTools "Bash(python3:*)" "Bash(git:*)"` in the worker command; a `farnsworth preflight` canary command is queued|
+|Gate passes a worker that never committed|*(observed live: Word Garden 4 task-002 — a worker left all its work untracked; the gate ran in the worktree and passed while the candidate diff `base..HEAD` was empty, so the briefing vouched for a 0-line candidate)* Enforced in code since 2026-06-12: no commits on the branch = gate failure with autopsy, uncommitted work archived to `<id>-uncommitted.diff`, empty diffs never take a label. The reviewer's empirical probe is the backstop and caught it live|
 
 ## 9. Milestones
 
 1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
 1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
-1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI. (The lifecycle is already running manually — two distillation commits so far — M3 moves it into the tool.)
-1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12; measurement and round-2 automation remain.)*
-1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six recorded runs.)*
+1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI. (The lifecycle is already running manually — distillation is now carried in the reviewer command template, exercised live in Word Garden 4. The cross-project tips seed got its first live test there: it prevented the predicted mechanical defect class but not the semantic one — see Section 14.)
+1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and ran its first live tournament the same day (Word Garden 4): foci visibly diversified style, but the correctness floor still tracked model tier. Measurement, round-2 automation, and disagreement-scaled review depth remain.)*
+1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six recorded runs. Word Garden 4 adds the first dollar-true cost rows from live `--output-format json` runs.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 
 ## 10. Acceptance Criteria (faithfulness contract)
@@ -361,6 +366,56 @@ What the replication confirmed, broke, and added:
    stated scope (the MSG_*-reuse tip didn't say it bound tests too; 2 of 3
    workers string-matched literals in tests). Distillation rule is now:
    contract language AND explicit scope ("in source and tests").
+
+## 14. First Live CLI Run: Word Garden 4 (examples/word-garden-4)
+
+The first run where the tool drove its own loop (2026-06-12): same Word
+Garden spec, byte-identical task-001 brief, same fleet mix and gate as
+runs 1–2 — but dispatched by `python3 -m farnsworth run` on a host whose
+subscription OAuth lets nested headless `claude -p` authenticate. Two more
+firsts in the same run: focus-diversified dispatch (Section 2.1) and a
+cross-project tips seed (run 2's proposed extension; 13 domain-general
+entries in round-1 `.code-tips.md`). Full forensics:
+[`examples/word-garden-4/`](examples/word-garden-4/); process report in
+its `.farnsworth/orchestrator-log.md`.
+
+| Metric | task-001 (seed tips, 5 workers) | task-002 (seed + t1 tips, 3 triaged) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 3/3 (one vacuous — empty diff) |
+| Correctness bugs found in gate-passing field | 2 | 1 (+1 non-submission) |
+| Verdict | adopt | adopt |
+| Winning model (focus) | **Sonnet 4.6** (readability) | **Opus 4.8** (spec faithfulness) |
+| Worker cost / reviewer cost | $3.03 / $3.61 (119%) | $3.60 / $3.40 (94%) |
+| Wall clock | 13.5 min | 17 min |
+
+What the run established:
+
+1. **Configs are contracts; pre-flight them.** The fleet config recorded
+   since run 1 had never executed, and canary tests found it 100% fatal
+   twice over (`--bare` kills OAuth; headless `acceptEdits` denies Bash).
+   Two new risk-table rows and a queued `farnsworth preflight` command.
+2. **Seed tips transfer mechanical rules, not semantic ones.** The
+   predicted argparse defect did not recur (seed bans it verbatim); the
+   terminal-message defect class recurred anyway, same count and tier as
+   the seedless replication — the domain-specific state contract must
+   still be learned by THIS project's round 1. Both directions of
+   "memory is project-scoped" now have evidence.
+3. **Tier dominates focus.** First live focus round: foci measurably
+   diversified style and both adopted candidates came from focused
+   workers, but the test-rigor-focused Haiku still shipped the
+   flag-only-assertion defect. A focus is a lens, not a capability tier.
+4. **The loop caught — and now fixes — its own artifact-rule hole.** A
+   no-commit worker gated PASS while its candidate diff was empty; the
+   reviewer's empirical probe caught the 0-line "non-submission" and the
+   verdict survived. The CLI now enforces commits-as-artifact mechanically
+   (gate autopsy "no commits on branch", uncommitted work archived, empty
+   diffs never labeled), plus a second live fix: `clean` now resolves the
+   MAIN repo from inside a linked worktree. Defence in depth — a skeptical
+   review layer — is what made the mechanical hole survivable.
+5. **Wall-clock and dollars are now real numbers.** A full 5-worker
+   tournament with empirical review: 13.5 minutes, ~$6.6. The two-task
+   project: ~45 minutes, ~$13.6. The cheap-workers question (Section 3)
+   can now accumulate dollar-denominated evidence per round.
 
 -----
 

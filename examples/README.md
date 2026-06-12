@@ -9,15 +9,16 @@ Each task also carries a thirty-second `summary.md` table
 (`.farnsworth/task-NNN/summary.md`, the output of
 `farnsworth report <task-id>`): one row per worker with its focus, gate
 result, and candidate label, then the verdict. These were generated for
-all recorded runs when the summary-table feature landed (2026-06-12);
-the Focus column reads `-` for these runs because focus-diversified
-dispatch (PRD Section 2.1) did not exist yet — both features await their
-first live tournament.
+runs 1–2 retroactively when the summary-table feature landed (2026-06-12;
+their Focus column reads `-` because focus-diversified dispatch, PRD
+Section 2.1, did not exist yet). Word Garden 4 is the first run where both
+features ran live.
 
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
 | [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
 | [`word-garden-2/`](word-garden-2/) | The same game, rebuilt from the same spec as a controlled REPLICATION of run 1 (fresh seed, empty tips file) | 2 | adopt, adopt |
+| [`word-garden-4/`](word-garden-4/) | The same game again — the first run driven by the LIVE `farnsworth` CLI, with focus-diversified dispatch and a cross-project tips seed | 2 | adopt, adopt |
 
 ## Word Garden — how this example was produced
 
@@ -148,18 +149,90 @@ What replicated, and what didn't:
 
 Play it: identical commands to word-garden-1, from `examples/word-garden-2`.
 
+## Word Garden 4 — the first live CLI run (2026-06-12)
+
+Same spec, byte-identical task-001 brief, same fleet mix and gate — but
+this time the tournament was driven by the actual tool
+(`python3 -m farnsworth run`), because this host's subscription OAuth lets
+nested headless `claude -p` authenticate. Two more loop features had their
+first live outing: focus-diversified dispatch (each worker carried a
+distinct one-line focus) and a cross-project tips seed (13 domain-general
+lessons curated from word-garden-1/-2 into round-1 `.code-tips.md`).
+Full process report:
+[`word-garden-4/.farnsworth/orchestrator-log.md`](word-garden-4/.farnsworth/orchestrator-log.md).
+
+| | task-001 (5 workers, seed tips) | task-002 (3 workers, seed + t1 tips) |
+|---|---|---|
+| Gate | 5/5 | 3/3 (one vacuous — see below) |
+| Bugs in gate-passing field | 2 | 1 (+1 non-submission) |
+| Winner | **Sonnet 4.6** (readability focus) | **Opus 4.8** (spec-faithfulness focus) |
+| Worker / reviewer cost | $3.03 / $3.61 (119%) | $3.60 / $3.40 (94%) |
+| Wall clock | 13.5 min | 17 min |
+
+What the run added:
+
+1. **The recorded fleet config was never runnable.** Pre-flight canaries
+   found two 100%-fatal bugs before dispatch: `--bare` never reads
+   OAuth/keychain (every worker would have died "Not logged in" — replaced
+   with `--setting-sources ""`), and headless `acceptEdits` denies ALL
+   Bash (workers could not test or commit — fixed with scoped
+   `--allowedTools`). A dispatch config is a runtime contract; it needs a
+   mechanical pre-flight before a tournament burns real money.
+2. **The cross-project seed prevented the mechanical defect class but not
+   the semantic one.** Run 2's argparse `SystemExit` bug did NOT recur
+   (seed bans it verbatim); the terminal-message defect DID recur, twice,
+   same tier as run 2 — the general "assert the full outcome" tip can't
+   substitute for the project-specific status-message contract. Seeds
+   transfer API-shaped rules, not state-contract rules; both directions of
+   run 2's "memory is project-scoped" finding now have evidence.
+3. **Tier dominates focus.** Foci visibly shaped style, and the two
+   adopted candidates came from differently-focused workers — but the
+   TEST-RIGOR-focused Haiku still shipped the flag-only-assertion defect,
+   and a Haiku reproduced a vacuous-test pattern the seed forbids
+   verbatim. A focus is a lens, not a capability upgrade.
+4. **The loop's first self-caught implementation bug.** A Sonnet did all
+   of task-002 but never committed; the gate (which runs in the worktree)
+   passed it while its candidate diff (`base..HEAD`) was empty — the
+   briefing then vouched to the reviewer for a 0-line candidate. The
+   reviewer's empirical probe caught it ("non-submission") and the field
+   was judged on merits, but the mechanical layer had violated PRD 4.3's
+   artifact rule. Fixed in the CLI with tests (no-commit workers fail the
+   gate with autopsy "no commits on branch"; their uncommitted work is
+   archived; empty diffs can't take a label), alongside a second live bug
+   (`farnsworth clean` run from inside a worktree targeted the wrong
+   repo).
+5. **Reviewer cost crossed 100% of worker spend** in the 5-way round.
+   Dollar-true accounting (the JSON output's `total_cost_usd`) makes the
+   economics unambiguous: empirical review is now the dominant line item;
+   depth should scale with field disagreement, not field size. Whole
+   project: ~$13.6, ~45 minutes.
+
+Play it: identical commands to word-garden-1, from `examples/word-garden-4`.
+
 ## Reproducing with the CLI
 
-`word-garden-1/farnsworth.json` records the exact fleet this run emulated.
-On a machine with an authenticated `claude` binary:
+Word Garden 4 IS the CLI reproduction — start from
+`word-garden-4/farnsworth.json`, which is the first fleet config proven to
+run live. (The configs recorded with runs 1–2 carry `--bare`, which never
+reads OAuth/keychain and so cannot authenticate on subscription hosts, and
+they lack the `--allowedTools` grants headless workers need to test and
+commit. Word Garden 4's pre-flight found both.) On a machine with an
+authenticated `claude` binary:
 
 ```bash
 git init my-word-garden && cd my-word-garden
 git config commit.gpgsign false   # if your host forces signing
-# copy in SPEC.md, farnsworth.json, .gitignore, tasks/ from this example
+# copy in SPEC.md, .gitignore, tasks/ from this example, and
+# farnsworth.json + farnsworth-002.json from word-garden-4/
 git add -A && git commit -m "seed"
+# pre-flight: one cheap canary proving auth + edit + test + commit
+claude -p "create canary.txt, run python3 -c 'print(1)', git commit it; report what was denied" \
+  --setting-sources "" --model claude-haiku-4-5 --permission-mode acceptEdits \
+  --allowedTools "Bash(python3:*)" "Bash(git:*)"
 PYTHONPATH=/path/to/Farnsworth-Loop python3 -m farnsworth run tasks/task-001.md
 ```
 
-Then review the verdict, merge the winning branch, let the reviewer
-distill `.code-tips.md`, and dispatch task-002 the same way.
+Then review the verdict, merge the winning branch (the reviewer has
+already distilled `.code-tips.md` as part of its protocol), sweep with
+`farnsworth clean task-001`, and dispatch task-002 the same way with
+`--config farnsworth-002.json`.
