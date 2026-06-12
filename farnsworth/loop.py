@@ -22,6 +22,7 @@ import datetime
 import json
 import os
 import random
+import shutil
 import subprocess
 
 from . import gitutil, report
@@ -200,6 +201,67 @@ def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
     }
 
 
+def review_env_path(task_id, repo_root):
+    """Sibling directory holding the constructed review environment."""
+    return os.path.join(
+        os.path.dirname(repo_root), "{0}-review".format(task_id)
+    )
+
+
+def _construct_review_env(review_env, base_commit, repo_root, artifact_dir, task_id):
+    """Build the anonymized environment the reviewer runs in.
+
+    The reviewer gets the base tree, the labeled candidate diffs, and the
+    gate notes in its briefing -- NOTHING else. A naive clone or worktree
+    carries worker-named branches (``task-NNN-w1``...), and the project's
+    ``farnsworth.json`` maps worker ids to models and foci, either of which
+    de-anonymizes the field. The environment is therefore constructed: the
+    exported tree of the base commit, minus ``farnsworth.json`` and any
+    committed ``.farnsworth/`` artifacts of earlier tasks, re-initialized as
+    a fresh single-commit repo so the reviewer can ``git apply`` each diff
+    and ``git reset --hard`` between candidates.
+    """
+    os.makedirs(review_env)
+    gitutil.export_tree(base_commit, review_env, repo_root)
+
+    # Strip attribution surfaces from the exported tree.
+    fleet_config = os.path.join(review_env, "farnsworth.json")
+    if os.path.exists(fleet_config):
+        os.remove(fleet_config)
+    committed_artifacts = os.path.join(review_env, ".farnsworth")
+    if os.path.isdir(committed_artifacts):
+        shutil.rmtree(committed_artifacts)
+
+    # Labeled diffs at the same relative path the briefing references.
+    shutil.copytree(
+        os.path.join(artifact_dir, "candidates"),
+        os.path.join(review_env, ".farnsworth", task_id, "candidates"),
+    )
+    gitutil.init_review_repo(review_env)
+
+
+def _copy_back_review_artifacts(review_env, artifact_dir, task_id):
+    """Copy the reviewer's artifacts out of the review environment.
+
+    Everything the reviewer wrote under ``.farnsworth/<task-id>/`` --
+    verdict.json, review.md, blind-sketch.md, code-tips.next.md -- comes
+    back to the main repo's artifact dir. The candidates/ dir is skipped:
+    the main repo's copies are the originals of record.
+    """
+    src = os.path.join(review_env, ".farnsworth", task_id)
+    if not os.path.isdir(src):
+        return
+    for name in os.listdir(src):
+        if name == "candidates":
+            continue
+        source = os.path.join(src, name)
+        dest = os.path.join(artifact_dir, name)
+        if os.path.isdir(source):
+            shutil.copytree(source, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy2(source, dest)
+
+
 def run(brief_path, config_path=None, cwd=None):
     """Execute the multi-worker loop body with review.
 
@@ -227,6 +289,14 @@ def run(brief_path, config_path=None, cwd=None):
     started_at = _utcnow_iso()
 
     # (b) Create all worktrees upfront (serial); must be done before parallel fan-out.
+    # The review environment's path is also claimed now: discovering the
+    # collision only after the workers have run would waste the whole field.
+    review_env = review_env_path(task_id, repo_root)
+    if os.path.exists(review_env):
+        raise LoopError(
+            "review environment path already exists: {0}".format(review_env)
+        )
+
     worktree_specs = []
     for worker_spec in config.workers:
         worker_id = worker_spec["id"]
@@ -372,6 +442,13 @@ def run(brief_path, config_path=None, cwd=None):
             focus_directives=focus_directives,
         )
 
+        # The reviewer runs in a constructed, anonymized environment, never
+        # in the main repo (whose branches and farnsworth.json identify the
+        # workers). Kept in place afterwards for inspection, like worktrees.
+        _construct_review_env(
+            review_env, base_commit, repo_root, artifact_dir, task_id
+        )
+
         # Run the reviewer. A hung reviewer is an infrastructure failure:
         # the verdict is the phase's artifact and it cannot be partial.
         reviewer_command = _substitute_prompt(config.reviewer["command"], review_briefing)
@@ -379,19 +456,24 @@ def run(brief_path, config_path=None, cwd=None):
         try:
             reviewer_proc = subprocess.run(
                 reviewer_command,
-                cwd=repo_root,
+                cwd=review_env,
                 capture_output=True,
                 text=True,
                 timeout=reviewer_timeout,
             )
         except subprocess.TimeoutExpired:
             raise LoopError(
-                "reviewer timed out after {0}s; candidate worktrees were kept. "
-                "Re-run the review or 'farnsworth clean {1}' and re-dispatch".format(
+                "reviewer timed out after {0}s; candidate worktrees and the "
+                "review environment were kept. Re-run the review or "
+                "'farnsworth clean {1}' and re-dispatch".format(
                     reviewer_timeout, task_id
                 )
             )
         review_exit_code = reviewer_proc.returncode
+
+        # Bring the reviewer's artifacts back to the repo of record before
+        # the verdict is parsed.
+        _copy_back_review_artifacts(review_env, artifact_dir, task_id)
 
         # Write reviewer stdout/stderr.
         with open(os.path.join(artifact_dir, "reviewer.stdout"), "w", encoding="utf-8") as fh:
@@ -459,6 +541,7 @@ def run(brief_path, config_path=None, cwd=None):
     if candidates:
         run_log["review"] = {
             "exit_code": review_exit_code,
+            "environment": "../{0}-review".format(task_id),
             "verdict": verdict,
         }
     else:
@@ -524,16 +607,64 @@ def build_review_briefing(
                 autopsy = gate_result["autopsy"]
                 lines.append("- a failed candidate: {0}".format(autopsy))
 
+    task_id = os.path.basename(artifact_dir)
+    lines.append("")
+    lines.append("## Review Protocol")
+    lines.append("")
+    lines.append(
+        "You are in a constructed, anonymized review environment: the "
+        "project tree at the base commit plus the labeled candidate diffs "
+        "and the gate notes above -- nothing else. Do not attempt to "
+        "identify candidate authorship; judge every candidate against the "
+        "task's acceptance criteria only."
+    )
+    lines.append("")
+    lines.append(
+        "1. BEFORE reading any candidate diff, write your own brief "
+        "implementation sketch to .farnsworth/{0}/blind-sketch.md "
+        "(anchoring defence; if you synthesize, your sketch counts as one "
+        "more candidate).".format(task_id)
+    )
+    lines.append(
+        "2. Examine every candidate: apply its diff (git apply), exercise "
+        "the result empirically, then git reset --hard before the next "
+        "(the diffs and your notes are untracked and survive the reset). "
+        "Record what is good AND bad in each candidate, not just a ranking."
+    )
+    lines.append(
+        "3. Write the full review to .farnsworth/{0}/review.md.".format(
+            task_id
+        )
+    )
+    lines.append(
+        "4. Distill the durable lessons of the whole field (winners and "
+        "losers) into .farnsworth/{0}/code-tips.next.md: the COMPLETE next "
+        "contents of the project's .code-tips.md -- existing entries "
+        "preserved unless consolidated, new entries in imperative contract "
+        "language with explicit scope (source, tests, or both) and "
+        "provenance \"[YYYY-MM-DD, {0}]\". Lessons must be durable project "
+        "truths that pay rent in every future briefing, not incident "
+        "reports. The orchestrator installs this file after the "
+        "merge.".format(task_id)
+    )
+    lines.append(
+        "5. Write the verdict LAST (schema below). When the outcome is "
+        "adopt, include a \"progression\" key: how the adopted candidate "
+        "advances the previously merged state of the project -- what it "
+        "built on, what is new, what got better, and which tips it visibly "
+        "absorbed."
+    )
     lines.append("")
     lines.append("## Verdict")
     lines.append("")
     lines.append("Write .farnsworth/{0}/verdict.json with schema:".format(
-        os.path.basename(artifact_dir)
+        task_id
     ))
     lines.append("")
     lines.append('{"outcome": "adopt" | "synthesize" | "escalate",')
     lines.append(' "candidate": "A" | null,')
-    lines.append(' "reasoning": "..."}')
+    lines.append(' "reasoning": "...",')
+    lines.append(' "progression": "..." (required when outcome is adopt)}')
     lines.append("")
 
     return "\n".join(lines)

@@ -115,6 +115,46 @@ def delete_branch(branch, cwd):
     run_git(["branch", "-D", branch], cwd)
 
 
+def export_tree(commit, dest, repo_root):
+    """Extract the tree of ``commit`` into the existing directory ``dest``.
+
+    Uses ``git archive`` piped to ``tar``, so the result carries no ``.git``
+    directory, no refs, and no worktree metadata -- the raw file tree only.
+    """
+    archive = subprocess.Popen(
+        ["git", "archive", commit],
+        cwd=str(repo_root),
+        stdout=subprocess.PIPE,
+    )
+    tar = subprocess.run(
+        ["tar", "-x", "-C", str(dest)],
+        stdin=archive.stdout,
+        capture_output=True,
+    )
+    archive.stdout.close()
+    if archive.wait() != 0 or tar.returncode != 0:
+        raise GitError(
+            "exporting tree of {0} to {1} failed".format(commit, dest)
+        )
+
+
+def init_review_repo(path):
+    """Turn ``path`` into a fresh single-commit git repo.
+
+    The review environment needs git so the reviewer can ``git apply``
+    candidate diffs and ``git reset --hard`` between candidates, but it must
+    be a FRESH repo: a clone or linked worktree would carry worker-named
+    branches that de-anonymize the field. Identity and signing are set
+    repo-locally so commits succeed under any host git config.
+    """
+    run_git(["init", "-b", "main"], path)
+    run_git(["config", "user.email", "reviewer@farnsworth.invalid"], path)
+    run_git(["config", "user.name", "Farnsworth Review Environment"], path)
+    run_git(["config", "commit.gpgsign", "false"], path)
+    run_git(["add", "-A"], path)
+    run_git(["commit", "-m", "review base"], path)
+
+
 def write_diff(base_commit, worktree_abs, output_path, repo_root):
     """Write the diff from base_commit to worktree-HEAD into output_path.
 

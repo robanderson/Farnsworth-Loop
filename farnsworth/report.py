@@ -75,7 +75,11 @@ def summary_table(run_log):
         lines.append("")
         reasoning = verdict.get("reasoning") or verdict.get("rationale") or ""
         lines.append("**Reasoning:** {0}".format(reasoning))
+        # Manual-mode logs record the progression note on the review block;
+        # CLI runs carry it inside the verdict artifact itself.
         progression = review.get("progression") if review else None
+        if not progression:
+            progression = verdict.get("progression")
         if progression:
             lines.append("")
             lines.append("**Progression:** {0}".format(progression))
