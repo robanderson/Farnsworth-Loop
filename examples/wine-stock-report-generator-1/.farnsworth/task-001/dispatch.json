@@ -1,0 +1,280 @@
+{
+  "task_id": "task-001",
+  "mode": "delegate",
+  "phase": "finalized",
+  "brief_path": "tasks/task-001.md",
+  "base_commit": "1658e78c6583f7243b10b65abf0f9bb2e1f1e4f5",
+  "dispatched_at": "2026-06-12T07:59:18Z",
+  "reviewer_model": "claude-opus-4-8",
+  "reviewer_deadline_seconds": 3600,
+  "workers": [
+    {
+      "id": "w1",
+      "model": "claude-haiku-4-5",
+      "branch": "task-001-w1",
+      "worktree": "../task-001-w1",
+      "worktree_abs": "/home/user/wsr-run/task-001-w1",
+      "briefing": ".farnsworth/task-001/briefings/w1.md",
+      "focus": "Focus on test rigor and edge cases.",
+      "deadline_seconds": 2700,
+      "status": "gated",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "report-noninteractive",
+            "exit_code": 0,
+            "autopsy": "report-noninteractive: exit 0"
+          },
+          {
+            "name": "report-interactive-eof",
+            "exit_code": 0,
+            "autopsy": "report-interactive-eof: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          },
+          {
+            "name": "missing-file",
+            "exit_code": 0,
+            "autopsy": "missing-file: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "A"
+    },
+    {
+      "id": "w2",
+      "model": "claude-haiku-4-5",
+      "branch": "task-001-w2",
+      "worktree": "../task-001-w2",
+      "worktree_abs": "/home/user/wsr-run/task-001-w2",
+      "briefing": ".farnsworth/task-001/briefings/w2.md",
+      "focus": "Focus on simplicity and economy of implementation.",
+      "deadline_seconds": 2700,
+      "status": "gated",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "report-noninteractive",
+            "exit_code": 0,
+            "autopsy": "report-noninteractive: exit 0"
+          },
+          {
+            "name": "report-interactive-eof",
+            "exit_code": 0,
+            "autopsy": "report-interactive-eof: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          },
+          {
+            "name": "missing-file",
+            "exit_code": 0,
+            "autopsy": "missing-file: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "E"
+    },
+    {
+      "id": "w3",
+      "model": "claude-sonnet-4-6",
+      "branch": "task-001-w3",
+      "worktree": "../task-001-w3",
+      "worktree_abs": "/home/user/wsr-run/task-001-w3",
+      "briefing": ".farnsworth/task-001/briefings/w3.md",
+      "focus": "Focus on readability and maintainability.",
+      "deadline_seconds": 2700,
+      "status": "gated",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "report-noninteractive",
+            "exit_code": 0,
+            "autopsy": "report-noninteractive: exit 0"
+          },
+          {
+            "name": "report-interactive-eof",
+            "exit_code": 0,
+            "autopsy": "report-interactive-eof: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          },
+          {
+            "name": "missing-file",
+            "exit_code": 0,
+            "autopsy": "missing-file: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "B"
+    },
+    {
+      "id": "w4",
+      "model": "claude-sonnet-4-6",
+      "branch": "task-001-w4",
+      "worktree": "../task-001-w4",
+      "worktree_abs": "/home/user/wsr-run/task-001-w4",
+      "briefing": ".farnsworth/task-001/briefings/w4.md",
+      "focus": "Focus on defensive robustness: validate inputs and fail loudly on contract violations.",
+      "deadline_seconds": 2700,
+      "status": "gated",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "report-noninteractive",
+            "exit_code": 0,
+            "autopsy": "report-noninteractive: exit 0"
+          },
+          {
+            "name": "report-interactive-eof",
+            "exit_code": 0,
+            "autopsy": "report-interactive-eof: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          },
+          {
+            "name": "missing-file",
+            "exit_code": 0,
+            "autopsy": "missing-file: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "C"
+    },
+    {
+      "id": "w5",
+      "model": "claude-opus-4-8",
+      "branch": "task-001-w5",
+      "worktree": "../task-001-w5",
+      "worktree_abs": "/home/user/wsr-run/task-001-w5",
+      "briefing": ".farnsworth/task-001/briefings/w5.md",
+      "focus": "Focus on faithfulness to the PRD's report format and on user-facing clarity of the generated report.",
+      "deadline_seconds": 2700,
+      "status": "gated",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "report-noninteractive",
+            "exit_code": 0,
+            "autopsy": "report-noninteractive: exit 0"
+          },
+          {
+            "name": "report-interactive-eof",
+            "exit_code": 0,
+            "autopsy": "report-interactive-eof: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          },
+          {
+            "name": "missing-file",
+            "exit_code": 0,
+            "autopsy": "missing-file: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "D"
+    }
+  ],
+  "divergence": {
+    "metric": "token-jaccard",
+    "score": 0.6447,
+    "candidates": 5
+  },
+  "review_briefing": ".farnsworth/task-001/review-briefing.md",
+  "review_env": "/home/user/wsr-run/task-001-review",
+  "gated_at": "2026-06-12T08:12:15Z"
+}

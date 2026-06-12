@@ -5,6 +5,15 @@ source, task briefs, anonymized candidate diffs, reviews, verdicts, run
 logs, the distilled `.code-tips.md`, and an orchestrator process log. Every
 decision in each example is reconstructible from the files alone.
 
+> **Protocol note:** every run recorded here executed the v1
+> single-round-per-task loop. The v2 two-phase protocol (PRD Section 2:
+> explore → distill → informed clean-slate rebuild, gate-1 as evidence,
+> the champion mechanism, Phase-0 objectives interview) was adopted on
+> 2026-06-12 from the findings of these runs — most directly the two
+> one-iteration goal exits (word-garden-5, wine-stock) that never fired
+> the within-project feedback path. The next recorded run will be the
+> first under v2.
+
 The TUI word game is a demonstration subject only — the loop itself is
 task- and domain-agnostic (PRD Section 2.3): a task is any brief with
 acceptance criteria and a mechanical gate, whether that's one-shotting a
@@ -53,6 +62,7 @@ retroactively in their `run.json`); earlier runs predate the feature.
 | [`word-garden-3/`](word-garden-3/) | The same game a third time — first live run of CROSS-PROJECT SEED TIPS and FOCUS-DIVERSIFIED DISPATCH | 2 | adopt, adopt |
 | [`word-garden-4/`](word-garden-4/) | The same game again — the only run dispatched end-to-end by the LIVE `farnsworth` CLI (real `claude -p` workers + reviewer), replicating the seed + foci extensions | 2 | adopt, adopt |
 | [`word-garden-5/`](word-garden-5/) | The same game, GOAL-DRIVEN: whole-program grain, seed v2 (generalized lessons), constructed review env — goal met in 1 iteration | 1 | adopt |
+| [`wine-stock-report-generator-1/`](wine-stock-report-generator-1/) | A DIFFERENT domain: warehouse stock CSV → Markdown report CLI, from a wine-industry PRD — first cross-domain subject, first live DELEGATE-dispatch run, goal met in 1 iteration | 1 | adopt |
 
 ## Word Garden — how this example was produced
 
@@ -370,6 +380,64 @@ What the run showed:
    working generically.
 
 Play it: identical commands to word-garden-1, from `examples/word-garden-5`.
+
+## Wine Stock Report Generator 1 — the cross-domain run (2026-06-12)
+
+The first subject outside the Word Garden family, chosen to test whether
+the loop and its accumulated memory generalize: a realistic
+small-business CLI (warehouse stock-on-hand CSV → human-readable
+Markdown stock report, with 9-litre-equivalent totals, grouping,
+low-stock and data-quality warnings) from a wine-industry PRD with an
+embedded real fixture. Same run shape as word-garden-5 (goal-driven,
+whole-program grain, seeded tips, focus-diversified 5-worker fleet) —
+plus the first live use of **delegate dispatch** (PRD Section 4.1b):
+`farnsworth run` → host-session worker subagents → `farnsworth gate` →
+reviewer subagent → `farnsworth finalize` → `farnsworth adopt --clean`
+→ `farnsworth done` → attestation. Full run report:
+[`wine-stock-report-generator-1/RUN-REPORT.md`](wine-stock-report-generator-1/RUN-REPORT.md);
+process log in its `.farnsworth/orchestrator-log.md`.
+
+| | task-001 (12 seed tips, 5 workers, whole program) |
+|---|---|
+| Gate | 5/5 (seven checks) |
+| Defects in seed-covered classes | **0** |
+| Defects in uncovered classes | 4 (1 behavioral, 1 spec, 2 test-quality) |
+| Winner | **Opus 4.8** (report-faithfulness focus) |
+| Iterations (emergent) | **1** — exit DONE |
+
+What the run added:
+
+1. **The seed-attribution thesis crossed domains.** Zero defects in the
+   classes the 12-entry seed covers; all four field defects in classes
+   no tip yet covered (conditional section rendering, tolerant-parser
+   over-rejection, unexercised injection seams, test resource hygiene).
+   Three new GENERALIZED entries routed into [`seed-tips.md`](../seed-tips.md)
+   (entries 13–15).
+2. **A new dispatch-failure class: worker self-delegation.** A worker
+   spawned a nested agent and ended its turn "complete" with zero
+   commits; the artifact rule caught it and a re-dispatch recovered the
+   round. WORKER_PREAMBLE now forbids delegation outright.
+3. **The review protocol's cleanup broke on greenfield, surfaced by a
+   hung reviewer.** `git reset --hard` cannot remove an applied
+   candidate made of NEW (untracked) files, and naive `git clean -fd`
+   would destroy the reviewer's notes. The briefing now prescribes
+   `git reset --hard && git clean -fd -e .farnsworth`.
+4. **Focus-alignment ≠ advantage, both directions in one round:** the
+   verdict's discriminator was test rigor — the test-rigor-focused
+   worker lost on an untested prompt path; the report-faithfulness
+   worker won ON test rigor.
+5. **Preflight's greenfield blind spot:** `gate-at-base` is red by
+   design on a round-1 seed, and one exit-code check passed at base
+   for the wrong reason (module-not-found also exits 1). A
+   greenfield-aware diagnosis is queued.
+
+Run it, from `examples/wine-stock-report-generator-1`:
+
+```bash
+python3 -m wine_stock_reporter examples/stock_sample.csv --no-interactive
+python3 -m unittest discover -s tests   # 73 tests
+```
+
 ## Reproducing with the CLI
 
 Word Garden 4 IS the CLI reproduction — start from

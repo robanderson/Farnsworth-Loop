@@ -104,47 +104,67 @@ any project's briefing, not just the one that birthed them.
     in a data field is a latent fallback-mode leak that stays inert only
     while every renderer happens to ignore the field. Applies to source.
     [2026-06-12, seed; generalized from word-garden-5 task-001]
-13. A structured-output generator (report, document, serialized payload)
-    MUST render its UNCONDITIONAL sections regardless of whether their
-    content is empty — an empty section renders with an explicit
-    empty-state marker ("No data warnings.", "(none)"), it is NOT
-    omitted. Omitting a section when its collection is empty makes the
-    output's shape depend on the input, which breaks any consumer (or
-    golden test) that relies on a stable structure. Only TRULY
-    conditional sections (gated by an explicit option/flag) may be
-    absent. Applies to source; output tests MUST assert the
-    unconditional sections appear on an input that yields zero items
-    for them. [2026-06-12, seed; generalized from
-    wine-stock-report-generator-1 task-001: a candidate dropped the
-    Data Warnings section on the canonical fixture because it had zero
-    warnings]
-14. A TOLERANT parser over messy real-world records MUST keep a
-    partially unparseable record in the output, mark the unknown fields
-    (blank/`Unknown`/`—`), and emit a warning naming the record — never
-    drop it and never crash on one odd record. The symmetric obligation
-    is to not OVER-reject: a record with a parseable core plus a
-    trailing free-text tail is parseable; extract the core and keep the
-    tail as an extra field rather than declaring the whole record
-    unparseable. Records excluded from a derived AGGREGATE because one
-    field is unknown MUST be excluded only from the aggregate that
-    depends on that field, and still counted in aggregates that do not.
-    Prefer token-based parsing over a brittle whole-string regex.
-    Applies to source; parser tests MUST cover both the
-    genuinely-unparseable record AND the parseable-core-with-tail
-    record. [2026-06-12, seed; generalized from
-    wine-stock-report-generator-1 task-001: a candidate marked
-    `... 750ml/12p Stock for consol` unparseable though the size was
-    present]
-15. When a function is injected purely so it can be tested hermetically
-    (an `input_fn`/`output_fn`/clock/rng seam), the test suite MUST
-    actually DRIVE it through that seam and assert the behavior —
-    importing the function and never calling it leaves the most
-    contract-heavy surface unproven while looking covered. For an
-    interactive/prompt seam this means scripting inputs (including an
-    end-of-stream that raises `EOFError`) and asserting
-    default-acceptance, end-of-stream-accepts-all-remaining, and
-    re-prompt-on-invalid. This sharpens seed tip 6: providing the
-    injection point is not the same as exercising it. Applies to tests.
-    [2026-06-12, seed; generalized from wine-stock-report-generator-1
-    task-001: an otherwise-faithful candidate imported its prompt
-    function but never invoked it in tests]
+
+---
+
+# Project Tips — Wine Stock Report Generator (task-001)
+
+13. The interactive CLI is the heaviest-contract surface and MUST be
+    unit-tested hermetically, not left to a runtime smoke test. Drive
+    `prompt_options`/`prompt_for_options` through an injected `input_fn`
+    that yields scripted answers and then raises `EOFError`, and assert:
+    empty input ⇒ the effective-CLI-value default; EOF ⇒ that default for
+    THIS and ALL remaining questions with exit 0 and no traceback; an
+    invalid answer ⇒ a re-prompt. Importing the prompt function but never
+    calling it (the round-1 gap in one otherwise-faithful candidate) leaves
+    the contract unproven. Applies to source AND tests.
+    [2026-06-12, task-001]
+14. The report MUST always render all §19 sections that are unconditional —
+    in particular the **Data Warnings section is present even when there
+    are zero warnings** (render an explicit "No data warnings." line), and
+    likewise the executive summary and the selected grouping table (except
+    `--group-by none`, which omits ONLY the grouping section). Omitting a
+    section because its list is empty (one round-1 candidate dropped Data
+    Warnings on the fixture) makes the structure input-dependent and breaks
+    §19 fidelity. Conditional sections stay conditional: Low Stock Warnings
+    only when enabled, Dry Goods Summary only when included. Applies to
+    source; report tests MUST assert the always-on sections appear on an
+    input that produces zero warnings. [2026-06-12, task-001]
+15. Compute 9LE with `decimal.Decimal` end to end
+    (`litres = qty * pack * bottle_ml/1000; 9LE = litres/9`); `float(` MUST
+    NOT appear in `calculations.py`. Round to two places only at the
+    formatting edge. The pinned acceptance values are contract:
+    750ml/12p ⇒ 9LE == cases; 750ml/6p 26.67 ⇒ 13.335 internal ⇒ **13.34**
+    rounded; 143.67 cases 750/6 ⇒ 71.84. Tests MUST assert these exact
+    values, and the §24 example rows (incl. `"2,216.50"` ⇒ 2216.50 and the
+    `Legacy Red` extra-description row) MUST be explicit named test cases.
+    Applies to source AND tests. [2026-06-12, task-001]
+16. A row whose bottle OR pack size cannot be parsed MUST stay in the
+    detail table with its 9LE shown as the em-dash `—`, carry a data
+    warning naming the item, and be EXCLUDED from 9LE totals — while its
+    cases still count in case totals. Do not drop such rows and do not
+    coerce their 9LE to 0 in a way that pollutes the total. Conversely, do
+    NOT over-reject: a description with a trailing free-text tail
+    (`FV NV MXD CON 750ml/12p Stock for consol`) still contains a parseable
+    `750ml/12p` and MUST yield 9LE == cases, not `—` (one round-1 candidate
+    wrongly marked it unparseable). Tolerant token-based parsing, never a
+    brittle whole-string regex. Applies to source; parser/calculation tests
+    MUST cover both the genuinely-unparseable and the trailing-tail cases.
+    [2026-06-12, task-001]
+17. Dry Goods rows MUST NOT enter wine 9LE totals, MUST NOT receive a 9LE
+    value, and appear ONLY in their own section in original units (Eaches),
+    rendered only when dry goods are included. Variety codes map per §11
+    (CHR/SAB/PIN/PIG/PRO/RDB/MXD); unknown codes stay visible in the report
+    AND generate a data warning. Two-digit vintages expand to 20xx;
+    non-numeric vintages (`NV`) stay `Unknown` without crashing. Numeric
+    cleaning strips whitespace and thousands separators and tolerates
+    blanks, zero, and negatives (negatives warn, never crash). Applies to
+    source; validation tests MUST import the named warning-message
+    constants and assert against them (per tip 7), covering negative,
+    `Available>OnHand`, unknown units, unknown variety, unparseable
+    bottle/pack, and Finished-Goods-not-in-Cases. [2026-06-12, task-001]
+18. Smoke tests over `examples/stock_sample.csv` MAY assert structure
+    (sections present, exit 0, a non-empty file written) but MUST NOT
+    assert the fixture's row counts or totals (§26). Build all numeric
+    assertions from rows constructed in test code with pinned values.
+    Applies to tests. [2026-06-12, task-001]

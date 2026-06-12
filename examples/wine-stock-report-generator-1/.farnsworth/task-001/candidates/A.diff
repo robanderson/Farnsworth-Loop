@@ -1,0 +1,1807 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..37a6cf5
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,147 @@
++# Wine Stock Report Generator
++
++A command-line tool that converts a warehouse stock-on-hand CSV file into a readable Markdown stock report.
++
++The report summarizes finished wine stock, dry goods, available stock, allocated stock, pack sizes, vintage, variety, market, low-stock warnings, and data quality warnings.
++
++## Usage
++
++### Non-interactive mode (for automation)
++
++```bash
++python3 -m wine_stock_reporter examples/stock_sample.csv --no-interactive
++```
++
++### Interactive mode (default)
++
++```bash
++python3 -m wine_stock_reporter examples/stock_sample.csv
++```
++
++The interactive mode will ask you clarification questions about report options before generating the report.
++
++## Command-line Options
++
++- `CSV_PATH` — Path to the stock CSV file (required)
++- `--basis {OnHand,Available}` — Stock quantity basis for wine totals (default: `Available`)
++- `--group-by {variety,vintage,market,pack_size,lot,none}` — Grouping dimension for summary (default: `variety`)
++- `--include-dry-goods` / `--no-dry-goods` — Include or exclude Dry Goods section (default: include)
++- `--low-stock-warnings` / `--no-low-stock-warnings` — Enable or disable low-stock warnings (default: enabled)
++- `--low-stock-threshold N` — Low-stock threshold in 9-litre-equivalent units (default: `10`)
++- `--output PATH` — Output file path (default: `stock-report.md`)
++- `--no-interactive` — Skip interactive prompts and use effective option values
++
++## Examples
++
++Generate a report with OnHand basis instead of Available:
++
++```bash
++python3 -m wine_stock_reporter stock.csv --basis OnHand --no-interactive
++```
++
++Generate a report grouped by vintage:
++
++```bash
++python3 -m wine_stock_reporter stock.csv --group-by vintage --no-interactive
++```
++
++Exclude dry goods and set a lower low-stock threshold:
++
++```bash
++python3 -m wine_stock_reporter stock.csv --no-dry-goods --low-stock-threshold 5 --no-interactive
++```
++
++## Input CSV Format
++
++The CSV file must contain these required columns:
++
++- `Type1` — Row type: `Finished Goods` or `Dry Goods`
++- `Item` — Item ID
++- `Description` — Item description (parsed for wine metadata)
++- `OnHand` — On-hand quantity
++- `Warehouse` — Warehouse name
++- `Allocated` — Allocated quantity
++- `Pending` — Pending quantity
++- `Available` — Available quantity
++- `Units` — Unit type: `Cases` or `Eaches`
++
++Optional columns:
++
++- `ClientStockCode` — Client-specific stock code
++- `ClientStockDescription` — Client-specific description
++- `Lot` — Lot identifier
++
++## Report Output
++
++The report is generated in Markdown format and includes:
++
++1. **Header** — Generation date, source file, warehouse, and stock basis
++2. **Executive Summary** — Row counts, total wine stock (9LE), case totals, and lowest-stock item
++3. **Grouping Section** — Summary by variety, vintage, market, pack size, or lot (unless `--group-by none`)
++4. **Detailed Finished Goods** — Table with all wine items and their metrics
++5. **Low Stock Warnings** — Items below the low-stock threshold
++6. **Dry Goods Summary** — All dry goods rows in original units (when included)
++7. **Data Warnings** — Issues detected during processing
++
++## Wine Description Parsing
++
++The parser extracts metadata from wine descriptions in the format:
++
++```
++FV <vintage> <variety_code> <brand_code> <market> <bottle_size>ml/<pack_size>p [extra description]
++```
++
++Example: `FV 22 CHR EP NZ 750ml/12p`
++
++Parsed as:
++- Prefix: `FV`
++- Vintage: `22` (expanded to `2022`)
++- Variety code: `CHR` (mapped to `Chardonnay`)
++- Brand code: `EP`
++- Market: `NZ`
++- Bottle size: `750ml`
++- Pack size: `12`
++
++### Variety Code Mappings
++
++- `CHR` → Chardonnay
++- `SAB` → Sauvignon Blanc
++- `PIN` → Pinot Noir
++- `PIG` → Pinot Gris
++- `PRO` → Rosé
++- `RDB` → Red Blend
++- `MXD` → Mixed / Consolidated
++
++Unknown variety codes are preserved and flagged in data warnings.
++
++## 9-Litre-Equivalent (9LE) Calculation
++
++9LE represents standard wine case equivalents:
++
++```
++9LE = (Quantity × Pack Size × Bottle Size in litres) / 9
++```
++
++For example:
++- 750ml/12p case = 9LE (1 standard case)
++- 750ml/6p case = 0.5 9LE (half case)
++
++## Testing
++
++Run the test suite:
++
++```bash
++python3 -m unittest discover -s tests
++```
++
++The test suite includes:
++- CSV loading tests
++- Wine description parser tests
++- 9LE calculation tests
++- Validation tests
++- CLI integration tests
++- Report generation tests
++
++## Requirements
++
++Python 3.11+ with standard library only (no external dependencies).
+diff --git a/tests/__init__.py b/tests/__init__.py
+new file mode 100644
+index 0000000..b5ec50c
+--- /dev/null
++++ b/tests/__init__.py
+@@ -0,0 +1 @@
++"""Tests for wine stock reporter."""
+diff --git a/tests/test_all.py b/tests/test_all.py
+new file mode 100644
+index 0000000..c313899
+--- /dev/null
++++ b/tests/test_all.py
+@@ -0,0 +1,522 @@
++"""Comprehensive tests for wine stock reporter."""
++
++import tempfile
++import unittest
++from decimal import Decimal
++from pathlib import Path
++from io import StringIO
++
++from wine_stock_reporter.csv_loader import load_csv, parse_decimal
++from wine_stock_reporter.models import RawStockRow, ParsedWineRow, ReportOptions, ValidationWarning
++from wine_stock_reporter.parser import parse_wine_description
++from wine_stock_reporter.calculations import calculate_9le, aggregate_by_grouping, calculate_totals, identify_low_stock_items, set_9le_on_rows
++from wine_stock_reporter.validation import validate_raw_rows, get_warehouse_list, count_by_type
++from wine_stock_reporter.report import generate_report
++from wine_stock_reporter.cli import main, prompt_for_options
++
++
++class TestCSVLoader(unittest.TestCase):
++    """Tests for CSV loading."""
++
++    def test_load_valid_csv(self):
++        """Test loading a valid CSV."""
++        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
++            f.write("Type1,Item,Description,ClientStockCode,ClientStockDescription,Lot,OnHand,Warehouse,Allocated,Pending,Available,Units\n")
++            f.write("Finished Goods,123,FV 22 CHR EP NZ 750ml/12p,,Test,LOT1,48.58,Marlborough,0.00,0.00,48.58,Cases\n")
++            f.flush()
++
++            rows, warnings = load_csv(f.name)
++            Path(f.name).unlink()
++
++            self.assertEqual(len(rows), 1)
++            self.assertEqual(rows[0].item, "123")
++            self.assertEqual(rows[0].on_hand, Decimal("48.58"))
++
++    def test_load_missing_file(self):
++        """Test loading a non-existent file."""
++        with self.assertRaises(ValueError) as ctx:
++            load_csv("/nonexistent/file.csv")
++        self.assertIn("Error:", str(ctx.exception))
++
++    def test_load_missing_required_column(self):
++        """Test loading CSV with missing required column."""
++        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
++            f.write("Type1,Item,Description\n")
++            f.write("Finished Goods,123,Test\n")
++            f.flush()
++
++            with self.assertRaises(ValueError) as ctx:
++                load_csv(f.name)
++
++            Path(f.name).unlink()
++            self.assertIn("Error:", str(ctx.exception))
++            self.assertIn("required column", str(ctx.exception))
++
++    def test_parse_decimal_basic(self):
++        """Test parsing decimal numbers."""
++        val, warn = parse_decimal("13.67")
++        self.assertEqual(val, Decimal("13.67"))
++        self.assertIsNone(warn)
++
++    def test_parse_decimal_with_thousands_separator(self):
++        """Test parsing numbers with thousands separator."""
++        val, warn = parse_decimal("2,216.50")
++        self.assertEqual(val, Decimal("2216.50"))
++        self.assertIsNone(warn)
++
++    def test_parse_decimal_blank(self):
++        """Test parsing blank field."""
++        val, warn = parse_decimal("")
++        self.assertEqual(val, Decimal("0"))
++        self.assertIsNone(warn)
++
++    def test_parse_decimal_negative(self):
++        """Test parsing negative value."""
++        val, warn = parse_decimal("-5.00")
++        self.assertEqual(val, Decimal("-5.00"))
++        self.assertIsNotNone(warn)
++        self.assertIn("Negative", warn)
++
++
++class TestParser(unittest.TestCase):
++    """Tests for wine description parser."""
++
++    def test_parse_simple_wine(self):
++        """Test parsing FV 22 CHR EP NZ 750ml/12p."""
++        raw = RawStockRow(
++            type1="Finished Goods",
++            item="123",
++            description="FV 22 CHR EP NZ 750ml/12p",
++            client_stock_code=None,
++            client_stock_description=None,
++            lot=None,
++            on_hand=Decimal("48.58"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("48.58"),
++            units="Cases",
++        )
++        parsed, warnings = parse_wine_description(raw)
++
++        self.assertEqual(parsed.variety_code, "CHR")
++        self.assertEqual(parsed.variety, "Chardonnay")
++        self.assertEqual(parsed.vintage, "22")
++        self.assertEqual(parsed.vintage_expanded, "2022")
++        self.assertEqual(parsed.market, "NZ")
++        self.assertEqual(parsed.bottle_size_ml, 750)
++        self.assertEqual(parsed.pack_size, 12)
++
++    def test_parse_wine_with_extra_description(self):
++        """Test parsing FV 22 RDB EP UK 750ml/6p Legacy Red."""
++        raw = RawStockRow(
++            type1="Finished Goods",
++            item="124",
++            description="FV 22 RDB EP UK 750ml/6p Legacy Red",
++            client_stock_code=None,
++            client_stock_description=None,
++            lot=None,
++            on_hand=Decimal("143.67"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("143.67"),
++            units="Cases",
++        )
++        parsed, warnings = parse_wine_description(raw)
++
++        self.assertEqual(parsed.variety_code, "RDB")
++        self.assertEqual(parsed.variety, "Red Blend")
++        self.assertEqual(parsed.extra_description, "Legacy Red")
++
++    def test_parse_wine_6pack(self):
++        """Test parsing 750ml/6p."""
++        raw = RawStockRow(
++            type1="Finished Goods",
++            item="125",
++            description="FV 22 CHR EP AN 750ml/6p",
++            client_stock_code=None,
++            client_stock_description=None,
++            lot=None,
++            on_hand=Decimal("320.83"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("320.83"),
++            units="Cases",
++        )
++        parsed, warnings = parse_wine_description(raw)
++
++        self.assertEqual(parsed.pack_size, 6)
++
++    def test_parse_unknown_variety_code(self):
++        """Test parsing unknown variety code."""
++        raw = RawStockRow(
++            type1="Finished Goods",
++            item="999",
++            description="FV 22 XYZ EP NZ 750ml/12p",
++            client_stock_code=None,
++            client_stock_description=None,
++            lot=None,
++            on_hand=Decimal("10"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("10"),
++            units="Cases",
++        )
++        parsed, warnings = parse_wine_description(raw)
++
++        self.assertTrue(any("Unknown variety code" in w.message for w in warnings))
++
++    def test_vintage_expansion_20(self):
++        """Test vintage expansion."""
++        raw = RawStockRow(
++            type1="Finished Goods",
++            item="126",
++            description="FV 20 CHR EP CA 750ml/12p",
++            client_stock_code=None,
++            client_stock_description=None,
++            lot=None,
++            on_hand=Decimal("13.67"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("13.67"),
++            units="Cases",
++        )
++        parsed, warnings = parse_wine_description(raw)
++
++        self.assertEqual(parsed.vintage_expanded, "2020")
++
++
++class TestCalculations(unittest.TestCase):
++    """Tests for calculations."""
++
++    def test_9le_750ml_12p(self):
++        """Test 9LE calculation for 750ml/12p."""
++        row = ParsedWineRow(
++            type1="Finished Goods",
++            item="123",
++            description="FV 22 CHR EP NZ 750ml/12p",
++            lot=None,
++            on_hand=Decimal("48.58"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("48.58"),
++            units="Cases",
++            bottle_size_ml=750,
++            pack_size=12,
++        )
++        nine_le = calculate_9le(row)
++        # 48.58 cases * 12 * 0.75 / 9 = 48.58
++        self.assertAlmostEqual(float(nine_le), 48.58, places=2)
++
++    def test_9le_750ml_6p(self):
++        """Test 9LE calculation for 750ml/6p."""
++        row = ParsedWineRow(
++            type1="Finished Goods",
++            item="124",
++            description="FV 22 CHR EP NZ 750ml/6p",
++            lot=None,
++            on_hand=Decimal("26.67"),
++            warehouse="Marlborough",
++            allocated=Decimal("0"),
++            pending=Decimal("0"),
++            available=Decimal("26.67"),
++            units="Cases",
++            bottle_size_ml=750,
++            pack_size=6,
++        )
++        nine_le = calculate_9le(row)
++        # 26.67 cases * 6 * 0.75 / 9 = 13.335
++        self.assertAlmostEqual(float(nine_le), 13.335, places=2)
++
++    def test_set_9le_on_rows(self):
++        """Test setting 9LE on rows."""
++        rows = [
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="123",
++                description="FV 22 CHR EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("48.58"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("48.58"),
++                units="Cases",
++                bottle_size_ml=750,
++                pack_size=12,
++            )
++        ]
++        set_9le_on_rows(rows, "Available")
++        self.assertIsNotNone(rows[0].nine_litre_equivalent)
++        self.assertAlmostEqual(float(rows[0].nine_litre_equivalent), 48.58, places=2)
++
++    def test_aggregate_by_variety(self):
++        """Test aggregation by variety."""
++        rows = [
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="123",
++                description="FV 22 CHR EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("10"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("10"),
++                units="Cases",
++                variety="Chardonnay",
++                bottle_size_ml=750,
++                pack_size=12,
++                nine_litre_equivalent=Decimal("10"),
++            ),
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="124",
++                description="FV 22 SAB EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("20"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("20"),
++                units="Cases",
++                variety="Sauvignon Blanc",
++                bottle_size_ml=750,
++                pack_size=12,
++                nine_litre_equivalent=Decimal("20"),
++            ),
++        ]
++        agg = aggregate_by_grouping(rows, "variety")
++        self.assertEqual(agg["Chardonnay"]["rows"], 1)
++        self.assertEqual(agg["Chardonnay"]["cases"], Decimal("10"))
++        self.assertEqual(agg["Sauvignon Blanc"]["rows"], 1)
++        self.assertEqual(agg["Sauvignon Blanc"]["cases"], Decimal("20"))
++
++    def test_calculate_totals(self):
++        """Test total calculations."""
++        rows = [
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="123",
++                description="FV 22 CHR EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("10"),
++                warehouse="Marlborough",
++                allocated=Decimal("2"),
++                pending=Decimal("1"),
++                available=Decimal("7"),
++                units="Cases",
++                nine_litre_equivalent=Decimal("7"),
++            ),
++        ]
++        total_avail, total_alloc, total_pend, total_9le = calculate_totals(rows)
++        self.assertEqual(total_avail, Decimal("7"))
++        self.assertEqual(total_alloc, Decimal("2"))
++        self.assertEqual(total_pend, Decimal("1"))
++        self.assertEqual(total_9le, Decimal("7"))
++
++    def test_identify_low_stock(self):
++        """Test identifying low-stock items."""
++        rows = [
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="123",
++                description="FV 22 CHR EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("5"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("5"),
++                units="Cases",
++                variety="Chardonnay",
++                vintage_expanded="2022",
++                nine_litre_equivalent=Decimal("5"),
++            ),
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="124",
++                description="FV 22 SAB EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("20"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("20"),
++                units="Cases",
++                variety="Sauvignon Blanc",
++                vintage_expanded="2022",
++                nine_litre_equivalent=Decimal("20"),
++            ),
++        ]
++        low_stock = identify_low_stock_items(rows, Decimal("10"))
++        self.assertEqual(len(low_stock), 1)
++        self.assertEqual(low_stock[0][1], Decimal("5"))
++
++
++class TestValidation(unittest.TestCase):
++    """Tests for validation."""
++
++    def test_validate_raw_rows(self):
++        """Test validation of raw rows."""
++        rows = [
++            RawStockRow(
++                type1="Finished Goods",
++                item="123",
++                description="Test",
++                client_stock_code=None,
++                client_stock_description=None,
++                lot=None,
++                on_hand=Decimal("10"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("10"),
++                units="Cases",
++            )
++        ]
++        warnings = validate_raw_rows(rows)
++        self.assertEqual(len(warnings), 0)
++
++    def test_validate_unknown_units(self):
++        """Test validation detects unknown units."""
++        rows = [
++            RawStockRow(
++                type1="Finished Goods",
++                item="123",
++                description="Test",
++                client_stock_code=None,
++                client_stock_description=None,
++                lot=None,
++                on_hand=Decimal("10"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("10"),
++                units="Unknown",
++            )
++        ]
++        warnings = validate_raw_rows(rows)
++        self.assertTrue(any("Unknown units" in w.message for w in warnings))
++
++    def test_get_warehouse_list(self):
++        """Test getting warehouse list."""
++        rows = [
++            RawStockRow(
++                type1="Finished Goods",
++                item="123",
++                description="Test",
++                client_stock_code=None,
++                client_stock_description=None,
++                lot=None,
++                on_hand=Decimal("10"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("10"),
++                units="Cases",
++            ),
++            RawStockRow(
++                type1="Finished Goods",
++                item="124",
++                description="Test",
++                client_stock_code=None,
++                client_stock_description=None,
++                lot=None,
++                on_hand=Decimal("20"),
++                warehouse="Auckland",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("20"),
++                units="Cases",
++            ),
++        ]
++        warehouses = get_warehouse_list(rows)
++        self.assertIn("Marlborough", warehouses)
++        self.assertIn("Auckland", warehouses)
++
++
++class TestCLI(unittest.TestCase):
++    """Tests for CLI."""
++
++    def test_help_exit_code(self):
++        """Test --help exits with 0."""
++        exit_code = main(["--help"])
++        self.assertEqual(exit_code, 0)
++
++    def test_unknown_flag_exit_code(self):
++        """Test unknown flag exits with 2."""
++        exit_code = main(["--unknown-flag", "test.csv"])
++        self.assertEqual(exit_code, 2)
++
++    def test_missing_file_exit_code(self):
++        """Test missing file exits with 1."""
++        exit_code = main(["/nonexistent/file.csv"])
++        self.assertEqual(exit_code, 1)
++
++    def test_no_interactive_with_sample_csv(self):
++        """Test non-interactive mode with sample CSV."""
++        exit_code = main([
++            "examples/stock_sample.csv",
++            "--no-interactive",
++            "--output", "test-report.md"
++        ])
++        self.assertEqual(exit_code, 0)
++        report_file = Path("test-report.md")
++        self.assertTrue(report_file.exists())
++        content = report_file.read_text()
++        self.assertIn("# Wine Stock Report", content)
++        self.assertIn("Executive Summary", content)
++        report_file.unlink()
++
++
++class TestReport(unittest.TestCase):
++    """Tests for report generation."""
++
++    def test_generate_report(self):
++        """Test report generation."""
++        wine_rows = [
++            ParsedWineRow(
++                type1="Finished Goods",
++                item="123",
++                description="FV 22 CHR EP NZ 750ml/12p",
++                lot=None,
++                on_hand=Decimal("48.58"),
++                warehouse="Marlborough",
++                allocated=Decimal("0"),
++                pending=Decimal("0"),
++                available=Decimal("48.58"),
++                units="Cases",
++                variety="Chardonnay",
++                vintage_expanded="2022",
++                bottle_size_ml=750,
++                pack_size=12,
++                nine_litre_equivalent=Decimal("48.58"),
++            ),
++        ]
++        dry_goods_rows = []
++        options = ReportOptions()
++        warnings = []
++
++        report = generate_report(
++            wine_rows=wine_rows,
++            dry_goods_rows=dry_goods_rows,
++            options=options,
++            warnings=warnings,
++            source_file="test.csv",
++            warehouses=["Marlborough"],
++        )
++
++        self.assertIn("# Wine Stock Report", report)
++        self.assertIn("Executive Summary", report)
++        self.assertIn("Detailed Finished Goods", report)
++        self.assertIn("Data Warnings", report)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/wine_stock_reporter/__init__.py b/wine_stock_reporter/__init__.py
+new file mode 100644
+index 0000000..c060c1c
+--- /dev/null
++++ b/wine_stock_reporter/__init__.py
+@@ -0,0 +1,3 @@
++"""Wine Stock Report Generator - converts warehouse stock CSV to Markdown report."""
++
++__version__ = "0.1.0"
+diff --git a/wine_stock_reporter/__main__.py b/wine_stock_reporter/__main__.py
+new file mode 100644
+index 0000000..2b2fd4f
+--- /dev/null
++++ b/wine_stock_reporter/__main__.py
+@@ -0,0 +1,10 @@
++"""Entry point for the wine stock reporter."""
++
++import sys
++
++from wine_stock_reporter.cli import main
++
++
++if __name__ == "__main__":
++    exit_code = main()
++    sys.exit(exit_code)
+diff --git a/wine_stock_reporter/calculations.py b/wine_stock_reporter/calculations.py
+new file mode 100644
+index 0000000..565d97d
+--- /dev/null
++++ b/wine_stock_reporter/calculations.py
+@@ -0,0 +1,132 @@
++"""Stock calculations and aggregations."""
++
++from decimal import Decimal
++from typing import List, Dict, Optional, Tuple
++from collections import defaultdict
++
++from wine_stock_reporter.models import ParsedWineRow, DryGoodsRow, ReportOptions
++
++
++def calculate_9le(parsed_row: ParsedWineRow) -> Optional[Decimal]:
++    """
++    Calculate 9-litre-equivalent (9LE) for a wine row.
++    Formula: litres = quantity × pack_size × bottle_size_litres
++             9LE = litres / 9
++    Returns None if bottle_size_ml or pack_size cannot be determined.
++    """
++    if (parsed_row.bottle_size_ml is None or parsed_row.pack_size is None):
++        return None
++
++    try:
++        quantity = parsed_row.available  # Using available by default, can be switched
++        bottle_size_litres = Decimal(parsed_row.bottle_size_ml) / Decimal("1000")
++        litres = quantity * Decimal(parsed_row.pack_size) * bottle_size_litres
++        nine_le = litres / Decimal("9")
++        return nine_le
++    except (TypeError, ZeroDivisionError):
++        return None
++
++
++def set_9le_on_rows(rows: List[ParsedWineRow], basis: str = "Available") -> None:
++    """
++    Calculate and set 9LE on each row based on the specified basis.
++    Modifies rows in-place.
++    """
++    for row in rows:
++        if row.bottle_size_ml is not None and row.pack_size is not None:
++            try:
++                if basis == "OnHand":
++                    quantity = row.on_hand
++                else:
++                    quantity = row.available
++
++                bottle_size_litres = Decimal(row.bottle_size_ml) / Decimal("1000")
++                litres = quantity * Decimal(row.pack_size) * bottle_size_litres
++                row.nine_litre_equivalent = litres / Decimal("9")
++            except (TypeError, ZeroDivisionError):
++                row.nine_litre_equivalent = None
++
++
++def aggregate_by_grouping(
++    rows: List[ParsedWineRow], group_by: str, basis: str = "Available"
++) -> Dict[str, Dict[str, Decimal]]:
++    """
++    Aggregate wine rows by the specified grouping.
++    Returns dict like: {group_value: {"rows": count, "cases": total, "9le": total}, ...}
++    """
++    aggregates = defaultdict(lambda: {"rows": 0, "cases": Decimal("0"), "9le": Decimal("0")})
++
++    for row in rows:
++        # Determine the grouping key
++        if group_by == "variety":
++            key = row.variety or "Unknown"
++        elif group_by == "vintage":
++            key = row.vintage_expanded or "Unknown"
++        elif group_by == "market":
++            key = row.market or "Unknown"
++        elif group_by == "pack_size":
++            key = f"{row.bottle_size_ml}ml/{row.pack_size}p" if row.pack_size else "Unknown"
++        elif group_by == "lot":
++            key = row.lot or "No Lot"
++        else:
++            continue
++
++        # Determine quantity basis
++        if basis == "OnHand":
++            quantity = row.on_hand
++        else:
++            quantity = row.available
++
++        aggregates[key]["rows"] += 1
++        aggregates[key]["cases"] += quantity
++
++        # Add 9LE if available
++        if row.nine_litre_equivalent is not None:
++            aggregates[key]["9le"] += row.nine_litre_equivalent
++
++    return dict(aggregates)
++
++
++def calculate_totals(rows: List[ParsedWineRow], basis: str = "Available") -> Tuple[
++    Decimal,  # total_available_cases
++    Decimal,  # total_allocated_cases
++    Decimal,  # total_pending_cases
++    Decimal,  # total_9le
++]:
++    """Calculate grand totals for wine rows."""
++    total_available = Decimal("0")
++    total_allocated = Decimal("0")
++    total_pending = Decimal("0")
++    total_9le = Decimal("0")
++
++    for row in rows:
++        if basis == "OnHand":
++            total_available += row.on_hand
++        else:
++            total_available += row.available
++
++        total_allocated += row.allocated
++        total_pending += row.pending
++
++        if row.nine_litre_equivalent is not None:
++            total_9le += row.nine_litre_equivalent
++
++    return total_available, total_allocated, total_pending, total_9le
++
++
++def identify_low_stock_items(
++    rows: List[ParsedWineRow], threshold: Decimal, basis: str = "Available"
++) -> List[Tuple[str, Decimal]]:
++    """
++    Identify low-stock items (9LE below threshold).
++    Returns list of (item_description, 9le_value) tuples, sorted by 9le ascending.
++    """
++    low_stock = []
++    for row in rows:
++        if row.nine_litre_equivalent is not None and row.nine_litre_equivalent < threshold:
++            item_desc = f"{row.item} ({row.variety or 'Unknown'} {row.vintage_expanded or ''})"
++            low_stock.append((item_desc, row.nine_litre_equivalent))
++
++    # Sort by 9LE ascending
++    low_stock.sort(key=lambda x: x[1])
++    return low_stock
+diff --git a/wine_stock_reporter/cli.py b/wine_stock_reporter/cli.py
+new file mode 100644
+index 0000000..e4d7c2b
+--- /dev/null
++++ b/wine_stock_reporter/cli.py
+@@ -0,0 +1,264 @@
++"""Command-line interface."""
++
++import argparse
++import sys
++from decimal import Decimal
++from typing import Optional, Callable
++
++from wine_stock_reporter.csv_loader import load_csv
++from wine_stock_reporter.models import RawStockRow, ParsedWineRow, DryGoodsRow, ReportOptions, ValidationWarning
++from wine_stock_reporter.parser import parse_wine_description
++from wine_stock_reporter.validation import validate_raw_rows, get_warehouse_list, count_by_type, get_units_list
++from wine_stock_reporter.report import generate_report, write_report
++
++
++def create_parser() -> argparse.ArgumentParser:
++    """Create and return the argument parser."""
++    parser = argparse.ArgumentParser(
++        description="Convert warehouse stock CSV to a Markdown report.",
++        prog="wine_stock_reporter",
++    )
++    parser.add_argument("csv_path", help="Path to the stock CSV file")
++    parser.add_argument(
++        "--basis",
++        choices=["OnHand", "Available"],
++        default="Available",
++        help="Stock quantity basis (default: Available)",
++    )
++    parser.add_argument(
++        "--group-by",
++        choices=["variety", "vintage", "market", "pack_size", "lot", "none"],
++        default="variety",
++        help="Grouping dimension for summary (default: variety)",
++    )
++    parser.add_argument(
++        "--include-dry-goods",
++        action="store_true",
++        default=True,
++        dest="include_dry_goods",
++        help="Include Dry Goods section (default)",
++    )
++    parser.add_argument(
++        "--no-dry-goods",
++        action="store_false",
++        dest="include_dry_goods",
++        help="Exclude Dry Goods section",
++    )
++    parser.add_argument(
++        "--low-stock-warnings",
++        action="store_true",
++        default=True,
++        dest="low_stock_warnings",
++        help="Include low-stock warnings (default)",
++    )
++    parser.add_argument(
++        "--no-low-stock-warnings",
++        action="store_false",
++        dest="low_stock_warnings",
++        help="Exclude low-stock warnings",
++    )
++    parser.add_argument(
++        "--low-stock-threshold",
++        type=Decimal,
++        default=Decimal("10"),
++        help="Low-stock threshold in 9LE (default: 10)",
++    )
++    parser.add_argument(
++        "--output",
++        default="stock-report.md",
++        help="Output file path (default: stock-report.md)",
++    )
++    parser.add_argument(
++        "--no-interactive",
++        action="store_true",
++        help="Non-interactive mode: use all defaults, do not prompt",
++    )
++    return parser
++
++
++def main(
++    argv: Optional[list] = None,
++    input_fn: Callable = input,
++    output_fn: Callable = print,
++) -> int:
++    """
++    Main entry point.
++    Returns 0 on success, 1 on data/file error, 2 on usage error.
++    """
++    parser = create_parser()
++
++    try:
++        args = parser.parse_args(argv)
++    except SystemExit as e:
++        # argparse exits with 0 for --help, 2 for errors
++        return e.code if e.code is not None else 2
++
++    # Load CSV
++    try:
++        raw_rows, load_warnings = load_csv(args.csv_path)
++    except ValueError as e:
++        # Write error to stderr properly
++        sys.stderr.write(str(e) + "\n")
++        return 1
++
++    if not raw_rows:
++        output_fn("Error: No rows found in CSV.", file=sys.stderr)
++        return 1
++
++    # Collect all warnings
++    all_warnings = list(load_warnings)
++    validation_warnings = validate_raw_rows(raw_rows)
++    all_warnings.extend(validation_warnings)
++
++    # Get metadata
++    warehouses = get_warehouse_list(raw_rows)
++    type_counts = count_by_type(raw_rows)
++    units_list = get_units_list(raw_rows)
++
++    # Print detection summary
++    output_fn(f"Loaded {args.csv_path}.\n")
++    output_fn("Detected:")
++    for type1, count in sorted(type_counts.items()):
++        output_fn(f"- {type1} rows: {count}")
++    if warehouses:
++        output_fn(f"- Warehouse: {', '.join(warehouses)}")
++    if units_list:
++        output_fn(f"- Units: {', '.join(units_list)}")
++
++    # Prepare options
++    options = ReportOptions(
++        basis=args.basis,
++        group_by=args.group_by,
++        include_dry_goods=args.include_dry_goods,
++        low_stock_warnings=args.low_stock_warnings,
++        low_stock_threshold=args.low_stock_threshold,
++        output_path=args.output,
++    )
++
++    # Interactive mode
++    if not args.no_interactive:
++        output_fn("\nReport options:\n")
++        options = prompt_for_options(options, input_fn, output_fn)
++
++    # Separate finished goods and dry goods
++    finished_goods_raw = [row for row in raw_rows if row.type1 == "Finished Goods"]
++    dry_goods_raw = [row for row in raw_rows if row.type1 == "Dry Goods"]
++
++    # Parse wine descriptions
++    wine_rows = []
++    for raw_row in finished_goods_raw:
++        parsed_row, parse_warnings = parse_wine_description(raw_row)
++        wine_rows.append(parsed_row)
++        all_warnings.extend(parse_warnings)
++
++    # Convert dry goods to DryGoodsRow objects
++    dry_goods_rows = [
++        DryGoodsRow(
++            item=row.item,
++            description=row.description,
++            available=row.available,
++            units=row.units,
++            on_hand=row.on_hand,
++            allocated=row.allocated,
++            pending=row.pending,
++        )
++        for row in dry_goods_raw
++    ]
++
++    # Generate report
++    report_content = generate_report(
++        wine_rows=wine_rows,
++        dry_goods_rows=dry_goods_rows,
++        options=options,
++        warnings=all_warnings,
++        source_file=args.csv_path,
++        warehouses=warehouses,
++    )
++
++    # Write report
++    try:
++        write_report(report_content, options.output_path)
++    except Exception as e:
++        sys.stderr.write(f"Error: Could not write report: {str(e)}\n")
++        return 1
++
++    output_fn(f"Report written to {options.output_path}")
++    return 0
++
++
++def prompt_for_options(
++    defaults: ReportOptions,
++    input_fn: Callable = input,
++    output_fn: Callable = print,
++) -> ReportOptions:
++    """
++    Interactively prompt for report options.
++    Empty input (Enter only) uses the default.
++    EOF (empty input from pipe) accepts all remaining defaults.
++    """
++    options = ReportOptions(
++        basis=defaults.basis,
++        group_by=defaults.group_by,
++        include_dry_goods=defaults.include_dry_goods,
++        low_stock_warnings=defaults.low_stock_warnings,
++        low_stock_threshold=defaults.low_stock_threshold,
++        output_path=defaults.output_path,
++    )
++
++    prompts = [
++        ("1. Use OnHand or Available stock for wine totals?", "basis", ["OnHand", "Available"]),
++        ("2. Include Dry Goods section?", "include_dry_goods", ["yes", "no"]),
++        ("3. Group primary wine summary by?", "group_by", ["variety", "vintage", "market", "pack_size", "lot", "none"]),
++        ("4. Include low-stock warnings?", "low_stock_warnings", ["yes", "no"]),
++        ("5. Low-stock threshold in 9LE?", "low_stock_threshold", None),
++        ("6. Output filename?", "output_path", None),
++    ]
++
++    for question, field, valid_values in prompts:
++        current_value = getattr(options, field)
++        if field == "include_dry_goods":
++            default_display = "yes" if current_value else "no"
++        elif field == "low_stock_warnings":
++            default_display = "yes" if current_value else "no"
++        else:
++            default_display = str(current_value)
++
++        prompt_text = f"{question} [{default_display}]: "
++
++        try:
++            user_input = input_fn(prompt_text)
++        except EOFError:
++            # EOF: use all remaining defaults
++            break
++
++        if not user_input.strip():
++            # Empty input: keep default
++            continue
++
++        # Validate and set
++        if valid_values:
++            normalized_input = user_input.strip().lower()
++            if normalized_input not in [v.lower() for v in valid_values]:
++                output_fn(f"Invalid choice. Valid options: {', '.join(valid_values)}")
++                # Re-prompt
++                continue
++            if field == "include_dry_goods":
++                options.include_dry_goods = normalized_input == "yes"
++            elif field == "low_stock_warnings":
++                options.low_stock_warnings = normalized_input == "yes"
++            elif field == "basis":
++                options.basis = "OnHand" if normalized_input == "onhand" else "Available"
++            elif field == "group_by":
++                options.group_by = normalized_input
++        else:
++            # Free-form input
++            if field == "low_stock_threshold":
++                try:
++                    options.low_stock_threshold = Decimal(user_input.strip())
++                except:
++                    output_fn("Invalid number. Using default.")
++                    continue
++            elif field == "output_path":
++                options.output_path = user_input.strip()
++
++    return options
+diff --git a/wine_stock_reporter/csv_loader.py b/wine_stock_reporter/csv_loader.py
+new file mode 100644
+index 0000000..99bff4e
+--- /dev/null
++++ b/wine_stock_reporter/csv_loader.py
+@@ -0,0 +1,133 @@
++"""CSV loading and basic data cleaning."""
++
++import csv
++from decimal import Decimal, InvalidOperation
++from pathlib import Path
++from typing import Optional, List, Tuple
++
++from wine_stock_reporter.models import RawStockRow, ValidationWarning
++
++
++REQUIRED_COLUMNS = [
++    "Type1",
++    "Item",
++    "Description",
++    "OnHand",
++    "Warehouse",
++    "Allocated",
++    "Pending",
++    "Available",
++    "Units",
++]
++
++OPTIONAL_COLUMNS = [
++    "ClientStockCode",
++    "ClientStockDescription",
++    "Lot",
++]
++
++
++def parse_decimal(value: str, field_name: str = "") -> Tuple[Optional[Decimal], Optional[str]]:
++    """
++    Parse a numeric field, handling blanks, decimals, thousands separators, etc.
++    Returns (Decimal value or None, warning message or None).
++    """
++    if not value or not value.strip():
++        return Decimal("0"), None
++
++    value = value.strip()
++
++    # Remove thousands separators
++    value = value.replace(",", "")
++
++    try:
++        decimal_val = Decimal(value)
++        if decimal_val < 0:
++            return decimal_val, f"Negative value in {field_name}: {value}"
++        return decimal_val, None
++    except (InvalidOperation, ValueError):
++        return None, f"Could not parse numeric value in {field_name}: {value}"
++
++
++def load_csv(csv_path: str) -> Tuple[List[RawStockRow], List[ValidationWarning]]:
++    """
++    Load a CSV file and return parsed rows with warnings.
++    Raises: ValueError if the file is missing or required columns are missing.
++    """
++    path = Path(csv_path)
++    if not path.exists():
++        raise ValueError(f"Error: CSV file not found: {csv_path}")
++
++    rows = []
++    warnings = []
++
++    try:
++        with open(path, newline="", encoding="utf-8") as f:
++            reader = csv.DictReader(f)
++            if reader.fieldnames is None:
++                raise ValueError("CSV is empty")
++
++            # Validate required columns
++            missing_columns = [col for col in REQUIRED_COLUMNS if col not in reader.fieldnames]
++            if missing_columns:
++                raise ValueError(f"Error: required column '{missing_columns[0]}' was not found in CSV.")
++
++            for row_num, row in enumerate(reader, start=2):  # start=2 to account for header
++                try:
++                    raw_row = _parse_csv_row(row, warnings)
++                    rows.append(raw_row)
++                except ValueError as e:
++                    warnings.append(ValidationWarning(str(e)))
++                    continue
++
++    except FileNotFoundError:
++        raise ValueError(f"Error: CSV file not found: {csv_path}")
++    except Exception as e:
++        if "Error:" in str(e):
++            raise
++        raise ValueError(f"Error reading CSV: {str(e)}")
++
++    return rows, warnings
++
++
++def _parse_csv_row(row: dict, warnings: List[ValidationWarning]) -> RawStockRow:
++    """Parse a single CSV row."""
++
++    # Get optional fields
++    lot = row.get("Lot", "").strip() or None
++    client_stock_code = row.get("ClientStockCode", "").strip() or None
++    client_stock_description = row.get("ClientStockDescription", "").strip() or None
++
++    # Parse numeric fields with warnings
++    on_hand, on_hand_warn = parse_decimal(row.get("OnHand", ""), "OnHand")
++    allocated, allocated_warn = parse_decimal(row.get("Allocated", ""), "Allocated")
++    pending, pending_warn = parse_decimal(row.get("Pending", ""), "Pending")
++    available, available_warn = parse_decimal(row.get("Available", ""), "Available")
++
++    if on_hand is None:
++        on_hand = Decimal("0")
++    if allocated is None:
++        allocated = Decimal("0")
++    if pending is None:
++        pending = Decimal("0")
++    if available is None:
++        available = Decimal("0")
++
++    for warn_msg in [on_hand_warn, allocated_warn, pending_warn, available_warn]:
++        if warn_msg:
++            warnings.append(ValidationWarning(warn_msg))
++
++    return RawStockRow(
++        type1=row.get("Type1", "").strip(),
++        item=row.get("Item", "").strip(),
++        description=row.get("Description", "").strip(),
++        client_stock_code=client_stock_code,
++        client_stock_description=client_stock_description,
++        lot=lot,
++        on_hand=on_hand,
++        warehouse=row.get("Warehouse", "").strip(),
++        allocated=allocated,
++        pending=pending,
++        available=available,
++        units=row.get("Units", "").strip(),
++    )
+diff --git a/wine_stock_reporter/models.py b/wine_stock_reporter/models.py
+new file mode 100644
+index 0000000..7e5f4e9
+--- /dev/null
++++ b/wine_stock_reporter/models.py
+@@ -0,0 +1,95 @@
++"""Data models for wine stock reporting."""
++
++from dataclasses import dataclass, field
++from decimal import Decimal
++from typing import Optional
++
++
++@dataclass
++class ValidationWarning:
++    """A single validation warning."""
++    message: str
++
++
++@dataclass
++class RawStockRow:
++    """A raw CSV row, with parsed numeric fields."""
++    type1: str
++    item: str
++    description: str
++    client_stock_code: Optional[str]
++    client_stock_description: Optional[str]
++    lot: Optional[str]
++    on_hand: Decimal
++    warehouse: str
++    allocated: Decimal
++    pending: Decimal
++    available: Decimal
++    units: str
++
++
++@dataclass
++class ParsedWineRow:
++    """A parsed finished goods row."""
++    type1: str
++    item: str
++    description: str
++    lot: Optional[str]
++    on_hand: Decimal
++    warehouse: str
++    allocated: Decimal
++    pending: Decimal
++    available: Decimal
++    units: str
++
++    # Parsed fields
++    prefix: Optional[str] = None
++    vintage: Optional[str] = None
++    vintage_expanded: Optional[str] = None
++    variety_code: Optional[str] = None
++    variety: Optional[str] = None
++    brand_code: Optional[str] = None
++    market: Optional[str] = None
++    bottle_size_ml: Optional[int] = None
++    pack_size: Optional[int] = None
++    extra_description: Optional[str] = None
++
++    # Calculated fields
++    nine_litre_equivalent: Optional[Decimal] = None
++
++
++@dataclass
++class DryGoodsRow:
++    """A dry goods row."""
++    item: str
++    description: str
++    available: Decimal
++    units: str
++    on_hand: Decimal
++    allocated: Decimal
++    pending: Decimal
++
++
++@dataclass
++class ReportOptions:
++    """User-selected report options."""
++    basis: str = "Available"  # Available or OnHand
++    group_by: str = "variety"  # variety, vintage, market, pack_size, lot, none
++    include_dry_goods: bool = True
++    low_stock_warnings: bool = True
++    low_stock_threshold: Decimal = Decimal("10")
++    output_path: str = "stock-report.md"
++
++
++@dataclass
++class ExecutiveSummary:
++    """Executive summary data."""
++    finished_goods_rows: int = 0
++    dry_goods_rows: int = 0
++    total_wine_9le: Decimal = Decimal("0")
++    total_available_cases: Decimal = Decimal("0")
++    total_allocated_cases: Decimal = Decimal("0")
++    total_pending_cases: Decimal = Decimal("0")
++    lowest_stock_item: Optional[str] = None
++    lowest_stock_9le: Optional[Decimal] = None
++    data_warnings_count: int = 0
+diff --git a/wine_stock_reporter/parser.py b/wine_stock_reporter/parser.py
+new file mode 100644
+index 0000000..d8c90a3
+--- /dev/null
++++ b/wine_stock_reporter/parser.py
+@@ -0,0 +1,107 @@
++"""Wine description parser."""
++
++import re
++from typing import Optional, Tuple, List
++
++from wine_stock_reporter.models import ParsedWineRow, RawStockRow, ValidationWarning
++
++
++VARIETY_CODE_MAP = {
++    "CHR": "Chardonnay",
++    "SAB": "Sauvignon Blanc",
++    "PIN": "Pinot Noir",
++    "PIG": "Pinot Gris",
++    "PRO": "Rosé",
++    "RDB": "Red Blend",
++    "MXD": "Mixed / Consolidated",
++}
++
++
++def parse_wine_description(raw_row: RawStockRow) -> Tuple[ParsedWineRow, List[ValidationWarning]]:
++    """
++    Parse a finished goods wine description.
++    Returns (ParsedWineRow, list of warnings).
++    """
++    warnings = []
++    parsed = ParsedWineRow(
++        type1=raw_row.type1,
++        item=raw_row.item,
++        description=raw_row.description,
++        lot=raw_row.lot,
++        on_hand=raw_row.on_hand,
++        warehouse=raw_row.warehouse,
++        allocated=raw_row.allocated,
++        pending=raw_row.pending,
++        available=raw_row.available,
++        units=raw_row.units,
++    )
++
++    desc = raw_row.description.strip()
++    if not desc:
++        warnings.append(ValidationWarning(f"Empty description for item {raw_row.item}"))
++        return parsed, warnings
++
++    # Attempt to parse: FV 22 CHR EP NZ 750ml/6p [extra]
++    # Pattern: FV <vintage> <variety_code> <brand_code> <market> <bottle_size>ml/<pack_size>p [extra description]
++    # Market can include special characters like X+, so allow any non-space sequence
++    pattern = r'^(\w+)\s+(\d+)\s+(\w+)\s+(\w+)\s+(\S+)\s+(\d+)ml/(\d+)p(?:\s+(.*))?$'
++
++    match = re.match(pattern, desc)
++    if match:
++        parsed.prefix = match.group(1)
++        vintage_str = match.group(2)
++        parsed.vintage = vintage_str
++        parsed.variety_code = match.group(3)
++        parsed.brand_code = match.group(4)
++        parsed.market = match.group(5)
++        parsed.bottle_size_ml = int(match.group(6))
++        parsed.pack_size = int(match.group(7))
++        if match.group(8):
++            parsed.extra_description = match.group(8)
++
++        # Expand vintage
++        parsed.vintage_expanded = _expand_vintage(vintage_str)
++
++        # Map variety
++        if parsed.variety_code in VARIETY_CODE_MAP:
++            parsed.variety = VARIETY_CODE_MAP[parsed.variety_code]
++        else:
++            parsed.variety = parsed.variety_code
++            warnings.append(ValidationWarning(f"Unknown variety code '{parsed.variety_code}' in item {raw_row.item}"))
++    else:
++        # Could not parse fully - mark as unknown
++        parsed.variety_code = "Unknown"
++        parsed.variety = "Unknown"
++        warnings.append(ValidationWarning(f"Could not fully parse description for item {raw_row.item}: '{desc}'"))
++
++    # Validation: check for unparseable bottle or pack size
++    if parsed.units == "Cases" and raw_row.type1 == "Finished Goods":
++        if parsed.bottle_size_ml is None:
++            warnings.append(ValidationWarning(f"Could not parse bottle size for item {raw_row.item}"))
++        if parsed.pack_size is None:
++            warnings.append(ValidationWarning(f"Could not parse pack size for item {raw_row.item}"))
++    else:
++        if raw_row.type1 == "Finished Goods" and parsed.units != "Cases":
++            warnings.append(ValidationWarning(f"Finished Goods item {raw_row.item} is not in Cases: {parsed.units}"))
++
++    # Check for suspicious conditions
++    if raw_row.available > raw_row.on_hand:
++        warnings.append(ValidationWarning(f"Available ({raw_row.available}) greater than OnHand ({raw_row.on_hand}) for item {raw_row.item}"))
++
++    on_hand_calc = raw_row.allocated + raw_row.pending + raw_row.available
++    if on_hand_calc != raw_row.on_hand:
++        warnings.append(ValidationWarning(f"Material mismatch for item {raw_row.item}: OnHand - Allocated - Pending != Available"))
++
++    return parsed, warnings
++
++
++def _expand_vintage(vintage_str: str) -> str:
++    """Expand two-digit vintage to four digits."""
++    try:
++        vintage_num = int(vintage_str)
++        if vintage_num < 100:
++            # Assume 2000-2099
++            return str(2000 + vintage_num)
++        return str(vintage_num)
++    except ValueError:
++        return vintage_str
+diff --git a/wine_stock_reporter/report.py b/wine_stock_reporter/report.py
+new file mode 100644
+index 0000000..1936631
+--- /dev/null
++++ b/wine_stock_reporter/report.py
+@@ -0,0 +1,270 @@
++"""Report generation in Markdown format."""
++
++from datetime import datetime
++from decimal import Decimal
++from pathlib import Path
++from typing import List, Dict, Optional, Tuple
++
++from wine_stock_reporter.models import (
++    ParsedWineRow,
++    DryGoodsRow,
++    ReportOptions,
++    ValidationWarning,
++    ExecutiveSummary,
++)
++from wine_stock_reporter.calculations import (
++    aggregate_by_grouping,
++    calculate_totals,
++    identify_low_stock_items,
++)
++
++
++def generate_report(
++    wine_rows: List[ParsedWineRow],
++    dry_goods_rows: List[DryGoodsRow],
++    options: ReportOptions,
++    warnings: List[ValidationWarning],
++    source_file: str,
++    warehouses: List[str],
++) -> str:
++    """Generate a complete Markdown report."""
++
++    # Calculate totals for executive summary
++    set_9le_for_all(wine_rows, options.basis)
++    total_available, total_allocated, total_pending, total_9le = calculate_totals(wine_rows, options.basis)
++
++    # Find lowest stock item
++    low_stock_items = identify_low_stock_items(wine_rows, Decimal("0"), options.basis)
++    lowest_item = None
++    lowest_9le = None
++    if low_stock_items:
++        # Get the absolute lowest
++        lowest_item = low_stock_items[-1][0]  # Already sorted ascending, so last is highest
++        lowest_9le = low_stock_items[-1][1]
++        # Actually we want lowest, so use index 0
++        lowest_item = low_stock_items[0][0]
++        lowest_9le = low_stock_items[0][1]
++
++    dry_goods_count = len(dry_goods_rows) if options.include_dry_goods else 0
++
++    # Build report sections
++    sections = []
++
++    # Header
++    sections.append(_build_header(source_file, warehouses, options.basis))
++
++    # Executive summary
++    sections.append(
++        _build_executive_summary(
++            len(wine_rows),
++            dry_goods_count,
++            total_9le,
++            total_available,
++            total_allocated,
++            total_pending,
++            lowest_item,
++            lowest_9le,
++            len(warnings),
++        )
++    )
++
++    # Grouping section
++    if options.group_by != "none":
++        sections.append(_build_grouping_section(wine_rows, options.group_by, options.basis))
++
++    # Detailed finished goods
++    sections.append(_build_detailed_finished_goods(wine_rows, options.basis))
++
++    # Low-stock warnings
++    if options.low_stock_warnings:
++        low_stock = identify_low_stock_items(wine_rows, options.low_stock_threshold, options.basis)
++        sections.append(_build_low_stock_warnings(low_stock))
++
++    # Dry goods
++    if options.include_dry_goods and dry_goods_rows:
++        sections.append(_build_dry_goods_section(dry_goods_rows))
++
++    # Data warnings
++    sections.append(_build_data_warnings(warnings))
++
++    return "\n\n".join(sections)
++
++
++def set_9le_for_all(wine_rows: List[ParsedWineRow], basis: str) -> None:
++    """Set 9LE on all wine rows based on basis."""
++    for row in wine_rows:
++        if row.bottle_size_ml is not None and row.pack_size is not None:
++            try:
++                if basis == "OnHand":
++                    quantity = row.on_hand
++                else:
++                    quantity = row.available
++
++                bottle_size_litres = Decimal(row.bottle_size_ml) / Decimal("1000")
++                litres = quantity * Decimal(row.pack_size) * bottle_size_litres
++                row.nine_litre_equivalent = litres / Decimal("9")
++            except (TypeError, ZeroDivisionError):
++                row.nine_litre_equivalent = None
++
++
++def _build_header(source_file: str, warehouses: List[str], basis: str) -> str:
++    """Build the report header."""
++    gen_date = datetime.now().strftime("%Y-%m-%d")
++    warehouse_str = ", ".join(warehouses) if warehouses else "Unknown"
++    basis_label = "OnHand" if basis == "OnHand" else "Available"
++
++    header = f"""# Wine Stock Report
++
++Generated: {gen_date}
++Source file: {source_file}
++Warehouse: {warehouse_str}
++Stock basis: {basis_label}"""
++    return header
++
++
++def _build_executive_summary(
++    finished_goods_count: int,
++    dry_goods_count: int,
++    total_9le: Decimal,
++    total_available: Decimal,
++    total_allocated: Decimal,
++    total_pending: Decimal,
++    lowest_item: Optional[str],
++    lowest_9le: Optional[Decimal],
++    warnings_count: int,
++) -> str:
++    """Build the executive summary section."""
++    summary_items = [
++        f"Finished Goods rows: {finished_goods_count}",
++        f"Dry Goods rows: {dry_goods_count}",
++        f"Total wine stock: {_format_decimal(total_9le)} 9LE",
++        f"Total available cases: {_format_decimal(total_available)}",
++        f"Total allocated cases: {_format_decimal(total_allocated)}",
++        f"Total pending cases: {_format_decimal(total_pending)}",
++    ]
++
++    if lowest_item and lowest_9le is not None:
++        summary_items.append(f"Lowest stock item: {lowest_item} ({_format_decimal(lowest_9le)} 9LE)")
++
++    summary_items.append(f"Data warnings: {warnings_count}")
++
++    summary = "## Executive Summary\n\n" + "\n".join(f"- {item}" for item in summary_items)
++    return summary
++
++
++def _build_grouping_section(rows: List[ParsedWineRow], group_by: str, basis: str) -> str:
++    """Build a grouping summary section."""
++    aggregates = aggregate_by_grouping(rows, group_by, basis)
++
++    # Determine section title
++    title_map = {
++        "variety": "Stock by Variety",
++        "vintage": "Stock by Vintage",
++        "market": "Stock by Market",
++        "pack_size": "Stock by Pack Size",
++        "lot": "Stock by Lot",
++    }
++    title = title_map.get(group_by, f"Stock by {group_by}")
++
++    # Build table
++    lines = [f"## {title}", ""]
++    lines.append("| Key | Rows | Cases | 9LE |")
++    lines.append("|---|---:|---:|---:|")
++
++    for key in sorted(aggregates.keys()):
++        agg = aggregates[key]
++        rows_count = agg["rows"]
++        cases = _format_decimal(agg["cases"])
++        nine_le = _format_decimal(agg["9le"])
++        lines.append(f"| {key} | {rows_count} | {cases} | {nine_le} |")
++
++    return "\n".join(lines)
++
++
++def _build_detailed_finished_goods(rows: List[ParsedWineRow], basis: str) -> str:
++    """Build the detailed finished goods table."""
++    lines = ["## Detailed Finished Goods", ""]
++    lines.append("| Item | Description | Variety | Vintage | Market | Bottle/Pack | On Hand | Allocated | Pending | Available | Units | 9LE |")
++    lines.append("|---|---|---|---|---|---|---:|---:|---:|---:|---|---:|")
++
++    for row in rows:
++        item = row.item
++        desc = row.description[:50] + ("..." if len(row.description) > 50 else "")
++        variety = row.variety or "Unknown"
++        vintage = row.vintage_expanded or ""
++        market = row.market or ""
++        bottle_pack = f"{row.bottle_size_ml}ml/{row.pack_size}p" if row.bottle_size_ml and row.pack_size else "—"
++        on_hand = _format_decimal(row.on_hand)
++        allocated = _format_decimal(row.allocated)
++        pending = _format_decimal(row.pending)
++        available = _format_decimal(row.available)
++        units = row.units
++        nine_le = _format_decimal(row.nine_litre_equivalent) if row.nine_litre_equivalent is not None else "—"
++
++        lines.append(
++            f"| {item} | {desc} | {variety} | {vintage} | {market} | {bottle_pack} | {on_hand} | {allocated} | {pending} | {available} | {units} | {nine_le} |"
++        )
++
++    return "\n".join(lines)
++
++
++def _build_low_stock_warnings(low_stock_items: List[Tuple[str, Decimal]]) -> str:
++    """Build the low-stock warnings section."""
++    lines = ["## Low Stock Warnings", ""]
++
++    if not low_stock_items:
++        lines.append("No items below the low-stock threshold.")
++    else:
++        for item_desc, nine_le in low_stock_items:
++            lines.append(f"- {item_desc}: {_format_decimal(nine_le)} 9LE")
++
++    return "\n".join(lines)
++
++
++def _build_dry_goods_section(dry_goods_rows: List[DryGoodsRow]) -> str:
++    """Build the dry goods summary section."""
++    lines = ["## Dry Goods Summary", ""]
++    lines.append("| Item | Description | On Hand | Allocated | Pending | Available | Units |")
++    lines.append("|---|---|---:|---:|---:|---:|---|")
++
++    for row in dry_goods_rows:
++        item = row.item
++        desc = row.description[:50] + ("..." if len(row.description) > 50 else "")
++        on_hand = _format_decimal(row.on_hand)
++        allocated = _format_decimal(row.allocated)
++        pending = _format_decimal(row.pending)
++        available = _format_decimal(row.available)
++        units = row.units
++
++        lines.append(
++            f"| {item} | {desc} | {on_hand} | {allocated} | {pending} | {available} | {units} |"
++        )
++
++    return "\n".join(lines)
++
++
++def _build_data_warnings(warnings: List[ValidationWarning]) -> str:
++    """Build the data warnings section."""
++    lines = ["## Data Warnings", ""]
++
++    if not warnings:
++        lines.append("No data warnings.")
++    else:
++        for warning in warnings:
++            lines.append(f"- {warning.message}")
++
++    return "\n".join(lines)
++
++
++def _format_decimal(value: Optional[Decimal]) -> str:
++    """Format a decimal for display, rounded to 2 places."""
++    if value is None:
++        return "—"
++    # Round to 2 decimal places
++    rounded = value.quantize(Decimal("0.01"))
++    return str(rounded)
++
++
++def write_report(report_content: str, output_path: str) -> None:
++    """Write report to a file."""
++    Path(output_path).write_text(report_content, encoding="utf-8")
+diff --git a/wine_stock_reporter/validation.py b/wine_stock_reporter/validation.py
+new file mode 100644
+index 0000000..f0b8f4a
+--- /dev/null
++++ b/wine_stock_reporter/validation.py
+@@ -0,0 +1,51 @@
++"""Validation logic for stock data."""
++
++from typing import List, Set
++
++from wine_stock_reporter.models import RawStockRow, ValidationWarning
++
++
++KNOWN_UNITS = {"Cases", "Eaches"}
++KNOWN_TYPE1 = {"Finished Goods", "Dry Goods"}
++
++
++def validate_raw_rows(rows: List[RawStockRow]) -> List[ValidationWarning]:
++    """Validate raw CSV rows and return list of warnings."""
++    warnings = []
++    seen_warehouses = set()
++    seen_units = set()
++
++    for row in rows:
++        # Check for unknown Type1
++        if row.type1 not in KNOWN_TYPE1:
++            warnings.append(ValidationWarning(f"Unknown Type1 '{row.type1}' for item {row.item}"))
++
++        # Check for unknown Units
++        if row.units not in KNOWN_UNITS:
++            warnings.append(ValidationWarning(f"Unknown units '{row.units}' for item {row.item}"))
++
++        # Track warehouses and units
++        seen_warehouses.add(row.warehouse)
++        seen_units.add(row.units)
++
++    return warnings
++
++
++def get_warehouse_list(rows: List[RawStockRow]) -> List[str]:
++    """Get sorted list of unique warehouses."""
++    warehouses = set(row.warehouse for row in rows if row.warehouse)
++    return sorted(warehouses)
++
++
++def get_units_list(rows: List[RawStockRow]) -> List[str]:
++    """Get sorted list of unique units."""
++    units = set(row.units for row in rows if row.units)
++    return sorted(units)
++
++
++def count_by_type(rows: List[RawStockRow]) -> dict:
++    """Count rows by Type1."""
++    counts = {}
++    for row in rows:
++        counts[row.type1] = counts.get(row.type1, 0) + 1
++    return counts

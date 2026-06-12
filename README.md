@@ -4,7 +4,7 @@
 
 **Author:** Rob Anderson
 **Date:** 12 June 2026
-**Status:** Draft v1.2 (v1.1 revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date; v1.2 folds in the 12 June hardening pass: preflight, metrics, adopt, recorded divergence, mechanical hygiene gate, cost capture, goal artifacts)
+**Status:** Draft v2.0 (v1.1 revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date; v1.2 folds in the 12 June hardening pass: preflight, metrics, adopt, recorded divergence, mechanical hygiene gate, cost capture, goal artifacts; **v2.0, 12 June 2026 evening,** adopts the two-phase explore→rebuild task loop, gate-1 as evidence, the champion mechanism, Phase-0 objectives interview, smallest-gateable-slice derivation, and requirements grammars — Sections 2, 2.2, 2.3, 2.5, 2.6 — distilled from the wine-stock run, Section 17, and the operator design review that followed it. The CLI implements the v1 flow until M7.)
 **Repo:** farnsworth-loop
 
 -----
@@ -40,37 +40,68 @@ This PRD specifies a minimal reference implementation using the Anthropic ecosys
 
 > **Dogfooding status:** M1 and M2 were themselves built by running the loop — five blind parallel workers per task, mechanical gate, anonymized Opus review, verdict, distillation. The thesis has its first data: the round-1 winner (empty tips file) was Opus; the round-2 winner (14 distilled lessons in the briefing) was Haiku. Same models, better project. See Section 11 and `.farnsworth/orchestrator-log.md`.
 
-## 2. Core Loop
+## 2. Core Loop (v2: explore → distill → informed rebuild)
+
+> **v2, adopted 2026-06-12** after the wine-stock run (Section 17) and
+> the operator design review that followed it. The two-round structure
+> is now the SPINE of every task, not a divergence-triggered exception
+> (rationale and history in Section 2.2). All recorded example runs
+> predate v2 and executed the v1 single-round task flow preserved in
+> git history.
 
 ```
-GOAL (objective brief + done checks)
+GOAL (Phase 0 objectives interview -> business objectives + done checks)
   |
   v
-derive next TASK from the gap between merged state and goal
-  -> DISPATCH (parallel, blind) -> GATE (mechanical) -> REVIEW (anonymized)
-  -> VERDICT (adopt | synthesize | escalate) -> DISTILL (update .code-tips.md)
-  -> MERGE -> done check ----no----> derive next TASK (cycle continues)
-                  |
-                 yes
-                  v
-                STOP (goal complete)
+derive next TASK from the goal gap (smallest gateable slice, Section 2.3)
+  |
+  v
+ROUND 1 -- EXPLORE
+  -> DISPATCH (parallel, blind; wide, cheap, focus-diversified)
+  -> GATE-1   (mechanical; EVIDENCE for the review, never a filter)
+  -> REVIEW   (anonymized; probe the passers, idea-mine the failers)
+  -> VERDICT-1 (champion from the passers | no champion | escalate)
+  -> DISTILL  (lessons -> tips; mechanizable lessons -> gate extensions)
+  |
+  v
+ROUND 2 -- INFORMED REBUILD
+  -> DISPATCH (parallel, blind, CLEAN SLATE: brief + distilled lessons;
+               round-1 code never travels -- only the champion stands)
+  -> GATE-2   (mechanical, STRICT, including the ratcheted extensions)
+  -> REVIEW   (anonymized; round-2 field + champion, relabeled together)
+  -> VERDICT-2 (adopt | synthesize | escalate)
+  -> DISTILL  (update .code-tips.md)
+  |
+  v
+MERGE -> done check ----no----> derive next TASK (cycle continues)
+            |          (round 2 yields nothing adoptable: distill again
+           yes          -> ROUND 3, bounded by the STALLED rule, 2.4)
+            |
+            v
+          STOP (goal complete)
 ```
 
-It is a LOOP: iterations repeat until the primary goal is complete —
-2 cycles for a small brief, 200 for a hard one (Section 2.4 defines the
-continuation and termination contract).
+It is a LOOP twice over: rounds repeat within a task until something is
+adoptable, and tasks repeat until the primary goal is complete — 2
+cycles for a small brief, 200 for a hard one (Section 2.4 defines the
+continuation and termination contract). Every task now produces the
+attempt-1 → attempt-2 delta on the same problem — the loop's cleanest
+direct measurement of learning, which six v1 runs never produced.
 
-One iteration in detail:
+One task in detail:
 
-1. **Dispatch.** Orchestrator creates one git worktree per worker and dispatches the same task brief to all workers in parallel. Each brief is: current `.code-tips.md` + task specification + an optional per-worker **focus directive** (Section 2.1). Workers run blind: no worker sees another worker’s output, no worker sees another worker’s focus, and no worker sees its own prior attempts.
-1. **Gate.** Each worktree passes a mechanical filter before any model judges it: build succeeds, tests pass, linter passes. Failures are reduced to a one-line autopsy (“Worker C: 3 test failures in auth”). Only passing candidates proceed to full review.
-1. **Review.** The reviewer receives passing diffs labeled A, B, C in randomized order with no model attribution, plus one-line autopsies of the failures, and scores all candidates against the task’s acceptance criteria. The review covers what is good AND bad in each implementation, not just a ranking.
-1. **Verdict.** Exactly one of three outcomes:
-- **Adopt:** one candidate is correct and complete; merge it as-is.
-- **Synthesize:** no candidate is adequate but the field contains usable insight; the reviewer authors a fresh implementation informed by the candidates and critique. The reviewer must sketch its own approach BEFORE reading candidates (anchoring defence; its blind sketch counts as candidate n+1).
-- **Escalate:** the task specification itself is wrong or ambiguous; file a change request to the orchestrator. Hints never silently amend the contract.
-1. **Distill.** The reviewer writes durable lessons from this iteration into `.code-tips.md`. Only the review phase may write this file; workers are read-only consumers. Commit message convention: `Good news, everyone! <summary of lesson>`.
-1. **Merge.** Winning diff merges to main. Worktrees are destroyed. Loop continues.
+1. **Dispatch, round 1 (explore).** Orchestrator creates one git worktree per worker and dispatches the same task brief to all workers in parallel. Each brief is: current `.code-tips.md` + task specification + an optional per-worker **focus directive** (Section 2.1), with round-1 foci aimed at the Phase-0 open design questions. Workers run blind: no worker sees another worker’s output, no worker sees another worker’s focus, and no worker sees its own prior attempts. Exploration semantics: the field is wide and cheap by preference — gate-1 no longer requires merge-ability for a candidate to contribute, so round 1 buys breadth per dollar and is judged by what it teaches as much as by what it ships.
+1. **Gate-1 (evidence, not filter).** Every gate command runs in every worktree, and the results travel WITH each candidate into review. Gate-1 excludes nobody: a candidate with a novel approach that does not stick the landing is often the round's most distillation-rich artifact, and a filter would discard it exactly when the field is struggling — when learning matters most. (v1 reduced failures to one-line autopsies and deep-read only winners; the thesis said failures are gotchas passed forward, and the v1 protocol was quietly dishonest to it.) The commit-as-artifact and hygiene checks still disqualify a candidate outright — no commits or a violated contract is a non-submission, not an interesting failure.
+1. **Review, round 1.** The reviewer receives ALL candidate diffs labeled A, B, C in randomized order with no model attribution, each with its gate-1 evidence, and reviews in two depth tiers to keep cost sane: gate-passing candidates get the full empirical probe; failing candidates get idea-mining — read the diff for the approach and the trap, never debug it. The review covers what is good AND bad in each implementation, not just a ranking. The reviewer must sketch its own approach BEFORE reading candidates (anchoring defence).
+1. **Verdict-1.** Selects the **champion** — the best gate-PASSING candidate — which survives unchanged into round 2's tournament. No passer means no champion: round 2 runs on lessons alone. Verdict-1 may instead **escalate** (the task specification itself is wrong; hints never silently amend the contract) or, rarely, **adopt-final**: the reviewer attests the champion is clean AND the field taught nothing worth a rebuild — skipping round 2 carries the burden of proof, never invoking it.
+1. **Distill, round 1.** The reviewer writes the defect ledger and the field's lessons, routed by enforceability: semantic lessons become tips in `.code-tips.md`; mechanically-expressible lessons (structure, cardinality, exit codes — Section 2.6) become per-task **gate extensions** that ratchet gate-2. Under rebuild semantics, design-level lessons are legitimate distillation ("the streaming parse proved cleaner than the whole-file regex") — round 2 is SUPPOSED to converge on what round 1 taught, and the champion is the control. Lessons travel; code does not. Only the review phase may write the tips file; workers are read-only consumers. Commit message convention: `Good news, everyone! <summary of lesson>`.
+1. **Dispatch, round 2 (informed rebuild).** Clean slate: fresh blind workers, original brief + updated tips + round-1 lessons, foci re-aimed at the defect ledger — and never round-1 diffs. Round 1's code is thrown away by design: code is the cheap part, lessons are the asset, and the goal is a better outcome, not a patch of what came before.
+1. **Gate-2 (strict).** The full gate including the round-1 extensions. Round-2 candidates must pass to be adoptable.
+1. **Review + Verdict-2.** The champion is relabeled into the round-2 field and the whole field is reviewed BLIND — the verdict-2 reviewer must not know which candidate is the champion, which models produced what, or which round anything came from. Exactly one of three outcomes:
+- **Adopt:** one candidate is correct and complete; merge it as-is. The champion surviving verdict-2 is a NEGATIVE learning result (informed rebuild failed to beat blind exploration) and is recorded in the run log and metrics, never hidden.
+- **Synthesize:** no candidate is adequate but the field contains usable insight; the reviewer authors a fresh implementation informed by the candidates and critique, anchored by its pre-written blind sketch.
+- **Escalate:** the task specification itself is wrong or ambiguous; file a change request to the orchestrator.
+1. **Merge.** Winning diff merges to main. Worktrees are destroyed. The done check (Section 2.4) decides continuation. If round 2 produced nothing adoptable, distill again and dispatch round 3: every round past 2 must show measurable progress against the defect ledger and gate checks, or the task STALLS into escalation — persistence alone is the Ralph loop wearing our clothes.
 
 ### 2.1 Focus-Diversified Dispatch
 
@@ -99,13 +130,48 @@ Rules:
 - **Recorded, not hidden.** Each worker's focus lands in `run.json` and in
   the run summary table, so per-focus win rates accumulate alongside
   per-model win rates (Section 7).
-- **Round 2 narrows.** When two-round mode triggers, the orchestrator may
-  drop or re-aim foci for the re-dispatch: round 1 explores, distillation
+- **Round 2 narrows.** (v2: every task, not just triggered re-runs.)
+  Round 1's foci aim at the Phase-0 open design questions — the branches
+  of the decision tree the objectives interview certified as genuinely
+  open (Section 2.5) — replacing the recycled generic lenses of early
+  runs with diversification axes the task actually owns. Round 2's foci
+  re-aim at the round-1 defect ledger: round 1 explores, distillation
   extracts what the exploration taught, round 2 converges on it.
 
-### 2.2 Two-Round Mode (divergence-triggered)
+### 2.2 The Two-Round Structure (the spine; formerly divergence-triggered)
 
-After the gate, the orchestrator measures divergence across candidates (approach, decomposition, files touched). If candidates substantially agree, proceed to review normally. If they scatter, the task was ambiguous: run the review and distillation, then re-dispatch the same task as a fresh blind round where workers receive the updated `.code-tips.md` but NOT the round 1 diffs. Distillation is the anti-anchoring filter: lessons travel, diffs do not. Two rounds maximum per task; a second scatter is an automatic escalation.
+v1 made the second round an exception: divergence across candidates
+triggered a re-dispatch. It fired **zero times in ten recorded tasks** —
+footprint-based measurement was blind under layout-pinning briefs, and
+over-specified briefs kept fields convergent — while this PRD
+simultaneously called the attempt-1 → attempt-2 delta "the cleanest
+direct measurement of learning the loop can produce." Meanwhile every
+recorded review found defects in gate-passing fields: the material for
+an informed second round existed in 10 of 10 tasks. v2 resolves the
+contradiction by making round 2 the default path of every task —
+exploration, then distillation, then an informed clean-slate rebuild —
+with `adopt-final` as the justified skip (the burden of proof inverted:
+v1 required a trigger to run round 2; v2 requires an attestation to
+skip it).
+
+Rules carried forward and sharpened:
+
+- **Lessons travel, diffs do not.** Round-2 workers receive the updated
+  `.code-tips.md` and the round-1 lessons, never round-1 code.
+  Distillation remains the anti-anchoring filter. The one designed
+  exception is the **champion**, which enters round 2's REVIEW FIELD
+  (not the workers' briefings), relabeled and unattributed — so "did
+  learning beat blind exploration?" is decided blind by the verdict-2
+  reviewer, not assumed by the orchestrator.
+- **Divergence is recorded, not a trigger.** The content-based metric
+  (mean pairwise token-Jaccard, in `run.json` since v1.2) now informs
+  round-2 sizing and review depth — a convergent round-1 field needs a
+  smaller, more targeted round 2 — instead of gating whether round 2
+  happens at all.
+- **Rounds past 2 are failure handling, not exploration.** They occur
+  only when verdict-2 adopts nothing, and each must show measurable
+  progress (defect ledger shrinking, more gate-2 checks passing) or the
+  task STALLS into escalation (Section 2.4).
 
 ### 2.3 Task Grain and Domain: the Loop Is Task-Agnostic
 
@@ -147,6 +213,31 @@ FALLBACK gate used when no `farnsworth.json` exists (`python3 -m unittest
 discover`), which any real project overrides. Greenfield demo, brownfield
 patch to a large Go codebase: same loop, different `farnsworth.json`.
 
+**v2 derivation rule: the smallest gateable slice.** "Derive the next
+task from the gap" returns the WHOLE gap at seed time — observed twice:
+two consecutive goal-driven runs (word-garden-5, wine-stock) dispatched
+the entire program as task-001 and exited DONE in one iteration, so the
+within-project feedback path never fired and the loop degenerated into a
+tournament with a memory. The orchestrator therefore derives the next
+task as the smallest coherent slice of the goal gap that is
+independently gateable and reviewable (a ratified output grammar makes
+the seams visible — Section 2.6: unimplemented subtrees are candidate
+slices). Iteration count stays emergent and the task list is still never
+pre-authored; the slice rule only prevents the count collapsing to one
+on a non-trivial goal. Whole-program grain remains valid for genuinely
+small goals, and v1's re-shot grain is subsumed: the v2 round-2 rebuild
+IS the re-shot, priced into every task.
+
+**Design tasks are tasks.** A brief may ask for a document rather than
+code — "write the PRD for this goal" — judged by the same machinery
+(the loop never inspects task content). For design tasks the mechanical
+gate is weak (structure and reference checks at best) and the review
+carries nearly all the weight; the two-round structure is mandatory in
+spirit as well as letter, since a design task is maximally ambiguous by
+construction. The adopted design becomes a protected contract file like
+any brief, amendable only by escalation. Phase 0 (Section 2.5) feeds
+the design round its objectives and its open questions.
+
 ### 2.4 Loop Continuation: Cycling Until the Goal Is Done
 
 The unit of progress is an iteration; the unit of COMPLETION is the goal.
@@ -179,12 +270,18 @@ Rules:
   iteration count that should be emergent. *(Observed in the wild: a
   run-4 orchestrator session planned exactly that two-task pipeline
   before the first dispatch and treated finishing the list as finishing
-  the job.)*
+  the job.)* v2 sharpens the derivation: the next task is the SMALLEST
+  gateable slice of the gap (Section 2.3), never the whole gap by
+  default — the opposite failure mode, observed in two goal-driven
+  runs, is a one-iteration exit that never exercises the loop.
 - **Iteration count is emergent.** The brief's complexity decides whether
   the loop cycles 2 times or 200. Nothing in the protocol fixes it.
 - **Done has two halves.** Mechanical: `farnsworth done` passes. Semantic:
   the reviewer attests, in its final review, that the goal brief's
-  acceptance criteria are met by the merged state (the same
+  acceptance criteria are met by the merged state — and for Phase-0
+  projects the attestation targets the BUSINESS objectives and the
+  decisions ledger (Section 2.5), never merely a loop-authored design
+  document, which may itself have drifted from intent (the same
   gate-vs-review division as Section 2's steps — the done checks filter
   mechanics, the reviewer filters meaning). Both halves are required to
   stop with outcome DONE. Both halves leave artifacts: every probe writes
@@ -202,6 +299,117 @@ Rules:
   progress toward the done checks for 3 consecutive iterations — an
   automatic escalation, never silent spinning). Every exit is recorded in
   the orchestrator log with the iteration count.
+
+### 2.5 Phase 0: The Objectives Interview ("grill me")
+
+When a project starts from a raw request and an artifact (a paragraph
+and a CSV; an issue and a codebase) rather than a finished spec, the
+loop begins with an interview: the orchestrator grills the human owner
+about the plan until shared understanding is reached, walking each
+branch of the decision tree and resolving dependencies between
+decisions one by one. The spec becomes an OUTPUT of the loop, not an
+input — the run-6 lesson was that a finished, detailed PRD collapses
+the decision space before the field ever runs (every interesting
+verdict discriminator in that run sat in space the brief accidentally
+left open).
+
+Rules of the interview:
+
+- **The altitude rule (the BA discipline).** Questions stay at business
+  objectives and end-user outcomes; the technical HOW belongs to the
+  loop. The test is ownership, not vocabulary: anything the owner has
+  an opinion about AS A USER ("what stock number do you make purchasing
+  decisions on?", "my team lives in Excel", "it must run on the
+  warehouse PC with nothing installed") is interview territory;
+  anything they would answer "whatever works" to (flags, layouts, exit
+  codes, file formats of internals) is the field's decision space and
+  MUST NOT be asked.
+- **Explore the artifact before asking.** Any question answerable from
+  the supplied data or codebase is answered there, never put to the
+  human. (In run 6, half the human-authored PRD's content — columns,
+  value domains, the messy-number formats, most of a description
+  grammar — was derivable from the fixture CSV alone.)
+- **Recommend an answer with every question.** The human mostly accepts
+  or corrects defaults; their scarce attention goes to the questions
+  models are worst at — what is actually required.
+- **The translation rule.** When the human answers a business question
+  with a mechanism ("I want a flag that..."), translate back to the
+  outcome and confirm ("what would that flag let you do?"). Record the
+  outcome as the requirement; record the mechanism as a constraint only
+  when it is a user-world fact.
+- **Three-bucket routing.** Every branch of the decision tree lands in
+  exactly one: (a) intent — ask the human; (b) fact of the artifact —
+  explore, then ratify; (c) solution design — record as OPEN, never
+  resolve. The open questions are deliverables, not failures: they
+  become the round-1 focus directives (Section 2.1), so the field
+  diversifies along the axes the interview certified as genuinely open.
+
+Artifacts (all committed, all consulted before any later escalation):
+
+```text
+GOAL.md               business objectives, user outcomes, constraints,
+                      done criteria at outcome level (the termination
+                      contract, Section 2.4)
+decisions-ledger.md   every question, recommendation, and answer --
+                      shared understanding as a diffable file
+open-questions.md     the unresolved design branches -> round-1 foci
+```
+
+Mechanical done checks and acceptance criteria are NOT extracted from
+the human in Phase 0 — outcome-level objectives are rarely mechanically
+checkable. They are proposed by the design round (Section 2.3, design
+tasks) and RATIFIED by the human: a second, short interview touchpoint,
+the modern form of requirements sign-off.
+
+### 2.6 Requirements Artifacts: Output Grammars and Decision Tables
+
+The loop's two best-documented defect classes are, in structural terms,
+cardinality errors: a report section dropped when its item count was
+zero (wine-stock candidate B — `section (1) { item (0,N) }` implemented
+as `section (0,1)`), and five distinct display stages collapsed to two
+(word-garden-5 — `stage (5)` violated). Both passed every mechanical
+gate and cost reviewer tokens, because prose requirements have no
+grammar a gate can check. The fix is sixty years old: Warnier/Orr-style
+output decomposition — define the structure of what the business needs,
+and derive the checks from the structure.
+
+- **Output grammar.** A plain indented outline (no special notation
+  needed) of the deliverable's structure with cardinalities:
+  ```text
+  report (1)
+    header (1)
+    executive summary (1)
+    grouping section (0,1: gated by the grouping option)
+    detail table (1) { item row (1,N) }
+    warnings (1) { warning (0,N); empty renders "none" }
+  ```
+  Drafted by the orchestrator FROM the Phase-0 conversation and the
+  artifact, ratified by the human — a one-page picture a business
+  person can confirm, which is the original point of the notation.
+- **Deliberately partial.** Required nodes carry cardinalities (the
+  business owns what must appear and what must stay distinguishable);
+  nodes marked OPEN are the design round's to settle. A complete
+  grammar would re-pin the decision space the way run-6's PRD did;
+  the partial grammar is the altitude rule applied to structure.
+- **Grammars compile into gates.** A structure validator generated from
+  the ratified grammar (sections present, order, repeating groups
+  well-formed, empty-state markers where cardinality demands presence)
+  moves the structure/cardinality defect class from reviewer territory
+  into gate-2 — the strongest form of "distill into the gate" (Section
+  2, step 5).
+- **The input side too.** The supplied artifact gets the same
+  treatment, induced rather than asked: file/record/field structure
+  with cardinalities and alternations, ratified in Phase 0.
+- **Decision tables for rule sets.** Validation/warning rules become a
+  condition → action matrix the human ratifies; tests generate
+  row-by-row.
+- **Limits.** Grammars fit things that ARE hierarchies — documents,
+  files, records, reports. Interaction flow, state, and cross-cutting
+  qualities stay in the prose objectives and the decisions ledger.
+  W/O the artifacts, not the world. And only the requirements half of
+  the old methods is taken: deriving PROGRAM structure from the data
+  structure (the DSSD/JSP move) is precisely the decision space the
+  field exists to explore.
 
 ## 3. Roles and Models
 
@@ -383,7 +591,8 @@ Explicit non-goals (MVP):
 1. **Per-model win rate** (adopted candidates by model) and per-model gate pass rate. Informs future routing and answers the cheap-workers question.
 1. **Verdict distribution** (adopt / synthesize / escalate). A rising synthesize rate means workers are underpowered or briefs are poor; a rising escalate rate means the spec process is broken.
 1. **Cost per merged task** (sum of per-invocation costs from JSON output), tracked against verdict type.
-1. **Round 2 trigger rate.** How often divergence forces a second round; a proxy for task ambiguity.
+1. **Round 2 trigger rate.** *(v1 metric, retired in v2: round 2 is the spine of every task. Divergence is still recorded and now sizes round 2 and review depth — Section 2.2.)*
+1. **Within-task learning delta (v2).** The defect ledger of round 1 vs round 2 inside one task, and the champion's fate in verdict-2: an informed rebuild beating the blind champion is the thesis confirmed at the tightest possible scope; the champion surviving is a recorded negative result. This replaces the cross-project defect-floor comparison as the loop's primary learning signal once v2 runs accumulate.
 
 All metrics derive from the per-task JSON logs; a single script renders the dashboard. The chart that matters: gate success rate (y) against merged task count (x). Up and to the right means Farnsworth is learning.
 
@@ -427,6 +636,13 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Gate passes a worker that never committed|*(observed live: Word Garden 4 task-002 — a worker left all its work untracked; the gate ran in the worktree and passed while the candidate diff `base..HEAD` was empty, so the briefing vouched for a 0-line candidate)* Enforced in code since 2026-06-12: no commits on the branch = gate failure with autopsy, uncommitted work archived to `<id>-uncommitted.diff`, empty diffs never take a label. The reviewer's empirical probe is the backstop and caught it live|
 |Typo'd `--config` silently dispatches the default fleet|*(found in review 2026-06-12: `Config.load` fell back to the built-in default config — whose old form carried the `--bare` flag proven 100% fatal — whenever the named path was missing, contradicting its own docstring)* Fixed in code: an explicitly named config that does not exist is an error in every subcommand; relative `--config` paths anchor at the repo root uniformly; the built-in default worker command now uses the word-garden-4-proven `--setting-sources ""` + scoped `--allowedTools` form. `farnsworth preflight` is the standing defence|
 |Workers briefed without rules of engagement (subprocess mode)|*(found in review 2026-06-12: the worker preamble — commit contract, tips-file hygiene, blindness — existed only in delegate dispatch; word-garden-4's non-committing worker was a subprocess run)* The preamble is shared by both dispatch modes, and the hygiene rules are also enforced mechanically: a candidate whose commits touch `.code-tips.md`, the fleet config, or the task brief fails the gate with an autopsy|
+|Round-2 field converges into copies of round-1 thinking|By design under rebuild semantics — round 2 is supposed to converge on what round 1 taught, and design-level lessons are legitimate distillation (Section 2, step 5). The control is the champion standing relabeled in the verdict-2 field: if convergence is net-negative, the champion wins and the negative result is recorded. Tips must still never instruct replication of a specific candidate's code — the bar is "beat the champion", not "copy it"|
+|Idea-mining gate-failers blows the review budget|Two depth tiers in the round-1 review protocol (Section 2, step 3): full empirical probe for passers only; failers get a diff-read for the approach and the trap, never debugging. Commit/hygiene violations skip review entirely — a non-submission is not an interesting failure|
+|Round-3+ becomes persistence-as-strategy (Ralph wearing our clothes)|Rounds past 2 exist only as failure handling (verdict-2 adopted nothing) and each must show measurable progress — defect ledger shrinking, more gate-2 checks passing — or the task STALLS into escalation (Sections 2.2, 2.4)|
+|Phase-0 interview drifts into technical specification|The altitude rule and translation rule (Section 2.5): business objectives and user outcomes only; mechanisms offered by the human are translated back to outcomes and recorded as constraints only when they are user-world facts. *(Observed in reverse: run-6's human-supplied PRD pinned exit codes, flags, and layout — all dev-team decisions — and the field converged to five stylistic variants of one design)*|
+|A complete output grammar re-pins the decision space|Grammars are deliberately PARTIAL (Section 2.6): required nodes carry cardinalities the business owns; OPEN nodes are the design round's to settle and double as round-1 foci|
+|Worker delegates its attempt to a nested agent|*(observed: wine-stock-report-generator-1 task-001 — a worker spawned a nested implementation agent and ended its turn "complete" with zero commits on its branch; the orphaned nested agent later finished as a duplicate in the same worktree)* The artifact rule catches it (commits are the deliverable; completion claims are not) and re-dispatch recovers the round; WORKER_PREAMBLE now forbids spawning/delegating outright, in both dispatch modes|
+|`git reset --hard` cannot clean a greenfield candidate in review|*(observed: wine-stock-report-generator-1 — the first reviewer dispatch hung mid-examination; forensics showed an applied candidate sitting UNTRACKED on a clean base, because files a diff CREATES are untracked after `git apply` and reset does not touch them — candidates stack, and naive `git clean -fd` would delete the reviewer's own notes)* The review briefing now prescribes `git reset --hard && git clean -fd -e .farnsworth` (the served diffs are committed in the review base and survive regardless)|
 |Re-gating serves stale labels to the reviewer|*(found in review 2026-06-12: `farnsworth gate` re-runs — the documented recovery for hung subagents — reshuffled labels but left previous labels' diffs in `candidates/` and never refreshed an existing review environment)* Fixed in code: re-gate sweeps the candidates dir before relabeling and refreshes the served diffs in an already-constructed review env — the word-garden-5 briefed-path bug class, closed from the other side|
 
 ## 9. Milestones
@@ -437,6 +653,7 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from four runs — including Word Garden 5 at whole-program grain: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks. The content-based metric shipped 2026-06-12: mean pairwise token-Jaccard distance over candidate diffs, recorded as `divergence` in every run.json — recording-only until enough rounds calibrate a trigger threshold. Word Garden 4's live tournament added: foci modulate style, not the correctness floor — the test-rigor-focused Haiku still shipped the flag-only-assertion defect, so tier dominates focus. Disagreement-scaled review depth is queued here too: run 4's reviewer cost crossed 100% of worker spend in dollar terms.)*
 1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six prior recorded runs. Word Garden 4 added the first dollar-true cost rows from live `--output-format json` runs — and the CLI now parses `total_cost_usd` into run.json itself. Second piece shipped 2026-06-12: `farnsworth metrics` aggregates every run.json under the given roots into the cross-run table — verdict distribution, gate-rate-over-tasks chart data, per-model wins, divergence, dollar costs. Rendering the chart image remains open.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
+1. **M7, Two-Phase Loop (v2 CLI):** mechanize Sections 2/2.2/2.5/2.6 — gate-as-evidence (results travel with every candidate; only commit/hygiene checks disqualify), the verdict-1 schema (champion + defect ledger + lessons + gate extensions + `round_2: proceed|adopt-final|escalate`), round-2 phases (clean-slate re-dispatch with installed lessons; champion relabeled into the review field; negative-result recording), round-N progress accounting against the STALLED rule, Phase-0 artifact support (`GOAL.md`/`decisions-ledger.md`/`open-questions.md`, open questions surfaced as foci), and grammar-compiled structure gates. Until M7 lands the CLI implements the v1 single-round flow; the v2 protocol is dispatch-mode-agnostic and an orchestrator can run it today by treating each round as a CLI task and performing champion relabeling by hand. Per repo tradition, M7 should be built BY the loop.
 
 ## 10. Acceptance Criteria (faithfulness contract)
 
@@ -448,7 +665,12 @@ Later agents and reviewers score the implementation against this checklist:
 - [x] Every verdict is exactly one of adopt / synthesize / escalate, recorded in the task log. *(2/2 recorded in run.json)*
 - [x] Reviewer’s blind sketch exists before candidate review in every synthesize verdict. *(blind sketch produced in both reviews, though both verdicts were adopt)*
 - [x] Every tips entry has date + provenance.
-- [ ] Round 2 workers receive updated tips but no round 1 diffs. *(not yet exercised — no divergence trigger so far)*
+- [ ] Round 2 workers receive the original brief + updated tips + round-1 lessons, never round-1 diffs; the champion's code reaches only the review field. *(v2 spine; unexercised — the v1 divergence trigger never fired in ten tasks)*
+- [ ] Gate-1 results reach the reviewer for every candidate; gate-1 never excludes a candidate from round-1 review (commit/hygiene non-submissions excepted). *(v2; unexercised)*
+- [ ] The champion enters round-2 review relabeled and unattributed; the verdict-2 reviewer is blind to which candidate it is. *(v2; unexercised)*
+- [ ] A champion surviving verdict-2 is recorded in run.json and metrics as a negative learning result. *(v2; unexercised)*
+- [ ] Phase-0 projects carry GOAL.md, decisions-ledger.md, and open-questions.md; open questions become round-1 foci; attestation targets the business objectives and decisions ledger. *(v2; unexercised)*
+- [ ] Mechanically-expressible round-1 lessons land as gate-2 extensions, not only as tips. *(v2; unexercised)*
 - [x] All decisions reconstructible from git history alone (no hidden state).
 - [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
 - [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; the chart DATA now comes from `farnsworth metrics` over the banked run logs — the rendered chart itself is still open)*
@@ -720,6 +942,70 @@ What it settled and surfaced:
    candidate shipped the worst ASCII display); duplicate dispatches
    absorbed by the artifact-boundary rule — this run in the attestation
    phase, a new artifact type, the rule working generically.
+## 17. The Cross-Domain, Delegate-Dispatched Run: Wine Stock Report Generator (examples/wine-stock-report-generator-1)
+
+The first subject outside the Word Garden family (2026-06-12), chosen to
+test generalization on both axes at once: a NEW domain (a realistic
+small-business CLI — warehouse stock CSV in, Markdown stock report out,
+from a wine-industry PRD with an embedded real fixture) and a NEW
+dispatch mode (the first live run of Section 4.1b delegate dispatch:
+`run` → host-session worker subagents → `gate` → reviewer subagent →
+`finalize` → `adopt --clean` → `done` → attestation, every mechanical
+phase in the CLI). Run shape otherwise identical to word-garden-5:
+goal-driven, whole-program grain, 12-entry seed, focus-diversified
+2H/2S/1O fleet. Full forensics:
+[`examples/wine-stock-report-generator-1/`](examples/wine-stock-report-generator-1/).
+
+| Metric | task-001 (12 seed tips, 5 workers, whole-program grain) |
+|---|---|
+| First-pass gate rate | 5/5 (seven checks) |
+| Behavioral bugs in field | 1 (parser over-rejection) |
+| Spec-deviation defects | 1 (conditional Data Warnings section) |
+| Test-quality defects | 2 (unexercised prompt seam; handle leaks) |
+| Defects in seed-covered classes | **0** (12 entries audited) |
+| Verdict | adopt |
+| Winning model (focus) | **Opus 4.8** (report faithfulness) |
+| Dispatch incidents | 2 (worker self-delegation; hung reviewer) — both absorbed |
+| Divergence (content) | 0.64 — first run with the M4 metric recorded |
+| Iterations to goal (emergent) | **1** — exit DONE |
+
+What it settled and surfaced:
+
+1. **Settled: the memory thesis crosses domains.** Zero defects in the
+   classes the seed covers; ALL four field defects in classes no tip
+   yet covered (conditional section rendering, tolerant-parser
+   over-rejection, unexercised injection seams, test resource hygiene)
+   — the word-garden-5 both-sides signature, reproduced in a
+   CSV/reporting domain the seed had never seen. Three new generalized
+   entries routed into the seed pile (entries 13–15).
+2. **Surfaced: worker self-delegation, a new dispatch-failure class.**
+   A worker spawned a nested agent and ended its turn with a confident
+   completion claim and zero commits; its orphan later duplicated work
+   in the same worktree. The artifact rule absorbed both halves.
+   WORKER_PREAMBLE now forbids delegation (risk table updated).
+3. **Surfaced: the review protocol's cleanup instruction was wrong for
+   greenfield.** A hung reviewer's forensics showed why: `git apply` of
+   an all-new-files candidate leaves it UNTRACKED, `reset --hard`
+   cannot remove it, and naive `git clean -fd` would destroy the
+   reviewer's notes. Briefing fixed in the CLI
+   (`reset --hard && clean -fd -e .farnsworth`), with tests.
+4. **Settled: delegate dispatch works end-to-end** — worktrees,
+   briefings, ledger, commit-as-artifact, hygiene gate, constructed
+   review env, verdict validation, adopt, done probe all mechanical;
+   only the agent phases ran as subagents. Trade-off confirmed: no
+   per-worker dollar stream (token counts recorded in the process log).
+5. **Focus-alignment ≠ advantage, fifth round — now from both
+   directions at once:** the verdict's discriminator was test rigor;
+   the test-rigor-focused worker lost on an entirely untested prompt
+   path while the report-faithfulness-focused worker won ON test rigor.
+6. **Queued (greenfield ergonomics):** preflight's `gate-at-base` is
+   red by design on a round-1 seed and needs a greenfield-aware
+   diagnosis (one exit-code check also passed at base for the wrong
+   reason); `run`/`prepare` refuses untracked `.farnsworth/` files that
+   `adopt` tolerates — the orchestrator log had to be committed
+   mid-flow; `gate` should copy the review briefing INTO the review env
+   so the reviewer never reads outside its directory.
+
 -----
 
 *Ralph persists. Karpathy measures. Farnsworth learns.*
