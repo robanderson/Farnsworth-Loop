@@ -7,10 +7,16 @@ Usage::
     python3 -m farnsworth finalize <task-id>                    # delegate mode
     python3 -m farnsworth report <task-id>
     python3 -m farnsworth clean <task-id> [--force]
+    python3 -m farnsworth done [--config <path>]
 
-Exit codes: 0 valid verdict, 1 no candidates passed the gate,
-2 infrastructure/config error, 3 delegate dispatch prepared and awaiting
-host-session subagents (after ``run`` and ``gate``).
+``done`` is the loop-termination probe (PRD Section 2.4): it runs the
+goal's mechanical completion checks against the merged state and exits
+0 when the primary goal is complete, 1 when the loop should keep cycling.
+
+Exit codes for ``run``/``gate``/``finalize``: 0 valid verdict, 1 no
+candidates passed the gate, 2 infrastructure/config error, 3 delegate
+dispatch prepared and awaiting host-session subagents (after ``run`` and
+``gate``).
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from . import delegate
 from .config import Config, ConfigError, DEFAULT_CONFIG_NAME
 from .gitutil import GitError, repo_toplevel
 from .housekeeping import clean
-from .loop import LoopError, run
+from .loop import LoopError, check_done, run
 from .report import summary_table
 
 
@@ -86,6 +92,18 @@ def build_parser():
         help="print the short what-happened table for a completed task",
     )
     report_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
+
+    done_p = sub.add_parser(
+        "done",
+        help="run the goal's completion checks: exit 0 done, 1 keep looping",
+    )
+    done_p.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_NAME,
+        help="path to config JSON (default: {0} in repo root)".format(
+            DEFAULT_CONFIG_NAME
+        ),
+    )
     return parser
 
 
@@ -160,9 +178,11 @@ def main(argv=None):
             print("No candidates passed the gate; nothing to review.")
             return 1
         print(
-            "Candidates ready. Spawn the reviewer subagent (model={0}) with "
-            "{1}, then run 'farnsworth finalize {2}'.".format(
+            "Candidates ready. Spawn the reviewer subagent (model={0}) "
+            "pinned to the review environment {1}, prompted with {2}, then "
+            "run 'farnsworth finalize {3}'.".format(
                 ledger["reviewer_model"],
+                ledger["review_env"],
                 ledger["review_briefing"],
                 args.task_id,
             )
@@ -200,6 +220,33 @@ def main(argv=None):
         print(summary_table(run_log))
         return 0
 
+    if args.command == "done":
+        try:
+            repo_root = repo_toplevel(os.getcwd())
+            config = Config.load(
+                args.config if os.path.isabs(args.config)
+                else os.path.join(repo_root, args.config)
+            )
+        except (ConfigError, GitError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+        if config.goal is None:
+            print(
+                "error: no goal configured -- add a \"goal\" entry with "
+                "\"done\" checks to {0} (PRD Section 2.4)".format(args.config),
+                file=sys.stderr,
+            )
+            return 2
+
+        outcome = check_done(config.goal, repo_root)
+        for result in outcome["results"]:
+            print(result["autopsy"])
+        if outcome["passed"]:
+            print("GOAL COMPLETE: all done checks pass.")
+            return 0
+        print("GOAL NOT MET: keep looping (dispatch the next task).")
+        return 1
+
     if args.command == "clean":
         try:
             report = clean(args.task_id, force=args.force)
@@ -211,11 +258,18 @@ def main(argv=None):
             print("removed worktree {0}".format(path))
         for branch in report["removed_branches"]:
             print("removed branch {0}".format(branch))
+        if report.get("removed_review_env"):
+            print(
+                "removed review environment {0}".format(
+                    report["removed_review_env"]
+                )
+            )
         for entry in report["skipped"]:
             print("skipped {0}: {1}".format(entry["path"], entry["reason"]))
         if not (
             report["removed_worktrees"]
             or report["removed_branches"]
+            or report.get("removed_review_env")
             or report["skipped"]
         ):
             print("nothing to clean for {0}".format(args.task_id))

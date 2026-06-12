@@ -428,8 +428,10 @@ class TestMultiWorkerParallel(LoopTestBase):
 
         run_log = run(brief, config_path=cfg_path, cwd=self.repo)
 
-        # Check the briefing passed to reviewer (written to repo root).
-        with open(os.path.join(self.repo, "reviewer_briefing.txt"), "r", encoding="utf-8") as fh:
+        # The reviewer runs inside the constructed review environment, so
+        # that is where its recording lands.
+        review_env = os.path.join(self.tmp, "task-m2-review")
+        with open(os.path.join(review_env, "reviewer_briefing.txt"), "r", encoding="utf-8") as fh:
             reviewer_briefing = fh.read()
 
         # Must contain the task brief text and candidate labels.
@@ -1037,6 +1039,159 @@ class TestNoCommitWorker(LoopTestBase):
         )
         if os.path.isdir(candidates_dir):
             self.assertEqual(os.listdir(candidates_dir), [])
+
+
+class TestReviewEnvironment(LoopTestBase):
+    """The reviewer runs in a constructed, anonymized environment: base tree
+    + labeled diffs + gate notes only (PRD Section 8, reviewer-leak risk)."""
+
+    def _run_with_recording_reviewer(self, reviewer_py=None):
+        """Run one task with a fake worker and the given fake reviewer."""
+        brief = self._write_brief(name="task-rev.md", body="task body")
+        cfg_dict = {
+            "workers": [
+                {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+            ],
+            "reviewer": {
+                "command": [
+                    "python3", "-c", reviewer_py or FAKE_REVIEWER_PY, "{prompt}"
+                ]
+            },
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+        cfg_path = self._config_file_dict(cfg_dict)
+        self._track_worktree("task-rev-w1")
+        return run(brief, config_path=cfg_path, cwd=self.repo)
+
+    def test_review_env_constructed_and_stripped(self):
+        run_log = self._run_with_recording_reviewer()
+
+        env = os.path.join(self.tmp, "task-rev-review")
+        self.assertTrue(os.path.isdir(env))
+        # Base tree content is present...
+        self.assertTrue(os.path.exists(os.path.join(env, "README.md")))
+        # ...but the attribution surfaces are not.
+        self.assertFalse(os.path.exists(os.path.join(env, "farnsworth.json")))
+        # The env is a FRESH repo: exactly one commit, no worker branches.
+        log = _git(["log", "--oneline"], env).stdout.strip().splitlines()
+        self.assertEqual(len(log), 1)
+        branches = _git(["branch", "--list"], env).stdout
+        self.assertNotIn("task-rev-w1", branches)
+        # Labeled diffs are available at the briefing's relative path.
+        label = run_log["workers"][0]["candidate_label"]
+        self.assertTrue(
+            os.path.exists(
+                os.path.join(
+                    env, ".farnsworth", "task-rev", "candidates",
+                    "{0}.diff".format(label),
+                )
+            )
+        )
+        # The run log records the environment.
+        self.assertEqual(run_log["review"]["environment"], "../task-rev-review")
+
+    def test_review_artifacts_copied_back(self):
+        # A reviewer that writes review.md and a verdict with a progression
+        # note, like the real protocol asks.
+        reviewer_py = (
+            "exec(\"import sys,json,os,glob\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "task_dir=task_dirs[0]\\n"
+            "open(os.path.join(task_dir,'review.md'),'w').write('REVIEW_BODY')\\n"
+            "open(os.path.join(task_dir,'blind-sketch.md'),'w').write('SKETCH')\\n"
+            "with open(os.path.join(task_dir,'verdict.json'),'w') as f:\\n"
+            "  json.dump({'outcome':'adopt','candidate':'A',"
+            "'reasoning':'fine','progression':'PROGRESSION_NOTE'}, f)\")"
+        )
+        run_log = self._run_with_recording_reviewer(reviewer_py)
+
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-rev")
+        for name in ("review.md", "blind-sketch.md", "verdict.json"):
+            self.assertTrue(
+                os.path.exists(os.path.join(artifact_dir, name)),
+                "missing copied-back artifact: {0}".format(name),
+            )
+        # The progression note travels inside the verdict and reaches the
+        # summary table.
+        self.assertEqual(
+            run_log["review"]["verdict"]["progression"], "PROGRESSION_NOTE"
+        )
+        with open(os.path.join(artifact_dir, "summary.md"), "r", encoding="utf-8") as fh:
+            summary = fh.read()
+        self.assertIn("**Progression:** PROGRESSION_NOTE", summary)
+
+    def test_preexisting_review_env_aborts_before_dispatch(self):
+        brief = self._write_brief(name="task-rev.md")
+        cfg_path = self._config_file_dict(
+            {
+                "workers": [
+                    {"id": "w1", "command": ["python3", "-c", FAKE_WORKER_PY]},
+                ],
+                "reviewer": {
+                    "command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]
+                },
+                "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+            }
+        )
+        os.makedirs(os.path.join(self.tmp, "task-rev-review"))
+
+        with self.assertRaises(LoopError) as ctx:
+            run(brief, config_path=cfg_path, cwd=self.repo)
+        self.assertIn("review environment", str(ctx.exception).lower())
+        # The collision was caught before any worktree was created.
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "task-rev-w1")))
+
+    def test_briefed_diff_paths_resolve_in_review_env(self):
+        """The paths the briefing names must exist where the reviewer runs.
+
+        Word Garden 5 lesson: a fake reviewer that GLOBS for artifacts
+        validates the plumbing but not the briefing contract -- the first
+        live reviewer followed the briefed path and found nothing there.
+        This test reads the briefing the way a real reviewer does.
+        """
+        reviewer_py = (
+            "exec(\"import sys,json,os,re,glob\\n"
+            "briefing = sys.argv[1] if len(sys.argv) > 1 else ''\\n"
+            "open('reviewer_briefing.txt','w').write(briefing)\\n"
+            "task_dirs=[d for d in glob.glob('.farnsworth/task-*') if os.path.isdir(d)]\\n"
+            "task_dir=task_dirs[0]\\n"
+            "with open(os.path.join(task_dir,'verdict.json'),'w') as f:\\n"
+            "  json.dump({'outcome':'escalate','candidate':None,'reasoning':'t'}, f)\")"
+        )
+        self._run_with_recording_reviewer(reviewer_py)
+
+        env = os.path.join(self.tmp, "task-rev-review")
+        with open(os.path.join(env, "reviewer_briefing.txt"), "r", encoding="utf-8") as fh:
+            briefing = fh.read()
+        briefed_paths = [
+            line.split(": ", 1)[1].strip()
+            for line in briefing.splitlines()
+            if line.startswith("- Candidate ")
+        ]
+        self.assertTrue(briefed_paths, "briefing lists no candidates")
+        for path in briefed_paths:
+            self.assertTrue(
+                os.path.exists(os.path.join(env, path)),
+                "briefed diff path missing in review env: {0}".format(path),
+            )
+
+    def test_review_briefing_carries_the_protocol(self):
+        from farnsworth.loop import build_review_briefing
+
+        brief = self._write_brief(name="task-rev.md")
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-rev")
+        os.makedirs(artifact_dir, exist_ok=True)
+
+        briefing = build_review_briefing(
+            brief, self.repo, artifact_dir, [{"label": "A"}], []
+        )
+        self.assertIn("blind-sketch.md", briefing)
+        self.assertIn("review.md", briefing)
+        self.assertIn("code-tips.next.md", briefing)
+        self.assertIn("progression", briefing)
+        self.assertIn("git reset --hard", briefing)
+        # The sketch comes before the diffs may be read.
+        self.assertIn("BEFORE reading any candidate diff", briefing)
 
 
 if __name__ == "__main__":

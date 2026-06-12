@@ -110,13 +110,49 @@ def _parse_dispatch(entry, label):
     return None, model.strip()
 
 
+def _parse_check_list(entries, label):
+    """Validate a list of named commands (the gate or the goal's done checks).
+
+    Each entry is ``{"name": str, "command": [str, ...]}``. Returns the
+    normalized list; raises ConfigError on any structural problem.
+    """
+    if not isinstance(entries, list):
+        raise ConfigError("{0} must be a list".format(label))
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ConfigError("each {0} entry must be an object".format(label))
+        name = entry.get("name")
+        command = entry.get("command")
+        if not isinstance(name, str) or not name:
+            raise ConfigError(
+                "{0} entry needs a non-empty 'name'".format(label)
+            )
+        if not isinstance(command, list) or not command:
+            raise ConfigError(
+                "{0} entry '{1}' needs a non-empty command list".format(
+                    label, name
+                )
+            )
+        if not all(isinstance(arg, str) for arg in command):
+            raise ConfigError(
+                "{0} command for '{1}' must be strings".format(label, name)
+            )
+        normalized.append({"name": name, "command": list(command)})
+    return normalized
+
+
 class Config:
     """Parsed run configuration."""
 
-    def __init__(self, workers, reviewer, gate):
+    def __init__(self, workers, reviewer, gate, goal=None):
         self.workers = workers  # list of {"id": str, "command": list|None, "model": str|None}
         self.reviewer = reviewer  # {"command": list|None, "model": str|None} or None
         self.gate = gate
+        # Optional loop-termination contract (Section 2.4 of the PRD):
+        # {"brief": str or None, "done": [check, ...]} or None when the
+        # project has not declared a goal.
+        self.goal = goal
 
     @property
     def mode(self):
@@ -222,29 +258,36 @@ class Config:
         gate = data.get("gate")
         if gate is None:
             gate = []
-        if not isinstance(gate, list):
-            raise ConfigError("gate must be a list")
-        normalized_gate = []
-        for entry in gate:
-            if not isinstance(entry, dict):
-                raise ConfigError("each gate entry must be an object")
-            name = entry.get("name")
-            gate_command = entry.get("command")
-            if not isinstance(name, str) or not name:
-                raise ConfigError("gate entry needs a non-empty 'name'")
-            if not isinstance(gate_command, list) or not gate_command:
-                raise ConfigError(
-                    "gate entry '{0}' needs a non-empty command list".format(
-                        name
-                    )
-                )
-            if not all(isinstance(arg, str) for arg in gate_command):
-                raise ConfigError(
-                    "gate command for '{0}' must be strings".format(name)
-                )
-            normalized_gate.append({"name": name, "command": list(gate_command)})
+        normalized_gate = _parse_check_list(gate, "gate")
 
-        return cls(workers, reviewer, normalized_gate)
+        # Parse goal (optional): the loop-termination contract. A goal needs
+        # at least one mechanical done check; the brief path is optional.
+        goal_obj = data.get("goal")
+        goal = None
+        if goal_obj is not None:
+            if not isinstance(goal_obj, dict):
+                raise ConfigError("goal must be an object")
+            brief = goal_obj.get("brief")
+            if brief is not None and (
+                not isinstance(brief, str) or not brief.strip()
+            ):
+                raise ConfigError("goal brief must be a non-empty string")
+            done = goal_obj.get("done")
+            if done is None:
+                raise ConfigError(
+                    "goal needs a 'done' list of completion checks"
+                )
+            normalized_done = _parse_check_list(done, "goal done")
+            if not normalized_done:
+                raise ConfigError(
+                    "goal 'done' must contain at least one check"
+                )
+            goal = {
+                "brief": brief.strip() if brief else None,
+                "done": normalized_done,
+            }
+
+        return cls(workers, reviewer, normalized_gate, goal)
 
     @classmethod
     def load(cls, path):

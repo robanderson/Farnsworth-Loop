@@ -204,6 +204,50 @@ class TestClean(LoopTestBase):
         self.assertEqual(report["removed_branches"], [])
         self.assertTrue(os.path.isdir(os.path.join(self.tmp, "task-042-w1")))
 
+    def test_clean_removes_review_env_with_verdict_on_record(self):
+        self._run_task()
+        # Simulate a completed review: the env exists and verdict.json was
+        # already copied back to the repo of record.
+        review_env = os.path.join(self.tmp, "task-042-review")
+        os.makedirs(review_env)
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-042")
+        os.makedirs(artifact_dir, exist_ok=True)
+        with open(os.path.join(artifact_dir, "verdict.json"), "w") as fh:
+            fh.write("{}")
+
+        report = clean("task-042", cwd=self.repo)
+        # realpath: git/getcwd canonicalize symlinked tempdirs on macOS.
+        self.assertEqual(
+            os.path.realpath(report["removed_review_env"]),
+            os.path.realpath(review_env),
+        )
+        self.assertFalse(os.path.exists(review_env))
+
+    def test_clean_keeps_review_env_without_verdict_unless_forced(self):
+        self._run_task()
+        # A review that died mid-flight: env exists, no verdict copied back.
+        review_env = os.path.join(self.tmp, "task-042-review")
+        os.makedirs(review_env)
+        with open(os.path.join(review_env, "partial-review.md"), "w") as fh:
+            fh.write("half-finished")
+
+        report = clean("task-042", cwd=self.repo)
+        self.assertIsNone(report["removed_review_env"])
+        self.assertTrue(os.path.isdir(review_env))
+        self.assertTrue(
+            any(
+                os.path.realpath(e["path"]) == os.path.realpath(review_env)
+                for e in report["skipped"]
+            )
+        )
+
+        report = clean("task-042", cwd=self.repo, force=True)
+        self.assertEqual(
+            os.path.realpath(report["removed_review_env"]),
+            os.path.realpath(review_env),
+        )
+        self.assertFalse(os.path.exists(review_env))
+
     def test_cli_clean_exit_codes(self):
         self._run_task()
         cwd = os.getcwd()

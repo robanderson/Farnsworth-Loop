@@ -103,10 +103,15 @@ class DelegateTestBase(LoopTestBase):
             _git(["commit", "-m", "work by {0}".format(worker_id)], worktree)
         return worktree
 
-    def _write_verdict(self, task_id, verdict):
-        path = os.path.join(
-            self.repo, ".farnsworth", task_id, "verdict.json"
-        )
+    def _write_verdict(self, task_id, verdict, in_env=False):
+        """Play the reviewer: write verdict.json (in the review env when
+        ``in_env``, mirroring the real flow; finalize copies it back)."""
+        if in_env:
+            base = os.path.join(self.tmp, task_id + "-review")
+        else:
+            base = self.repo
+        path = os.path.join(base, ".farnsworth", task_id, "verdict.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(verdict, fh)
 
@@ -199,21 +204,44 @@ class TestDelegateCycle(DelegateTestBase):
         review_path = os.path.join(self.repo, ledger["review_briefing"])
         with open(review_path, "r", encoding="utf-8") as fh:
             review_text = fh.read()
-        self.assertIn("BLIND SKETCH FIRST", review_text)
+        self.assertIn("Review Protocol", review_text)
+        self.assertIn("code-tips.next.md", review_text)
         self.assertIn("Candidate A", review_text)
         self.assertIn("no commits on branch", review_text)
         self.assertIn("verdict.json", review_text)
+        # The constructed review environment exists, carries the labeled
+        # diff at the briefing's path, and has no attribution surfaces.
+        review_env = ledger["review_env"]
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(
+                    review_env, ".farnsworth", "task-042", "candidates", "A.diff"
+                )
+            )
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(review_env, "farnsworth.json"))
+        )
 
         # Finalize before the reviewer wrote a verdict: hard error.
         with self.assertRaises(LoopError):
             delegate.finalize("task-042", cwd=self.repo)
 
-        # Simulate the reviewer subagent.
+        # Simulate the reviewer subagent writing inside the env; finalize
+        # copies the artifacts back to the repo of record.
         self._write_verdict(
             "task-042",
             {"outcome": "adopt", "candidate": "A", "reasoning": "ok"},
+            in_env=True,
         )
         run_log = delegate.finalize("task-042", cwd=self.repo)
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(
+                    self.repo, ".farnsworth", "task-042", "verdict.json"
+                )
+            )
+        )
 
         self.assertEqual(run_log["mode"], "delegate")
         self.assertEqual(run_log["review"]["verdict"]["candidate"], "A")

@@ -38,12 +38,15 @@ from . import gitutil, report
 from .config import Config
 from .loop import (
     LoopError,
+    _construct_review_env,
+    _copy_back_review_artifacts,
     _run_gate,
     _utcnow_iso,
     build_briefing,
     build_review_briefing,
     focus_briefing,
     load_and_validate_verdict,
+    review_env_path,
     task_id_from_brief,
 )
 
@@ -67,49 +70,16 @@ Rules of engagement:
 {briefing}
 """
 
-REVIEWER_PROTOCOL = """\
-You are the REVIEWER in a Farnsworth Loop tournament ({date}). Work from
-the repository root. Follow this protocol IN STRICT ORDER.
-
-1. BLIND SKETCH FIRST. Read the task brief below, but do NOT open any
-   candidate diff yet. Write your own implementation outline (interfaces,
-   key decisions, risks, edge cases you would guard) to
-   .farnsworth/{task_id}/blind-sketch.md. This is an anchoring defence; it
-   must exist before you read any candidate.
-2. CONTEXT. Read `.code-tips.md` (if present) and the project's spec/source
-   the brief names as fixed contracts.
-3. CANDIDATES. Read the anonymized diffs listed below (under
-   .farnsworth/{task_id}/candidates/). Anonymity rules are absolute: do NOT
-   inspect git branches or worker worktrees, do NOT read dispatch or run
-   logs or any farnsworth config's worker entries, and never try to guess
-   which worker or model produced a candidate.
-4. VERIFY EMPIRICALLY. For each candidate label X: create a scratch
-   worktree at the base commit (git worktree add ../review-X --detach
-   {base_commit}), apply .farnsworth/{task_id}/candidates/X.diff with
-   git apply, run every gate command, then probe behaviour the candidate's
-   own tests may have missed (the spec's tricky corners, terminal-state
-   behaviour, exit codes). Remove each scratch worktree when done
-   (git worktree remove --force ../review-X).
-5. REVIEW DOCUMENT. Write .farnsworth/{task_id}/review.md: per-candidate
-   strengths AND weaknesses against the acceptance criteria, empirical
-   findings (including any defect in gate-passing code), test-rigor
-   assessment, and a comparative ranking with reasoning.
-6. VERDICT. Write .farnsworth/{task_id}/verdict.json exactly per the schema
-   below. ADOPT only a candidate that is correct and complete as-is;
-   SYNTHESIZE if none is adequate but the field has usable insight (your
-   blind sketch counts as candidate n+1; put authoring guidance in
-   review.md); ESCALATE only if the task spec itself is wrong or ambiguous.
-7. DISTILL (after the verdict). You are the ONLY writer of `.code-tips.md`.
-   Add durable lessons from this round: imperative contract language
-   (MUST/NEVER), explicit scope (state whether each rule binds source,
-   tests, or both), provenance tag [{date}, {task_id}] on every entry.
-   Sharpen or amend existing entries rather than duplicating them.
-
-Do not run git add or git commit at any point; leave everything in the
-working tree. Do not modify any file other than blind-sketch.md, review.md,
-verdict.json, and .code-tips.md.
-
-THE BRIEFING:
+REVIEWER_PREAMBLE = """\
+You are the REVIEWER in a Farnsworth Loop tournament ({date}). You have
+been started inside a constructed, anonymized review environment (a fresh
+single-commit repo: the project tree at the base commit plus the labeled
+candidate diffs and gate notes — nothing else). Work ONLY in this
+directory. Follow the Review Protocol in the briefing below exactly,
+writing every artifact at the path it names; the orchestrator copies your
+artifacts back to the repo of record and installs code-tips.next.md after
+the merge. Use `git apply` to try a candidate and `git reset --hard` to
+return to base between candidates; never `git add` or `git commit`.
 
 {briefing}
 """
@@ -172,7 +142,15 @@ def prepare(brief_path, config_path=None, cwd=None):
     parent = os.path.dirname(repo_root)
     base_commit = gitutil.head_commit(repo_root)
 
-    # Collision pre-checks for ALL workers before creating anything.
+    # Collision pre-checks for ALL workers before creating anything. The
+    # review environment's path is claimed now too: discovering the
+    # collision only after the agents have run would waste the whole field.
+    if os.path.exists(review_env_path(task_id, repo_root)):
+        raise LoopError(
+            "review environment path already exists: {0}".format(
+                review_env_path(task_id, repo_root)
+            )
+        )
     for worker_spec in config.workers:
         branch = "{0}-{1}".format(task_id, worker_spec["id"])
         worktree_abs = os.path.join(parent, branch)
@@ -350,11 +328,17 @@ def gate(task_id, config_path=None, cwd=None):
                 worker["candidate_label"] = label
 
     # The label mapping is sealed in the ledger until finalize unseals it
-    # into run.json; the reviewer's protocol forbids reading dispatch logs.
+    # into run.json; the reviewer never sees the ledger — it works in a
+    # constructed environment with no attribution surfaces at all.
     if candidates:
         if ledger.get("reviewer_model") is None:
             raise LoopError(
                 "candidates passed gate but no reviewer configured in config"
+            )
+        review_env = review_env_path(task_id, repo_root)
+        if not os.path.isdir(review_env):
+            _construct_review_env(
+                review_env, base_commit, repo_root, artifact_dir, task_id
             )
         focus_directives = sorted(
             {w.get("focus") for w in ledger["workers"] if w.get("focus")}
@@ -368,10 +352,8 @@ def gate(task_id, config_path=None, cwd=None):
             failed_workers,
             focus_directives=focus_directives,
         )
-        review_briefing = REVIEWER_PROTOCOL.format(
+        review_briefing = REVIEWER_PREAMBLE.format(
             date=_utcnow_iso()[:10],
-            task_id=task_id,
-            base_commit=base_commit,
             briefing=review_body,
         )
         review_path = os.path.join(artifact_dir, "review-briefing.md")
@@ -379,6 +361,7 @@ def gate(task_id, config_path=None, cwd=None):
             fh.write(review_briefing)
         ledger["phase"] = "awaiting-review"
         ledger["review_briefing"] = os.path.relpath(review_path, repo_root)
+        ledger["review_env"] = review_env
     else:
         ledger["phase"] = "no-candidates"
 
@@ -440,6 +423,14 @@ def finalize(task_id, cwd=None):
     if ledger["phase"] == "no-candidates":
         run_log["review"] = None
     else:
+        # The reviewer subagent wrote its artifacts inside the constructed
+        # review environment; bring them back to the repo of record before
+        # the verdict is parsed. Idempotent on re-runs.
+        review_env = ledger.get("review_env") or review_env_path(
+            task_id, repo_root
+        )
+        if os.path.isdir(review_env):
+            _copy_back_review_artifacts(review_env, artifact_dir, task_id)
         verdict = load_and_validate_verdict(artifact_dir, label_to_worker_id)
         run_log["review"] = {"exit_code": None, "verdict": verdict}
 

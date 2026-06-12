@@ -15,6 +15,7 @@ skipped unless ``force`` is set.
 from __future__ import annotations
 
 import os
+import shutil
 
 from . import gitutil
 
@@ -27,6 +28,7 @@ def clean(task_id, cwd=None, force=False):
         {"task_id": str,
          "removed_worktrees": [path, ...],
          "removed_branches": [name, ...],
+         "removed_review_env": path or None,
          "skipped": [{"path": str, "reason": str}, ...]}
 
     Worktrees with uncommitted changes are skipped (with a reason) unless
@@ -71,5 +73,30 @@ def clean(task_id, cwd=None, force=False):
             continue  # its worktree survived; keep the branch with it
         gitutil.delete_branch(branch, repo_root)
         report["removed_branches"].append(branch)
+
+    # The constructed review environment is a plain directory (a fresh git
+    # repo, not a worktree of this repo), so the worktree sweep above never
+    # sees it. It is safe to remove once the reviewer's artifacts have been
+    # copied back -- the run does that the moment the reviewer finishes, so
+    # a missing verdict.json means the review died mid-flight and the env
+    # may hold the only copy of a partial review.
+    review_env = os.path.join(
+        os.path.dirname(repo_root), task_id + "-review"
+    )
+    report["removed_review_env"] = None
+    if os.path.isdir(review_env):
+        verdict_path = os.path.join(
+            repo_root, ".farnsworth", task_id, "verdict.json"
+        )
+        if not force and not os.path.exists(verdict_path):
+            report["skipped"].append(
+                {
+                    "path": review_env,
+                    "reason": "no verdict.json on record yet (use --force)",
+                }
+            )
+        else:
+            shutil.rmtree(review_env)
+            report["removed_review_env"] = review_env
 
     return report
