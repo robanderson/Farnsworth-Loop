@@ -28,12 +28,17 @@ python3 -m farnsworth done       # goal probe: exit 0 done / 1 keep looping
 python3 -m farnsworth metrics    # cross-run health table from all run.json
 ```
 
-From a Claude Code session the whole sequence ships as a packaged
-workflow (Section 4.1c): `/farnsworth-task tasks/task-001.md` runs one
-tournament round end-to-end — the orchestrating session spawns the
-`farnsworth-coder` and `farnsworth-judge` subagents at the two exit-3
-boundaries itself — and `/farnsworth-loop` cycles tasks until the goal
-is done, dispatching the `farnsworth-attestor` for the semantic half.
+The commands above are ONE round; the v2 spine (Section 2) runs them
+twice per task — explore, install the distilled lessons, then a
+clean-slate rebuild on the `-r2` brief with the champion relabeled into
+the review field. The primary conductor for all of it is the dynamic
+workflow `.claude/workflows/farnsworth-task.js` (Section 4.1c-ii):
+launched with `{repo, brief, fleet?}`, it resolves the fleet, conducts
+both rounds plus the adversarial Verify, and consumes the phases'
+`--json` records. The skills (Section 4.1c) — `/farnsworth-task` for a
+round, `/farnsworth-loop` for the goal cycle with the
+`farnsworth-attestor` — remain the fallback conductor for hosts
+without the workflow runtime.
 
 (Subprocess `command` fleets — the third-party adapter, Section 4.1 —
 collapse the first three steps into one: `farnsworth run` dispatches,
