@@ -233,24 +233,18 @@ def main(argv=None):
             return 0
 
     if args.command == "gate":
+        def _gate_progress(line):
+            print(line, flush=True)
+
         try:
             ledger = delegate.gate(
-                args.task_id, config_path=_resolve_config(args.config)
+                args.task_id,
+                config_path=_resolve_config(args.config),
+                progress=_gate_progress,
             )
         except (LoopError, ConfigError, GitError) as exc:
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
-        for worker in ledger["workers"]:
-            gate_info = worker["gate"]
-            status = "PASS" if gate_info["passed"] else "FAIL"
-            autopsies = "; ".join(
-                r["autopsy"] for r in gate_info["results"] if r["exit_code"] != 0
-            )
-            print(
-                "  {0}  {1}{2}".format(
-                    worker["id"], status, "  ({0})".format(autopsies) if autopsies else ""
-                )
-            )
         if ledger["phase"] == "no-candidates":
             print("No candidates passed the gate; nothing to review.")
             return 1
