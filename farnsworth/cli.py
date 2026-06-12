@@ -5,18 +5,23 @@ Usage::
     python3 -m farnsworth run <task-brief.md> [--config <path>]
     python3 -m farnsworth gate <task-id> [--config <path>]      # delegate mode
     python3 -m farnsworth finalize <task-id>                    # delegate mode
+    python3 -m farnsworth preflight [--config <path>]
+    python3 -m farnsworth adopt <task-id> [--clean]
     python3 -m farnsworth report <task-id>
+    python3 -m farnsworth metrics [root ...]
     python3 -m farnsworth clean <task-id> [--force]
     python3 -m farnsworth done [--config <path>]
 
 ``done`` is the loop-termination probe (PRD Section 2.4): it runs the
-goal's mechanical completion checks against the merged state and exits
-0 when the primary goal is complete, 1 when the loop should keep cycling.
+goal's mechanical completion checks against the merged state, records the
+result to ``.farnsworth/done-checks.json``, and exits 0 when the
+mechanical half of the goal is complete (writing the attestation briefing
+for the semantic half), 1 when the loop should keep cycling.
 
 Exit codes for ``run``/``gate``/``finalize``: 0 valid verdict, 1 no
 candidates passed the gate, 2 infrastructure/config error, 3 delegate
 dispatch prepared and awaiting host-session subagents (after ``run`` and
-``gate``).
+``gate``). ``preflight``: 0 all checks pass, 1 any failed.
 """
 
 from __future__ import annotations
@@ -27,11 +32,40 @@ import os
 import sys
 
 from . import delegate
+from .adopt import adopt as adopt_task
 from .config import Config, ConfigError, DEFAULT_CONFIG_NAME
 from .gitutil import GitError, repo_toplevel
 from .housekeeping import clean
-from .loop import LoopError, check_done, run
+from .loop import (
+    LoopError,
+    check_done,
+    record_done_outcome,
+    run,
+    write_attestation_briefing,
+)
+from .metrics import collect_runs, metrics_report
+from .preflight import preflight
 from .report import summary_table
+
+
+def _resolve_config(config_arg):
+    """Resolve ``--config`` the same way for every subcommand.
+
+    Relative paths anchor at the repo root (so subcommands agree no matter
+    which subdirectory they run from), and an explicitly named file that
+    does not exist is an error — a typo'd ``--config`` must never silently
+    dispatch the built-in default fleet. Only the default location may fall
+    back when absent.
+    """
+    path = config_arg
+    if not os.path.isabs(path):
+        try:
+            path = os.path.join(repo_toplevel(os.getcwd()), path)
+        except GitError:
+            pass  # not in a repo; the command's own precondition reports it
+    if config_arg != DEFAULT_CONFIG_NAME and not os.path.exists(path):
+        raise ConfigError("config not found: {0}".format(path))
+    return path
 
 
 def build_parser():
@@ -75,6 +109,44 @@ def build_parser():
         "run.json + summary.md",
     )
     finalize_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
+
+    preflight_p = sub.add_parser(
+        "preflight",
+        help="canary the fleet config before a tournament: parse, clean "
+        "tree, green gate at base, worker edit+commit capability",
+    )
+    preflight_p.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_NAME,
+        help="path to config JSON (default: {0} in repo root)".format(
+            DEFAULT_CONFIG_NAME
+        ),
+    )
+
+    adopt_p = sub.add_parser(
+        "adopt",
+        help="merge the verdict's adopted candidate and install the "
+        "reviewer's code-tips.next.md",
+    )
+    adopt_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
+    adopt_p.add_argument(
+        "--clean",
+        action="store_true",
+        help="also sweep the task's worktrees and branches after the merge",
+    )
+
+    metrics_p = sub.add_parser(
+        "metrics",
+        help="aggregate every run.json under the given roots into the "
+        "cross-run metrics table (default: current repo)",
+    )
+    metrics_p.add_argument(
+        "roots",
+        metavar="root",
+        nargs="*",
+        default=["."],
+        help="directories to scan for .farnsworth/task-*/run.json",
+    )
 
     clean_p = sub.add_parser(
         "clean",
@@ -124,9 +196,10 @@ def main(argv=None):
         # 2: infrastructure/config errors
         # 3: delegate mode — dispatch prepared, awaiting host-session agents
         try:
-            cfg = Config.load(args.config)
+            config_path = _resolve_config(args.config)
+            cfg = Config.load(config_path)
             if cfg.mode == "delegate":
-                ledger = delegate.prepare(args.brief, config_path=args.config)
+                ledger = delegate.prepare(args.brief, config_path=config_path)
                 print(
                     "Prepared {0} for delegate dispatch (subscription-billed "
                     "subagents).".format(ledger["task_id"])
@@ -144,7 +217,7 @@ def main(argv=None):
                         )
                     )
                 return 3
-            run_log = run(args.brief, config_path=args.config)
+            run_log = run(args.brief, config_path=config_path)
         except (LoopError, ConfigError, GitError) as exc:
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
@@ -159,7 +232,9 @@ def main(argv=None):
 
     if args.command == "gate":
         try:
-            ledger = delegate.gate(args.task_id, config_path=args.config)
+            ledger = delegate.gate(
+                args.task_id, config_path=_resolve_config(args.config)
+            )
         except (LoopError, ConfigError, GitError) as exc:
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
@@ -223,10 +298,7 @@ def main(argv=None):
     if args.command == "done":
         try:
             repo_root = repo_toplevel(os.getcwd())
-            config = Config.load(
-                args.config if os.path.isabs(args.config)
-                else os.path.join(repo_root, args.config)
-            )
+            config = Config.load(_resolve_config(args.config))
         except (ConfigError, GitError) as exc:
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
@@ -241,11 +313,90 @@ def main(argv=None):
         outcome = check_done(config.goal, repo_root)
         for result in outcome["results"]:
             print(result["autopsy"])
+        record_path = record_done_outcome(outcome, repo_root)
+        print("recorded: {0}".format(os.path.relpath(record_path, repo_root)))
         if outcome["passed"]:
-            print("GOAL COMPLETE: all done checks pass.")
+            briefing_path = write_attestation_briefing(config.goal, repo_root)
+            print("GOAL COMPLETE (mechanical half): all done checks pass.")
+            print(
+                "Dispatch the reviewer with {0} for the semantic half; "
+                "exit DONE requires both (PRD Section 2.4).".format(
+                    os.path.relpath(briefing_path, repo_root)
+                )
+            )
             return 0
         print("GOAL NOT MET: keep looping (dispatch the next task).")
         return 1
+
+    if args.command == "preflight":
+        try:
+            outcome = preflight(config_path=_resolve_config(args.config))
+        except (LoopError, ConfigError, GitError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+        for check in outcome["checks"]:
+            print(
+                "[{0}] {1}: {2}".format(
+                    check["status"].upper(), check["name"], check["detail"]
+                )
+            )
+        if outcome["passed"]:
+            print("PREFLIGHT PASS: the fleet config is runnable.")
+            return 0
+        print("PREFLIGHT FAIL: fix the config before dispatching a tournament.")
+        return 1
+
+    if args.command == "adopt":
+        try:
+            result = adopt_task(args.task_id)
+        except (LoopError, ConfigError, GitError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+        print(
+            "merged {0} (candidate {1}, worker {2})".format(
+                result["merged_branch"], result["candidate"], result["worker_id"]
+            )
+        )
+        if result["tips_installed"]:
+            print("installed code-tips.next.md as .code-tips.md (committed)")
+        else:
+            print("no code-tips.next.md on record; .code-tips.md unchanged")
+        if result["seed_tips_pending"]:
+            print(
+                "seed-tips.next.md present: route its entries into the "
+                "cross-project seed pile"
+            )
+        if result["consolidation_due"]:
+            print(
+                "{0} adopted tasks on record: the consolidation pass is due "
+                "(PRD Section 6)".format(result["adopted_count"])
+            )
+        if args.clean:
+            sweep = clean(args.task_id)
+            for path in sweep["removed_worktrees"]:
+                print("removed worktree {0}".format(path))
+            for branch in sweep["removed_branches"]:
+                print("removed branch {0}".format(branch))
+            if sweep.get("removed_review_env"):
+                print(
+                    "removed review environment {0}".format(
+                        sweep["removed_review_env"]
+                    )
+                )
+            for entry in sweep["skipped"]:
+                print("skipped {0}: {1}".format(entry["path"], entry["reason"]))
+        return 0
+
+    if args.command == "metrics":
+        runs = collect_runs(args.roots)
+        if not runs:
+            print(
+                "no run logs found under: {0}".format(", ".join(args.roots)),
+                file=sys.stderr,
+            )
+            return 1
+        print(metrics_report(runs))
+        return 0
 
     if args.command == "clean":
         try:

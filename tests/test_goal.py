@@ -13,7 +13,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from farnsworth import cli, config  # noqa: E402
-from farnsworth.loop import check_done  # noqa: E402
+from farnsworth.loop import build_attestation_briefing, check_done  # noqa: E402
 
 WORKER = {"id": "w1", "command": ["true"]}
 
@@ -123,6 +123,54 @@ class TestDoneCommand(unittest.TestCase):
         with open("farnsworth.json", "w", encoding="utf-8") as fh:
             json.dump({"workers": [WORKER]}, fh)
         self.assertEqual(cli.main(["done"]), 2)
+
+    def test_done_records_outcome_and_writes_attestation_briefing(self):
+        import json
+
+        self._write_config([PASS_CHECK])
+        self.assertEqual(cli.main(["done"]), 0)
+
+        # The probe's result is an artifact, not a terminal line.
+        with open(".farnsworth/done-checks.json", "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertTrue(record["passed"])
+        self.assertIn("checked_at", record)
+        self.assertEqual(record["results"][0]["name"], "always-pass")
+
+        # Mechanical pass hands the semantic half its protocol.
+        with open(
+            ".farnsworth/attestation-briefing.md", "r", encoding="utf-8"
+        ) as fh:
+            briefing = fh.read()
+        self.assertIn("attestation.json", briefing)
+        self.assertIn("goal_met", briefing)
+        self.assertIn("EMPIRICALLY", briefing)
+
+    def test_failed_done_records_but_writes_no_briefing(self):
+        import json
+
+        self._write_config([PASS_CHECK, FAIL_CHECK])
+        self.assertEqual(cli.main(["done"]), 1)
+
+        with open(".farnsworth/done-checks.json", "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertFalse(record["passed"])
+        self.assertFalse(
+            os.path.exists(".farnsworth/attestation-briefing.md")
+        )
+
+
+class TestAttestationBriefing(unittest.TestCase):
+    def test_briefing_names_the_goal_brief(self):
+        briefing = build_attestation_briefing(
+            {"brief": "GOAL.md", "done": [PASS_CHECK]}
+        )
+        self.assertIn("GOAL.md", briefing)
+        self.assertIn('"goal_met": true | false', briefing)
+
+    def test_briefing_without_brief_file(self):
+        briefing = build_attestation_briefing({"brief": None, "done": [PASS_CHECK]})
+        self.assertIn("none configured", briefing)
 
 
 if __name__ == "__main__":

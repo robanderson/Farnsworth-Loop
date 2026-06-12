@@ -26,11 +26,36 @@ import shutil
 import subprocess
 
 from . import gitutil, report
-from .config import Config
+from .config import Config, DEFAULT_CONFIG_NAME
+from .divergence import divergence
 
 
 class LoopError(RuntimeError):
     """Raised on a precondition failure that aborts the run."""
+
+
+# Rules of engagement for every dispatched worker, in BOTH dispatch modes.
+# Subprocess workers used to receive only tips + task (the preamble lived in
+# delegate dispatch alone), which left the artifact rule and the tips-file
+# hygiene contract traveling by hope — and word-garden-4's non-committing
+# worker was a subprocess-mode run.
+WORKER_PREAMBLE = """\
+You are worker {worker_id} in a Farnsworth Loop tournament round.
+
+Rules of engagement:
+- Work ONLY inside this worktree (you are already in it); never touch the
+  main repository, other worktrees, or anything outside this directory.
+- Implement the task below completely, then COMMIT all of your work to the
+  current branch ({branch}) with clear messages. Your committed diff against
+  the base commit is the deliverable; uncommitted work does not exist.
+- Run the project's tests yourself before finishing.
+- Never create or modify `.code-tips.md` (read-only briefing material).
+- You work blind: do not look for, or at, other workers' attempts.
+
+----
+
+{briefing}
+"""
 
 
 def _utcnow_iso():
@@ -106,6 +131,57 @@ def _one_line(text):
     return lines[-1] if lines else ""
 
 
+def _extract_cost_usd(stdout_text):
+    """Best-effort ``total_cost_usd`` from a command's JSON output, or None.
+
+    ``claude -p --output-format json`` emits one JSON object on stdout;
+    other worker commands emit whatever they like, so anything unparseable
+    simply yields no cost row.
+    """
+    text = (stdout_text or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    last_line = text.splitlines()[-1].strip()
+    if last_line != text:
+        candidates.append(last_line)
+    for chunk in candidates:
+        try:
+            data = json.loads(chunk)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            cost = data.get("total_cost_usd")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                return cost
+        return None
+    return None
+
+
+def protected_paths(repo_root, brief_path, config_path=None):
+    """Repo-relative paths no candidate may modify (the hygiene contract).
+
+    The tips file is reviewer-owned, the fleet config and the task brief are
+    the round's contract. Workers are told this in the preamble; the gate
+    enforces it mechanically here, because told-in-the-briefing is exactly
+    the enforcement level that failed for the commit rule in word-garden-4.
+    """
+    protected = {".code-tips.md", DEFAULT_CONFIG_NAME}
+    for path in (brief_path, config_path):
+        if not path:
+            continue
+        rel = os.path.relpath(os.path.abspath(path), repo_root)
+        if not rel.startswith(".."):
+            protected.add(rel)
+    return protected
+
+
+def hygiene_violations(base_commit, worktree_abs, protected):
+    """Return the sorted protected paths the candidate's commits touched."""
+    changed = set(gitutil.changed_paths(base_commit, worktree_abs))
+    return sorted(changed & set(protected))
+
+
 def _run_gate(gate, worktree):
     """Run every gate command in ``worktree`` and return (passed, results).
 
@@ -125,7 +201,9 @@ def _run_gate(gate, worktree):
         autopsy = "{0}: exit {1}".format(name, proc.returncode)
         if proc.returncode != 0:
             passed = False
-            tail = _one_line(proc.stderr)
+            # pytest and most linters report failures on stdout, unittest on
+            # stderr; an autopsy with no tail tells the reviewer nothing.
+            tail = _one_line(proc.stderr) or _one_line(proc.stdout)
             if tail:
                 autopsy = "{0} | {1}".format(autopsy, tail)
         results.append(
@@ -149,6 +227,82 @@ def check_done(goal, repo_root):
     """
     passed, results = _run_gate(goal["done"], repo_root)
     return {"passed": passed, "results": results}
+
+
+def record_done_outcome(outcome, repo_root):
+    """Write the done probe's result to ``.farnsworth/done-checks.json``.
+
+    All loop state is file-based and reconstructible from git history
+    (Section 4.4); a probe whose result exists only on a terminal isn't.
+    The file holds the LATEST probe — git history is the series, which is
+    also what STALLED detection (3 iterations without progress) needs.
+    """
+    farnsworth_dir = os.path.join(repo_root, ".farnsworth")
+    os.makedirs(farnsworth_dir, exist_ok=True)
+    path = os.path.join(farnsworth_dir, "done-checks.json")
+    payload = {
+        "checked_at": _utcnow_iso(),
+        "passed": outcome["passed"],
+        "results": outcome["results"],
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+    return path
+
+
+def build_attestation_briefing(goal):
+    """The reviewer protocol for the semantic half of "done" (Section 2.4).
+
+    Written by the CLI for the same reason the review protocol is: a
+    protocol that travels inside an orchestrator's prompt is a protocol
+    that drifts (the word-garden-5 lesson, applied to the goal contract's
+    other artifact type).
+    """
+    brief = goal.get("brief")
+    brief_line = (
+        "Goal brief: {0}".format(brief)
+        if brief
+        else "Goal brief: (none configured; attest against the project's stated goal)"
+    )
+    lines = [
+        "# Goal Attestation Briefing",
+        "",
+        "The mechanical done checks pass. Mechanics are necessary, not",
+        "sufficient: you are the SEMANTIC half of the termination contract",
+        "(PRD Section 2.4). Attest -- or refuse to attest -- that the merged",
+        "state meets the goal brief's acceptance criteria. Exit DONE requires",
+        "both halves.",
+        "",
+        brief_line,
+        "",
+        "## Protocol",
+        "",
+        "1. Read the goal brief and enumerate its acceptance criteria.",
+        "2. Verify each criterion EMPIRICALLY against the merged state (run",
+        "   the code, probe the behavior); never attest from reading alone.",
+        "3. Write the full attestation to .farnsworth/attestation.md:",
+        "   per-criterion evidence, and any residual gaps.",
+        "4. Write .farnsworth/attestation.json LAST, with schema:",
+        "",
+        '   {"goal_met": true | false, "reasoning": "..."}',
+        "",
+        "goal_met true means the loop exits DONE. goal_met false means the",
+        "loop keeps cycling, and your reasoning must name the gap the next",
+        "task brief should close.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_attestation_briefing(goal, repo_root):
+    """Write the attestation briefing under ``.farnsworth/`` and return its path."""
+    farnsworth_dir = os.path.join(repo_root, ".farnsworth")
+    os.makedirs(farnsworth_dir, exist_ok=True)
+    path = os.path.join(farnsworth_dir, "attestation-briefing.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(build_attestation_briefing(goal))
+    return path
 
 
 def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
@@ -198,6 +352,7 @@ def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
         "gate_results": gate_results,
         "stdout_name": stdout_name,
         "stderr_name": stderr_name,
+        "cost_usd": _extract_cost_usd(stdout_text),
     }
 
 
@@ -385,7 +540,7 @@ def run(brief_path, config_path=None, cwd=None):
     # (c) Build the briefing once, use for all workers.
     briefing = build_briefing(repo_root, brief_path)
 
-    # (d) Run all workers in parallel.
+    # (d) Run all workers in parallel, each under the shared preamble.
     worker_results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(config.workers)) as executor:
         futures = {}
@@ -394,10 +549,15 @@ def run(brief_path, config_path=None, cwd=None):
             worktree_abs = worktree_spec["worktree_abs"]
             worker_spec = config.workers[i]
 
+            prompt = WORKER_PREAMBLE.format(
+                worker_id=worker_id,
+                branch=worktree_spec["branch"],
+                briefing=focus_briefing(briefing, worker_spec.get("focus")),
+            )
             future = executor.submit(
                 _run_worker,
                 worker_spec,
-                focus_briefing(briefing, worker_spec.get("focus")),
+                prompt,
                 worktree_abs,
                 artifact_dir,
                 config.gate,
@@ -416,6 +576,7 @@ def run(brief_path, config_path=None, cwd=None):
     # task-002). Enforce the artifact rule mechanically here, and archive the
     # uncommitted work so a later `clean --force` cannot destroy the only
     # copy of what the worker actually did.
+    protected = protected_paths(repo_root, brief_path, config_path)
     candidates = []
     failed_workers = []
     for i, worktree_spec in enumerate(worktree_specs):
@@ -443,6 +604,22 @@ def run(brief_path, config_path=None, cwd=None):
             result["gate_results"].append(
                 {"name": "commits", "exit_code": 1, "autopsy": autopsy}
             )
+        if result["gate_passed"]:
+            # Hygiene contract, enforced mechanically: the tips file, the
+            # fleet config, and the brief are off limits to candidates.
+            violations = hygiene_violations(
+                base_commit, worktree_spec["worktree_abs"], protected
+            )
+            if violations:
+                result["gate_passed"] = False
+                result["gate_results"].append(
+                    {
+                        "name": "hygiene",
+                        "exit_code": 1,
+                        "autopsy": "hygiene: modified protected file(s): "
+                        + ", ".join(violations),
+                    }
+                )
         if result["gate_passed"]:
             candidates.append(
                 {
@@ -489,6 +666,7 @@ def run(brief_path, config_path=None, cwd=None):
         label = label_chars[len(labeled)]
         label_to_worker_id[label] = candidate["worker_id"]
         candidate["label"] = label
+        candidate["diff_text"] = text
 
         diff_path = os.path.join(artifact_dir, "candidates", "{0}.diff".format(label))
         os.makedirs(os.path.dirname(diff_path), exist_ok=True)
@@ -496,6 +674,11 @@ def run(brief_path, config_path=None, cwd=None):
             fh.write(text)
         labeled.append(candidate)
     candidates = labeled
+
+    # Field divergence, recorded for M4 threshold calibration (Section 2.2):
+    # content-based, because file footprints are identical in every recorded
+    # round even under deliberate focus diversification.
+    field_divergence = divergence([c["diff_text"] for c in candidates])
 
     # (g) Build run.json workers[] list for all workers (including non-candidates).
     run_workers = []
@@ -518,6 +701,7 @@ def run(brief_path, config_path=None, cwd=None):
                 "exit_code": result["exit_code"],
                 "stdout_file": result["stdout_name"],
                 "focus": config.workers[i].get("focus"),
+                "cost_usd": result["cost_usd"],
                 "gate": {
                     "passed": result["gate_passed"],
                     "results": result["gate_results"],
@@ -602,6 +786,7 @@ def run(brief_path, config_path=None, cwd=None):
         "started_at": started_at,
         "finished_at": finished_at,
         "base_commit": base_commit,
+        "divergence": field_divergence,
         "workers": run_workers,
     }
 
@@ -609,6 +794,7 @@ def run(brief_path, config_path=None, cwd=None):
         run_log["review"] = {
             "exit_code": review_exit_code,
             "environment": "../{0}-review".format(task_id),
+            "cost_usd": _extract_cost_usd(reviewer_proc.stdout),
             "verdict": verdict,
         }
     else:
@@ -715,7 +901,12 @@ def build_review_briefing(
         "provenance \"[YYYY-MM-DD, {0}]\". Lessons must be durable project "
         "truths that pay rent in every future briefing, not incident "
         "reports. The orchestrator installs this file after the "
-        "merge.".format(task_id)
+        "merge. GENERALIZE WHILE DISTILLING: when a lesson instantiates a "
+        "domain-general class (it would pay rent in ANY project, not just "
+        "this one), also write the GENERAL form to "
+        ".farnsworth/{0}/seed-tips.next.md -- the orchestrator routes those "
+        "entries into the cross-project seed pile; the project-specific "
+        "form stays in code-tips.next.md.".format(task_id)
     )
     lines.append(
         "5. Write the verdict LAST (schema below). When the outcome is "

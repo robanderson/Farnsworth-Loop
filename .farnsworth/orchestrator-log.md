@@ -218,3 +218,84 @@ two new acceptance criteria. Tests: 46 passing (focus isolation per
 worker, unattributed reviewer disclosure, table rendering, summary.md ==
 rendered run.json). First live exercise: the next tournament dispatched
 from this repo.
+
+---
+
+## Bridge note — Word Garden 3, 4, and 5 (2026-06-12)
+
+Three more recorded runs landed between the entry above and the next one;
+their process reports live with the examples rather than here:
+`examples/word-garden-3/.farnsworth/orchestrator-log.md` (cross-project
+seed tips + focus-diversified dispatch, first live),
+`examples/word-garden-4/.farnsworth/orchestrator-log.md` (the fully
+CLI-dispatched run; commits-as-artifact hole found and fixed), and
+`examples/word-garden-5/.farnsworth/orchestrator-log.md` (first
+goal-driven run; constructed review environment, first live). The PRD
+carries the distilled findings as Sections 14–16. This note exists so the
+journal's own pointer ("written after each merge") has no silent gap.
+
+---
+
+## Loop hardening pass — review findings folded into the tool (2026-06-12)
+
+Maintainer mode, requested by the human after a full review of the repo:
+the review found four implementation bugs that undercut the protocol's
+own guarantees, three PRD promises the CLI didn't keep, and four queued
+items whose evidence base was already sufficient. All folded in, in one
+pass; 129 tests passing (was 81).
+
+Bugs fixed:
+
+1. **Silent default-config fallback.** `Config.load` fell back to the
+   built-in default on ANY missing path — so a typo'd `--config` would
+   dispatch the default fleet, whose old form carried the `--bare` flag
+   word-garden-4 proved 100% fatal. Explicit-but-missing is now an error
+   in every subcommand, relative `--config` paths anchor at the repo
+   root uniformly, and the default worker command is the proven
+   `--setting-sources ""` + scoped `--allowedTools` form.
+2. **Subprocess workers had no rules of engagement.** The worker
+   preamble (commit contract, tips hygiene, blindness) existed only in
+   delegate dispatch; it is now shared by both modes — and the hygiene
+   rules are additionally enforced mechanically at the gate (a candidate
+   touching `.code-tips.md`, `farnsworth.json`, or the brief fails with
+   an autopsy).
+3. **Re-gating could serve stale labels.** `farnsworth gate` re-runs
+   (the documented recovery move) reshuffled labels but never swept
+   previous diffs from `candidates/` nor refreshed an existing review
+   env. Both fixed; the briefing and the served diffs can no longer
+   disagree.
+4. **Gate autopsies missed stdout.** pytest-style failures (stdout-only)
+   produced bare "tests: exit 1" autopsies; the tail now falls back to
+   stdout.
+
+PRD promises now kept by the CLI:
+
+5. **Cost capture** (Section 5 had promised it since v1.0): per-worker
+   `total_cost_usd` parsed from JSON output into run.json; reviewer cost
+   too; delegate mode gets an orchestrator-writable ledger field; the
+   summary table grows a Cost column when costs exist.
+6. **Goal artifacts** (Section 4.4's no-hidden-state rule): every
+   `farnsworth done` probe writes `.farnsworth/done-checks.json`, and a
+   mechanical pass writes the attestation briefing — the semantic half's
+   protocol now travels in a file, like the review protocol, not in an
+   orchestrator prompt.
+7. **Generalize-while-distilling** (M3's rule): the review briefing now
+   instructs the reviewer to write general forms to `seed-tips.next.md`
+   for seed-pile routing.
+
+Queued items shipped:
+
+8. **`farnsworth preflight`** (queued by word-garden-4): config parse,
+   clean tree, green-gate-at-base, and a per-worker scratch-worktree
+   canary proving edit + commit — the two observed fatality classes.
+9. **Content-based divergence** (M4's confirmed requirement): mean
+   pairwise token-Jaccard distance across candidate diffs, recorded in
+   every run.json. Recording-only until accumulated rounds calibrate a
+   trigger threshold.
+10. **`farnsworth metrics`** (M5): the cross-run table from every
+    run.json on disk — verdict distribution, gate-rate chart data,
+    per-model wins, divergence, dollar costs.
+11. **`farnsworth adopt`**: the post-verdict manual stretch (merge
+    winner, install code-tips.next.md, sweep) mechanized, with an
+    adopted-task counter that finally gives the Section 6 consolidation
+    cadence something to count.

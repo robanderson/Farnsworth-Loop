@@ -124,6 +124,54 @@ class TestSummaryTable(unittest.TestCase):
 
         self.assertNotIn("**Progression:**", table)
 
+    def test_cost_column_renders_only_when_recorded(self):
+        workers = [_worker("w1", label="A"), _worker("w2", label="B")]
+        workers[0]["cost_usd"] = 1.5
+        review = {
+            "exit_code": 0,
+            "cost_usd": 2.25,
+            "verdict": {
+                "outcome": "adopt",
+                "candidate": "A",
+                "reasoning": "ok",
+            },
+        }
+        table = summary_table(_run_log(workers, review))
+
+        self.assertIn("| Worker | Focus | Exit | Gate | Candidate | Cost | Result |", table)
+        self.assertIn("$1.50", table)
+        # A worker without a recorded cost renders '-'.
+        self.assertIn("| w2 | - | 0 | PASS | B | - |", table)
+        self.assertIn("Reviewer cost: $2.25.", table)
+
+    def test_costless_log_keeps_legacy_table_shape(self):
+        workers = [_worker("w1", label="A")]
+        review = {
+            "exit_code": 0,
+            "verdict": {"outcome": "adopt", "candidate": "A", "reasoning": "ok"},
+        }
+        table = summary_table(_run_log(workers, review))
+        self.assertIn("| Worker | Focus | Exit | Gate | Candidate | Result |", table)
+        self.assertNotIn("Cost", table)
+
+    def test_divergence_line_renders_when_recorded(self):
+        workers = [_worker("w1", label="A")]
+        run_log = _run_log(workers, None)
+        run_log["divergence"] = {
+            "metric": "token-jaccard",
+            "score": 0.5731,
+            "candidates": 2,
+        }
+        table = summary_table(run_log)
+        self.assertIn(
+            "Field divergence (token-jaccard): 0.57 across 2 candidates.", table
+        )
+
+    def test_no_divergence_line_when_absent(self):
+        workers = [_worker("w1", label="A")]
+        table = summary_table(_run_log(workers, None))
+        self.assertNotIn("divergence", table)
+
     def test_synthesize_verdict_has_no_adopted_row(self):
         workers = [_worker("w1", label="A")]
         review = {

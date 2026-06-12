@@ -33,11 +33,14 @@ from __future__ import annotations
 import json
 import os
 import random
+import shutil
 
 from . import gitutil, report
 from .config import Config
+from .divergence import divergence
 from .loop import (
     LoopError,
+    WORKER_PREAMBLE,
     _construct_review_env,
     _copy_back_review_artifacts,
     _run_gate,
@@ -45,30 +48,14 @@ from .loop import (
     build_briefing,
     build_review_briefing,
     focus_briefing,
+    hygiene_violations,
     load_and_validate_verdict,
+    protected_paths,
     review_env_path,
     task_id_from_brief,
 )
 
 DISPATCH_FILE = "dispatch.json"
-
-WORKER_PREAMBLE = """\
-You are worker {worker_id} in a Farnsworth Loop tournament round.
-
-Rules of engagement:
-- Work ONLY inside this worktree (you are already in it); never touch the
-  main repository, other worktrees, or anything outside this directory.
-- Implement the task below completely, then COMMIT all of your work to the
-  current branch ({branch}) with clear messages. Your committed diff against
-  the base commit is the deliverable; uncommitted work does not exist.
-- Run the project's tests yourself before finishing.
-- Never create or modify `.code-tips.md` (read-only briefing material).
-- You work blind: do not look for, or at, other workers' attempts.
-
-----
-
-{briefing}
-"""
 
 REVIEWER_PREAMBLE = """\
 You are the REVIEWER in a Farnsworth Loop tournament ({date}). You have
@@ -233,6 +220,9 @@ def gate(task_id, config_path=None, cwd=None):
     artifact_dir = _artifact_dir(repo_root, task_id)
     base_commit = ledger["base_commit"]
 
+    protected = protected_paths(
+        repo_root, os.path.join(repo_root, ledger["brief_path"]), config_path
+    )
     candidates = []
     failed_workers = []
     for worker in ledger["workers"]:
@@ -273,6 +263,21 @@ def gate(task_id, config_path=None, cwd=None):
                 {"name": "commits", "exit_code": 1, "autopsy": autopsy}
             )
 
+        if gate_passed:
+            # Hygiene contract, enforced mechanically (same rule as
+            # subprocess dispatch): tips file, fleet config, brief.
+            violations = hygiene_violations(base_commit, worktree_abs, protected)
+            if violations:
+                gate_passed = False
+                gate_results.append(
+                    {
+                        "name": "hygiene",
+                        "exit_code": 1,
+                        "autopsy": "hygiene: modified protected file(s): "
+                        + ", ".join(violations),
+                    }
+                )
+
         worker["gate"] = {"passed": gate_passed, "results": gate_results}
         worker["status"] = "gated"
         if gate_passed:
@@ -285,6 +290,12 @@ def gate(task_id, config_path=None, cwd=None):
             )
 
     # Anonymize: shuffle, drop empty diffs, assign labels, write diffs.
+    # Re-gating relabels from scratch, so first sweep any diffs a previous
+    # gate run wrote: a stale label whose worker has since failed would
+    # otherwise survive on disk and reach the reviewer.
+    candidates_dir = os.path.join(artifact_dir, "candidates")
+    if os.path.isdir(candidates_dir):
+        shutil.rmtree(candidates_dir)
     random.shuffle(candidates)
     label_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     label_to_worker_id = {}
@@ -312,6 +323,7 @@ def gate(task_id, config_path=None, cwd=None):
         label = label_chars[len(labeled)]
         label_to_worker_id[label] = candidate["worker_id"]
         candidate["label"] = label
+        candidate["diff_text"] = text
         diff_path = os.path.join(
             artifact_dir, "candidates", "{0}.diff".format(label)
         )
@@ -320,6 +332,9 @@ def gate(task_id, config_path=None, cwd=None):
             fh.write(text)
         labeled.append(candidate)
     candidates = labeled
+
+    # Content-based field divergence, recorded for M4 calibration.
+    ledger["divergence"] = divergence([c["diff_text"] for c in candidates])
 
     for worker in ledger["workers"]:
         worker["candidate_label"] = None
@@ -340,6 +355,17 @@ def gate(task_id, config_path=None, cwd=None):
             _construct_review_env(
                 review_env, base_commit, repo_root, artifact_dir, task_id
             )
+        else:
+            # The env was built by an earlier gate run; this run relabeled
+            # the field, so refresh the served diffs or the briefing and the
+            # environment disagree (the word-garden-5 briefed-path bug class,
+            # from the other side).
+            env_candidates = os.path.join(
+                review_env, ".farnsworth", task_id, "candidates"
+            )
+            if os.path.isdir(env_candidates):
+                shutil.rmtree(env_candidates)
+            shutil.copytree(candidates_dir, env_candidates)
         focus_directives = sorted(
             {w.get("focus") for w in ledger["workers"] if w.get("focus")}
         )
@@ -406,6 +432,10 @@ def finalize(task_id, cwd=None):
                 "worktree": worker["worktree"],
                 "exit_code": None,  # agents are managed by the host session
                 "focus": worker.get("focus"),
+                # Delegate dispatch has no per-worker cost stream; the
+                # orchestrator may record what the host session reports by
+                # writing cost_usd into the ledger's worker entries.
+                "cost_usd": worker.get("cost_usd"),
                 "gate": worker["gate"],
                 "candidate_label": worker.get("candidate_label"),
             }
@@ -417,6 +447,7 @@ def finalize(task_id, cwd=None):
         "finished_at": _utcnow_iso(),
         "base_commit": ledger["base_commit"],
         "mode": "delegate",
+        "divergence": ledger.get("divergence"),
         "workers": run_workers,
     }
 
@@ -432,7 +463,11 @@ def finalize(task_id, cwd=None):
         if os.path.isdir(review_env):
             _copy_back_review_artifacts(review_env, artifact_dir, task_id)
         verdict = load_and_validate_verdict(artifact_dir, label_to_worker_id)
-        run_log["review"] = {"exit_code": None, "verdict": verdict}
+        run_log["review"] = {
+            "exit_code": None,
+            "cost_usd": ledger.get("review_cost_usd"),
+            "verdict": verdict,
+        }
 
     with open(
         os.path.join(artifact_dir, "run.json"), "w", encoding="utf-8"

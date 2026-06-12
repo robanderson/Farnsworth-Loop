@@ -292,5 +292,108 @@ class TestDelegateCycle(DelegateTestBase):
             os.chdir(cwd)
 
 
+class TestRegateIdempotency(DelegateTestBase):
+    def test_regate_sweeps_stale_labels_and_refreshes_review_env(self):
+        brief = self._write_brief(name="task-042.md")
+        cfg_path = self._delegate_config()
+        self._track_worktree("task-042-w1")
+        self._track_worktree("task-042-w2")
+        delegate.prepare(brief, config_path=cfg_path, cwd=self.repo)
+        self._simulate_worker("task-042", "w1", commit=True)
+        self._simulate_worker("task-042", "w2", commit=True)
+
+        ledger = delegate.gate("task-042", config_path=cfg_path, cwd=self.repo)
+
+        candidates_dir = os.path.join(
+            self.repo, ".farnsworth", "task-042", "candidates"
+        )
+        self.assertEqual(
+            sorted(os.listdir(candidates_dir)), ["A.diff", "B.diff"]
+        )
+        # Content-based divergence is recorded for the two-candidate field.
+        self.assertEqual(ledger["divergence"]["candidates"], 2)
+        self.assertEqual(ledger["divergence"]["metric"], "token-jaccard")
+
+        # w2's subagent turns out to have violated hygiene; the orchestrator
+        # re-gates (the documented recovery move) after the violation lands.
+        worktree2 = os.path.join(self.tmp, "task-042-w2")
+        with open(
+            os.path.join(worktree2, ".code-tips.md"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write("corrupted by worker\n")
+        _git(["add", "-A"], worktree2)
+        _git(["commit", "-m", "tips edit"], worktree2)
+
+        ledger = delegate.gate("task-042", config_path=cfg_path, cwd=self.repo)
+
+        by_id = {w["id"]: w for w in ledger["workers"]}
+        self.assertFalse(by_id["w2"]["gate"]["passed"])
+        autopsies = [r["autopsy"] for r in by_id["w2"]["gate"]["results"]]
+        self.assertTrue(
+            any("hygiene: modified protected file(s)" in a for a in autopsies),
+            autopsies,
+        )
+        # The stale second label was swept from the artifact dir...
+        self.assertEqual(os.listdir(candidates_dir), ["A.diff"])
+        # ...and the already-constructed review environment was refreshed,
+        # so the briefing and the served diffs cannot disagree.
+        env_candidates = os.path.join(
+            ledger["review_env"], ".farnsworth", "task-042", "candidates"
+        )
+        self.assertEqual(os.listdir(env_candidates), ["A.diff"])
+        with open(
+            os.path.join(candidates_dir, "A.diff"), "r", encoding="utf-8"
+        ) as fh:
+            artifact_diff = fh.read()
+        with open(
+            os.path.join(env_candidates, "A.diff"), "r", encoding="utf-8"
+        ) as fh:
+            self.assertEqual(fh.read(), artifact_diff)
+        # One candidate left: divergence is honestly absent.
+        self.assertIsNone(ledger["divergence"])
+
+
+class TestDelegateCostPassthrough(DelegateTestBase):
+    def test_orchestrator_recorded_costs_reach_run_json(self):
+        brief = self._write_brief(name="task-042.md")
+        cfg_path = self._delegate_config()
+        self._track_worktree("task-042-w1")
+        self._track_worktree("task-042-w2")
+        delegate.prepare(brief, config_path=cfg_path, cwd=self.repo)
+        self._simulate_worker("task-042", "w1", commit=True)
+        self._simulate_worker("task-042", "w2", commit=True)
+        delegate.gate("task-042", config_path=cfg_path, cwd=self.repo)
+
+        # The orchestrator records what the host session reported, straight
+        # into the ledger (delegate dispatch has no per-worker cost stream).
+        ledger_path = os.path.join(
+            self.repo, ".farnsworth", "task-042", "dispatch.json"
+        )
+        with open(ledger_path, "r", encoding="utf-8") as fh:
+            ledger = json.load(fh)
+        ledger["workers"][0]["cost_usd"] = 1.25
+        ledger["review_cost_usd"] = 2.5
+        with open(ledger_path, "w", encoding="utf-8") as fh:
+            json.dump(ledger, fh)
+
+        self._write_verdict(
+            "task-042",
+            {"outcome": "adopt", "candidate": "A", "reasoning": "ok"},
+            in_env=True,
+        )
+        run_log = delegate.finalize("task-042", cwd=self.repo)
+
+        by_id = {w["id"]: w for w in run_log["workers"]}
+        costs = sorted(
+            c for c in (w.get("cost_usd") for w in run_log["workers"]) if c
+        )
+        self.assertEqual(costs, [1.25])
+        self.assertEqual(run_log["review"]["cost_usd"], 2.5)
+        self.assertIn("divergence", run_log)
+        self.assertEqual(run_log["divergence"]["candidates"], 2)
+        self.assertIn("cost_usd", by_id["w2"])  # present, honestly null
+        self.assertIsNone(by_id["w2"]["cost_usd"])
+
+
 if __name__ == "__main__":
     unittest.main()

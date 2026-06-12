@@ -140,6 +140,37 @@ def delete_branch(branch, cwd):
     run_git(["branch", "-D", branch], cwd)
 
 
+def changed_paths(base_commit, worktree_abs):
+    """Return repo-relative paths changed between base_commit and HEAD."""
+    proc = run_git(
+        ["diff", "--name-only", "{0}..HEAD".format(base_commit)],
+        worktree_abs,
+    )
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def is_clean_tracked(cwd):
+    """Return True if no TRACKED file has staged or unstaged changes.
+
+    Unlike ``is_clean_worktree`` this ignores untracked files: the main repo
+    legitimately carries untracked ``.farnsworth/`` artifacts between a run
+    and the adoption merge.
+    """
+    proc = run_git(["status", "--porcelain", "--untracked-files=no"], cwd)
+    return proc.stdout.strip() == ""
+
+
+def merge_branch(branch, message, cwd):
+    """Merge ``branch`` into the current branch with an explicit merge commit."""
+    run_git(["merge", "--no-ff", branch, "-m", message], cwd)
+
+
+def commit_paths(paths, message, cwd):
+    """Stage exactly ``paths`` and commit them with ``message``."""
+    run_git(["add", "--", *paths], cwd)
+    run_git(["commit", "-m", message], cwd)
+
+
 def diff_text(base_commit, worktree_abs):
     """Return the diff from base_commit to worktree-HEAD as a string."""
     proc = run_git(
