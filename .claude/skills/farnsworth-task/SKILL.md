@@ -5,6 +5,15 @@ description: Run one Farnsworth Loop tournament task end-to-end under delegate d
 
 # Farnsworth Task: one tournament round, delegate dispatch
 
+> SCOPE: this skill is the FALLBACK conductor (hosts without the
+> dynamic-workflow runtime) and conducts ONE round. The v2 task spine
+> runs the round machinery twice — explore, install the judge's
+> distilled lessons, then a clean-slate rebuild on the `-r2` brief with
+> the champion relabeled into the review field (PRD Section 2). The
+> primary conductor, `.claude/workflows/farnsworth-task.js`, automates
+> the full spine; when conducting manually, repeat this skill's phases
+> for round 2 per PRD 2.2.
+
 You are the ORCHESTRATOR of one Farnsworth Loop task (PRD Sections 2,
 4.1b, 4.3). Every mechanical phase stays in the CLI; you do exactly two
 things the CLI cannot: spawn the coder subagents and spawn the judge.

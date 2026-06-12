@@ -26,7 +26,7 @@ export const meta = {
     'Exits DONE / ESCALATED / STOPPED / STALLED, all recorded.',
   phases: [
     { title: 'Probe' },
-    { title: 'Derive' },
+    { title: 'Premise' },
     { title: 'Task' },
     { title: 'Attest' },
   ],
@@ -118,12 +118,15 @@ for (let i = 1; i <= maxIterations; i++) {
     };
   }
 
-  // ---- DERIVE: one next task, the smallest gateable slice ----
-  phase(`Derive ${i}`);
+  // ---- PREMISE: the Professor creates the next mission ----
+  // (Farnsworth's role is to create the premise; the crew implements
+  // it; the end of the cycle judges whether it advanced the goal.)
+  phase(`Premise ${i}`);
   const derived = await agent(
-    `cd ${repo}. Re-read the goal brief (GOAL.md / the goal entry in ` +
-      'the fleet config) against the CURRENT merged state and the ' +
-      'latest .farnsworth/done-checks.json' +
+    `You create the PREMISE of this cycle. cd ${repo}. Re-read the ` +
+      'goal brief (GOAL.md / the goal entry in the fleet config) ' +
+      'against the CURRENT merged state and the latest ' +
+      '.farnsworth/done-checks.json' +
       (gap ? `, plus this attested semantic gap: "${gap}"` : '') +
       '. Write ONE new task brief at tasks/task-NNN.md (next free ' +
       'number): the SMALLEST coherent slice of the goal gap that is ' +
@@ -131,8 +134,9 @@ for (let i = 1; i <= maxIterations; i++) {
       'default, and never a pre-authored pipeline of future tasks. ' +
       'Append one orchestrator-log entry to ' +
       '.farnsworth/orchestrator-log.md (what the probe showed, what ' +
-      'this task targets). git add both and commit: "Good news, ' +
-      'everyone! derive <task-id>". Return the brief path and task id.',
+      'this premise targets). git add both and commit: "Good news, ' +
+      'everyone! <the premise, one line>". Return the brief path and ' +
+      'task id.',
     {
       model: 'sonnet',
       schema: {

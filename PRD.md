@@ -59,6 +59,23 @@ Agent loops differ on one axis: what flows through the feedback path.
 
 The defining property: **failures are not wasted tokens, they are gotchas passed forward.** Knowledge compounds in the context layer, where it is inspectable, diffable, and versioned in git alongside the code it describes.
 
+**Canonical definition (v2.2, ratified 2026-06-12):** the Farnsworth
+Loop is the Ralph loop made self-evaluating. Keep Ralph's shape — a
+dumb driver, fresh contexts every pass, all memory on disk in git, run
+unattended — and substitute intelligence at the three places Ralph has
+none: each iteration's single attempt becomes a two-round best-of-N
+blind tournament (round one's distilled lessons and champion, never
+its code, advance into round two); Ralph's human guardrail-tuner
+becomes the judge's automated distillation into the tips file; and
+Ralph's infinite `while :` becomes the termination contract, with
+completion decided against the ORIGINAL GOAL, mechanically and by
+attestation. The namesake is adopted deliberately: each cycle opens
+with the orchestrator CREATING THE PREMISE — the derived task brief,
+announced "Good news, everyone!" — the crew implements it blind, and
+the cycle's end judges whether the premise advanced the goal; because
+a Farnsworth premise can be terrible, nothing trusts it blindly
+(escalation, verification, and refused attestation are all exits).
+
 This PRD specifies a minimal reference implementation using the Anthropic ecosystem only.
 
 > **Dogfooding status:** M1 and M2 were themselves built by running the loop — five blind parallel workers per task, mechanical gate, anonymized Opus review, verdict, distillation. The thesis has its first data: the round-1 winner (empty tips file) was Opus; the round-2 winner (14 distilled lessons in the briefing) was Haiku. Same models, better project. See Section 11 and `.farnsworth/orchestrator-log.md`.
