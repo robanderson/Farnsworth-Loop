@@ -10,14 +10,15 @@ Each task also carries a thirty-second `summary.md` table
 `farnsworth report <task-id>`): one row per worker with its focus, gate
 result, and candidate label, then the verdict. These were generated for
 all recorded runs when the summary-table feature landed (2026-06-12);
-the Focus column reads `-` for these runs because focus-diversified
-dispatch (PRD Section 2.1) did not exist yet — both features await their
-first live tournament.
+the Focus column reads `-` for runs 1–2 because focus-diversified
+dispatch (PRD Section 2.1) did not exist yet. Run 3 was the first live
+tournament for both features.
 
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
 | [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
 | [`word-garden-2/`](word-garden-2/) | The same game, rebuilt from the same spec as a controlled REPLICATION of run 1 (fresh seed, empty tips file) | 2 | adopt, adopt |
+| [`word-garden-3/`](word-garden-3/) | The same game a third time — first live run of CROSS-PROJECT SEED TIPS and FOCUS-DIVERSIFIED DISPATCH | 2 | adopt, adopt |
 
 ## Word Garden — how this example was produced
 
@@ -147,6 +148,73 @@ What replicated, and what didn't:
    contract language AND explicit scope.
 
 Play it: identical commands to word-garden-1, from `examples/word-garden-2`.
+
+## Word Garden 3 — the extensions run (2026-06-12)
+
+Same spec and byte-identical task briefs again, but this run flipped ON
+the two loop extensions the first two runs queued up, both live for the
+first time:
+
+1. **Cross-project seed tips.** The fresh project's `.code-tips.md`
+   started not empty but with 9 curated DOMAIN-GENERAL entries from the
+   prior runs' reviewer distillations (terminal-message contract,
+   assert-the-positive, forced-scenario e2e, argparse exit codes, no
+   silent fallbacks, injectable I/O/rng, message constants, direct
+   fixtures, hygiene) — each keeping its original provenance.
+2. **Focus-diversified dispatch (PRD §2.1).** Every worker carried a
+   one-line focus directive (recorded in `farnsworth.json` and the run
+   logs, disclosed to the reviewer only as a sorted unattributed set,
+   unsealed post-verdict).
+
+Full process report: [`word-garden-3/.farnsworth/orchestrator-log.md`](word-garden-3/.farnsworth/orchestrator-log.md).
+
+| | run 2 t-001 (empty tips) | run 3 t-001 (9 seed tips) | run 2 t-002 (proj. tips) | run 3 t-002 (seed+proj.) |
+|---|---|---|---|---|
+| Gate | 5/5 | 5/5 | 3/3 | 3/3 |
+| Behavioral bugs in field | 2 | 1 | 1 | **0** |
+| Winner | Opus | **Sonnet** | Opus | Opus |
+
+What the run showed:
+
+1. **The seed worked, attributably, on both of its target classes.** The
+   defect classes the seed covered did not occur: no terminal-message
+   bugs, no flag-only suites (round 1), and no argparse `SystemExit`
+   swallow (round 2) — the latter having shipped in BOTH prior projects'
+   UI rounds. The reviewer's per-entry audit: 0 of 9 seed entries
+   violated in round 1.
+2. **The one behavioral bug that DID ship maps exactly to the seed's
+   scope boundary.** A round-1 candidate reproduced word-garden-1's
+   `is_lost` missing-win-guard defect — the lesson that existed only in
+   that OTHER project's project-scoped tips and was excluded from the
+   seed by the domain-general curation rule. Memory prevents precisely
+   the defects it covers; nothing more. Refinement queued: the reviewer
+   should GENERALIZE while distilling (the general form — "a standalone
+   predicate must not rely on a caller's check ordering" — belongs in
+   the seed pile, the specific form in project tips).
+3. **Foci force divergence without corrupting verdicts.** Test counts
+   ranged 36–84 (round 1) and 105–145 (round 2); candidates invested
+   visibly along their lenses. No focus was misread as a contract
+   amendment — and focus alignment did not buy wins: round 2's
+   accessibility-focused candidate had the best accessibility work and
+   still lost on a self-inflicted signature deviation.
+4. **A new anonymization leak class, found and plugged.** A naive `git
+   clone` for the reviewer environment carries worker-named branches
+   (`task-001-w1`...), de-anonymizing the field by id. The reviewer
+   environment must be CONSTRUCTED: base tree + labeled diffs + gate
+   notes, nothing else.
+5. **Required signatures need closed-contract language.** A good-faith
+   extra parameter (`new_game_fn`) on the brief's required `main()`
+   signature forfeited round 2 for an otherwise excellent candidate.
+   Briefs and tips now state: required signatures are exact and CLOSED;
+   improvements go to escalation, not the diff.
+6. **Repeat signatures, third confirmation each:** duplicate dispatches
+   in every background phase (absorbed by the artifact-boundary rule,
+   including a duplicated reviewer); identical file footprints across all
+   candidates (the M4 divergence metric must read content, not file
+   lists); a Haiku spending the most motion in the field for a
+   non-winning candidate (3 runs for 3).
+
+Play it: identical commands to word-garden-1, from `examples/word-garden-3`.
 
 ## Reproducing with the CLI
 

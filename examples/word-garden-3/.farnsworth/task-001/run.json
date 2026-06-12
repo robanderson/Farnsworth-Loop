@@ -1,0 +1,40 @@
+{
+  "task_id": "task-001",
+  "started_at": "2026-06-12T00:05:00Z",
+  "finished_at": "2026-06-12T00:50:00Z",
+  "base_commit": "6cfef01b03023ef77b291601caa94a65d555800d",
+  "mode": "manual-agent-dispatch",
+  "tips_state": "cross-project seed, 9 entries (first live trial)",
+  "workers": [
+    {"id": "w1", "model": "haiku-4.5", "focus": "Focus on test rigor and edge cases.", "branch": "task-001-w1", "worktree": "../wg3-w1", "exit_code": 0, "tests": 84,
+     "gate": {"passed": true, "results": [{"name": "tests", "exit_code": 0, "autopsy": "tests: exit 0"}, {"name": "compile", "exit_code": 0, "autopsy": "compile: exit 0"}]},
+     "candidate_label": "C"},
+    {"id": "w2", "model": "haiku-4.5", "focus": "Focus on simplicity and economy of implementation.", "branch": "task-001-w2", "worktree": "../wg3-w2", "exit_code": 0, "tests": 47,
+     "gate": {"passed": true, "results": [{"name": "tests", "exit_code": 0, "autopsy": "tests: exit 0"}, {"name": "compile", "exit_code": 0, "autopsy": "compile: exit 0"}]},
+     "candidate_label": "A"},
+    {"id": "w3", "model": "sonnet-4.6", "focus": "Focus on readability and maintainability.", "branch": "task-001-w3", "worktree": "../wg3-w3", "exit_code": 0, "tests": 58,
+     "gate": {"passed": true, "results": [{"name": "tests", "exit_code": 0, "autopsy": "tests: exit 0"}, {"name": "compile", "exit_code": 0, "autopsy": "compile: exit 0"}]},
+     "candidate_label": "E"},
+    {"id": "w4", "model": "sonnet-4.6", "focus": "Focus on defensive robustness: validate inputs and fail loudly on contract violations.", "branch": "task-001-w4", "worktree": "../wg3-w4", "exit_code": 0, "tests": 80,
+     "gate": {"passed": true, "results": [{"name": "tests", "exit_code": 0, "autopsy": "tests: exit 0"}, {"name": "compile", "exit_code": 0, "autopsy": "compile: exit 0"}]},
+     "candidate_label": "D"},
+    {"id": "w5", "model": "opus-4.8", "focus": "Focus on API ergonomics for the downstream UI task that will build on this engine.", "branch": "task-001-w5", "worktree": "../wg3-w5", "exit_code": 0, "tests": 36,
+     "gate": {"passed": true, "results": [{"name": "tests", "exit_code": 0, "autopsy": "tests: exit 0"}, {"name": "compile", "exit_code": 0, "autopsy": "compile: exit 0"}]},
+     "candidate_label": "B"}
+  ],
+  "divergence": "file footprints identical (metric blind to content; foci forced high content divergence, 1.4k-2k diff lines pairwise, test counts 36-84); no round-2 trigger",
+  "review": {
+    "exit_code": 0,
+    "defects_in_gate_passing_field": 1,
+    "seed_tip_audit": "0 violated; 7/9 universally honored; 1 partially (empty-pool raise present in all source, no suite forces the branch); 1 N/A this round (argparse)",
+    "verdict": {
+      "outcome": "adopt",
+      "candidate": "D",
+      "reasoning": "All five pass the mechanical gate, but a reviewer probe found one real defect: Candidate A's is_lost(state) returns remaining_water <= 0 without the 'and not is_won(state)' guard, so a fully-revealed word at zero water is misclassified as a loss (is_won and is_lost both True). A's bug is masked inside apply_guess (win is checked first) and A's own suite never calls is_lost on a won state, which is exactly why it slipped the gate. B, C, D, and E all guard is_lost correctly and all 31 probe assertions pass for each. Among the four correct candidates, D wins: the most rigorous and readable suite (80 tests) covering precisely the edges that matter, including the very test A lacked (is_lost false when won, win-on-last-water precedence), clean immutable transitions, exact-string message assertions against imported constants, and spec-faithful win/loss text. Runner-up flaws: E drops SPEC 6.7's 'ran out of water' sense from MSG_LOSS; C leans on substring/attribute assertions (weaker rot guard) and skips .upper() in new_game; B is leanest and best-factored but covers the fewest edges. A is disqualified by the is_lost defect."
+    }
+  },
+  "agent_tokens": {
+    "workers_total": 261943,
+    "reviewer": 148602
+  }
+}

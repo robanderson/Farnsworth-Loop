@@ -1,0 +1,11 @@
+{
+  "gate": ["tests: python3 -m unittest discover -s tests", "compile: python3 -m compileall -q word_garden"],
+  "results": {
+    "A": {"passed": true, "tests": 47, "autopsy": "tests: exit 0 (47 tests); compile: exit 0; hygiene clean"},
+    "B": {"passed": true, "tests": 36, "autopsy": "tests: exit 0 (36 tests); compile: exit 0; hygiene clean"},
+    "C": {"passed": true, "tests": 84, "autopsy": "tests: exit 0 (84 tests); compile: exit 0; hygiene clean"},
+    "D": {"passed": true, "tests": 80, "autopsy": "tests: exit 0 (80 tests); compile: exit 0; hygiene clean"},
+    "E": {"passed": true, "tests": 58, "autopsy": "tests: exit 0 (58 tests); compile: exit 0; hygiene clean"}
+  },
+  "failures": []
+}
