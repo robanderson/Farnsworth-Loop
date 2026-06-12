@@ -5,6 +5,15 @@ source, task briefs, anonymized candidate diffs, reviews, verdicts, run
 logs, the distilled `.code-tips.md`, and an orchestrator process log. Every
 decision in each example is reconstructible from the files alone.
 
+> **Protocol note:** every run recorded here executed the v1
+> single-round-per-task loop. The v2 two-phase protocol (PRD Section 2:
+> explore → distill → informed clean-slate rebuild, gate-1 as evidence,
+> the champion mechanism, Phase-0 objectives interview) was adopted on
+> 2026-06-12 from the findings of these runs — most directly the two
+> one-iteration goal exits (word-garden-5, wine-stock) that never fired
+> the within-project feedback path. The next recorded run will be the
+> first under v2.
+
 The TUI word game is a demonstration subject only — the loop itself is
 task- and domain-agnostic (PRD Section 2.3): a task is any brief with
 acceptance criteria and a mechanical gate, whether that's one-shotting a
