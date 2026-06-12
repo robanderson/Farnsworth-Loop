@@ -164,6 +164,53 @@ Seven recorded runs, every artifact committed
   been yet** — the learning thesis, read from the other side.
 - A full five-coder tournament with empirical review: ~13 minutes.
 
+## Now and next
+
+What's proven in recorded runs versus what's on the bench
+(full milestone detail in [PRD.md](PRD.md), Section 9):
+
+**Working today**
+
+- [x] Blind parallel dispatch into per-worker git worktrees, with
+      focus-diversified briefings and the project's tips injected
+- [x] Mechanical gate: tests/build/hygiene with per-command deadlines,
+      commit-as-artifact enforcement, parallel execution, live progress
+- [x] Anonymized review in a constructed environment (no branches, no
+      config, no attribution surfaces) with a validated three-outcome
+      verdict — plus an adversarial Verify pass on the verdict's claims
+- [x] Distillation: reviewer-owned `.code-tips.md` per project and the
+      cross-project [`seed-tips.md`](seed-tips.md) pile — zero
+      recurrence of seed-covered defect classes across runs and domains
+- [x] Goal termination contract: `farnsworth done` + semantic
+      attestation; four honest exits (DONE/ESCALATED/STOPPED/STALLED)
+- [x] Dynamic-workflow conductor (`.claude/workflows/`) running the
+      two-round explore→rebuild spine, with skills as the fallback
+      conductor and `--json` phase records throughout
+- [x] Dynamic fleet selection: the field is confirmed per run — never
+      a hardcoded mix
+- [x] The subprocess `command` adapter, proven end-to-end with headless
+      `claude -p` fleets (word-garden-4, dollar-true costs)
+
+**Planned**
+
+- [ ] **Third-party and local coders in the parallel field:** GLM,
+      MiniMax, Qwen, Codex, and local models via Ollama / LM Studio /
+      MLX through the command adapter — the adapter works; the first
+      live non-Anthropic fleet hasn't run yet
+- [ ] **Heterogeneous fields:** Claude + third-party + local agents
+      competing in the *same* anonymized round (config currently
+      enforces one dispatch mode per fleet)
+- [ ] Workflow conduction of subprocess/local fleets (today they run
+      end-to-end via `farnsworth run`)
+- [ ] M7: the two-round v2 protocol mechanized in the CLI itself —
+      verdict-1 champion schema, scripted champion relabeling retired,
+      gate-as-evidence for no-candidate explore rounds
+- [ ] Per-agent token telemetry from `/workflows` into `run.json`, and
+      `maxTurns` caps on coder dispatch
+- [ ] The gate-success-over-time chart rendered from the banked run
+      logs (`farnsworth metrics` already emits the data)
+- [ ] M6: the TUI memory-map visualization of a running fleet
+
 ## Going deeper
 
 - [`PRD.md`](PRD.md) — the full specification and lab notebook: the
