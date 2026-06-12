@@ -1,27 +1,49 @@
 # Distributable skills
 
-Skills here are PORTABLE: unlike `.claude/skills/` (which only loads
-inside this repository), these are meant to be installed into your
-personal skill library and invoked from ANY project.
+This repository is a **Claude Code plugin** (manifest in
+[`.claude-plugin/`](../.claude-plugin/)). Installing it registers, for
+every project on your machine:
 
-| Skill | What it does |
-|---|---|
-| [`farnsworth/`](farnsworth/) | The portable loop conductor: `/farnsworth <project-dir> "<goal>"` ratifies a goal contract in the target repo, then cycles smallest-slice blind tournaments until the goal is attested done. |
+- the **`/farnsworth` skill** ([`farnsworth/`](farnsworth/)) — ignites
+  the loop against any target repo: ratifies the goal contract,
+  confirms the fleet, then launches the `farnsworth-loop` dynamic
+  workflow;
+- the **dynamic workflows** (`farnsworth-loop.js`,
+  `farnsworth-task.js`) and the **tool-scoped agent roles**
+  (`farnsworth-coder`, `farnsworth-judge`, `farnsworth-attestor`) —
+  synced into user scope (`~/.claude/workflows/`, `~/.claude/agents/`)
+  by the plugin's SessionStart hook, because plugins cannot bundle
+  workflows directly and the workflows spawn the agents by name. Each
+  agent definition carries an explicit `tools:` allowlist (Bash, Read,
+  Edit/Write, Glob, Grep), so the workflow's bust-out to CLI tasks
+  runs only through approved tools;
+- the **Python trust layer** rides along inside the plugin checkout —
+  the skill resolves it from its own location; no `FARNSWORTH_HOME`
+  setup required (the env var still works as an override).
+
+Requires Claude Code ≥ 2.1.154 for the dynamic-workflow conductor;
+older hosts fall back to skill-conducted CLI phases (the skill says so
+out loud when it happens).
 
 ## Install
 
-CLI / Claude Code:
+From GitHub, available in all projects (user scope):
 
-```bash
-cp -r skills/farnsworth ~/.claude/skills/farnsworth
+```
+/plugin marketplace add robanderson/Farnsworth-Loop
+/plugin install farnsworth-loop@farnsworth
 ```
 
-Claude desktop app: Settings → Customize → Skills → add the
-`skills/farnsworth` folder.
-
-The skill drives the Python CLI in this repository; point it at your
-checkout with `FARNSWORTH_HOME` (defaults to `~/Farnsworth-Loop`):
+From a local checkout, one session:
 
 ```bash
-export FARNSWORTH_HOME=/path/to/Farnsworth-Loop
+claude --plugin-dir /path/to/Farnsworth-Loop
 ```
+
+Then, from any project:
+
+```
+/farnsworth ~/my-app "add CSV export to the report module"
+```
+
+and watch the run in `/workflows`.

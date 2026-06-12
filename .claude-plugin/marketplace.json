@@ -1,0 +1,13 @@
+{
+  "name": "farnsworth",
+  "owner": {
+    "name": "Rob Anderson"
+  },
+  "plugins": [
+    {
+      "name": "farnsworth-loop",
+      "source": "./",
+      "description": "The Farnsworth Loop: goal-driven tournament workflows, tool-scoped agent roles, and the portable conductor skill."
+    }
+  ]
+}
