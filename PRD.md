@@ -793,15 +793,23 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 1. **M8, Workflow Conductor (v2.2):** the dynamic-workflow runtime as
    the loop's primary orchestrator (Section 4.1c-ii). Shipped
-   2026-06-12: `.claude/workflows/farnsworth-task.js` (six phases:
-   Prepare, Code fan-out, Gate, Judge, Verify, Finalize), `--json`
-   conductor mode across the phase commands, gate hardening from the
-   word-garden-6 live run (per-command deadlines, stdin closed,
-   commit-check-first, parallel worktree gating with streamed
-   progress). Open: per-agent token telemetry from `/workflows` into
-   `run.json` (fills delegate mode's missing cost column), `maxTurns`
-   caps on coder dispatch, pipeline-style per-worker gating behind the
-   anonymization barrier, and the first live workflow-conducted run.
+   2026-06-12: `.claude/workflows/farnsworth-task.js` conducting the
+   FULL two-round v2 spine — R1 explore, R1 gate/judge (verdict-1
+   crowns the champion), distill (lessons installed between rounds,
+   never code), R2 clean-slate rebuild, champion relabeled by the
+   conductor into the R2 review field (the M7-pending manual protocol
+   from Section 2.2, scripted), blind verdict-2 with the
+   champion-survival negative result recorded, adversarial Verify, and
+   finalize/adopt routed through whichever round's task owns the
+   winner. Plus `--json` conductor mode across the phase commands and
+   gate hardening from the word-garden-6 live run (per-command
+   deadlines, stdin closed, commit-check-first, parallel worktree
+   gating with streamed progress). Open: M7's CLI mechanization of the
+   verdict-1 schema and champion relabeling (replacing the scripted
+   manual steps), gate-as-evidence for no-candidate explore rounds,
+   per-agent token telemetry from `/workflows` into `run.json`,
+   `maxTurns` caps on coder dispatch, and the first live
+   workflow-conducted run.
 1. **M7, Two-Phase Loop (v2 CLI):** mechanize Sections 2/2.2/2.5/2.6 — gate-as-evidence (results travel with every candidate; only commit/hygiene checks disqualify), the verdict-1 schema (champion + defect ledger + lessons + gate extensions + `round_2: proceed|adopt-final|escalate`), round-2 phases (clean-slate re-dispatch with installed lessons; champion relabeled into the review field; negative-result recording), round-N progress accounting against the STALLED rule, Phase-0 artifact support (`GOAL.md`/`decisions-ledger.md`/`open-questions.md`, open questions surfaced as foci), and grammar-compiled structure gates. Until M7 lands the CLI implements the v1 single-round flow; the v2 protocol is dispatch-mode-agnostic and an orchestrator can run it today by treating each round as a CLI task and performing champion relabeling by hand. Per repo tradition, M7 should be built BY the loop.
 
 ## 10. Acceptance Criteria (faithfulness contract)

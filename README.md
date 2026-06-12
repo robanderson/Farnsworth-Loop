@@ -26,33 +26,57 @@ tokens. The Farnsworth Loop closes the loop with **semantic feedback**:
 failures are not wasted tokens, they are gotchas passed forward —
 inspectable, diffable, versioned in git next to the code they describe.
 
-## One round, end to end
+## One task, end to end: explore, distill, rebuild
 
 ```
-            tasks/task-042.md  +  .code-tips.md (the project's memory)
-                                 │
-        ┌───────┬───────────┬────┴──────┬───────────┐   blind, parallel,
+         tasks/task-042.md  +  .code-tips.md (the project's memory)
+                                │
+  ROUND 1 — EXPLORE             ▼
+        ┌───────┬───────────┬───┴───────┬───────────┐   blind, parallel,
       coder   coder       coder       coder       coder  focus-diversified
      (haiku) (haiku)    (sonnet)    (sonnet)     (opus)
-        └───────┴───────────┴────┬──────┴───────────┘
-                                 ▼
-                GATE   mechanical: tests, build, hygiene,
-                       commits-as-artifact — evidence, not opinion
-                                 ▼
+        └───────┴───────────┴───┬───────┴───────────┘
+                                ▼
+              GATE-1   mechanical evidence — tests, build, hygiene,
+                       commits-as-artifact; results travel WITH each
+                       candidate, they don't filter the field
+                                ▼
                JUDGE   anonymized diffs A/B/C/D, randomized order,
-                       blind sketch first, empirical probes
-                                 ▼
+                       blind sketch first; probe the passers,
+                       idea-mine the failers
+                                ▼
+           VERDICT-1   crown a CHAMPION (or none) · escalate
+                                ▼
+             DISTILL   lessons → .code-tips.md; mechanizable lessons
+                       ratchet into gate-2 — code is thrown away,
+                       lessons travel
+                                │
+  ROUND 2 — INFORMED REBUILD    ▼
+                       fresh blind coders, clean slate:
+                       brief + distilled lessons — never round-1 code
+                                ▼
+              GATE-2   strict, including the round-1 ratchets
+                                ▼
+               JUDGE   round-2 field + the champion, relabeled
+                       together — "did learning beat blind
+                       exploration?" is decided blind
+                                ▼
               VERIFY   fresh eyes attack the verdict's claims
-                                 ▼
-             VERDICT   adopt · synthesize · escalate
-                                 ▼
-             DISTILL   lessons → .code-tips.md → every future briefing
+                                ▼
+           VERDICT-2   adopt · synthesize · escalate  →  MERGE
+                                ▼
+             DISTILL → derive the next task from the goal gap,
+                       until `farnsworth done` says DONE
 ```
 
-Anonymity is load-bearing: the judge never learns which model wrote
-which diff, so cheap models win on merit — and they do. In the loop's
-first dogfooding cycle, round 1 (empty tips) went to Opus; round 2,
-with fourteen distilled lessons in the briefing, went to **Haiku**.
+Anonymity is load-bearing twice over: the judge never learns which
+model wrote which diff — so cheap models win on merit, and they do —
+and the verdict-2 judge never learns which candidate is the round-1
+champion, so the loop's core claim is tested blind every task. A
+champion that survives the rebuild is recorded as a negative learning
+result, never hidden. In the loop's first dogfooding cycle, the
+empty-tips round went to Opus; with fourteen distilled lessons in the
+briefing, the rebuild went to **Haiku**.
 
 ## The architecture (June 2026)
 
