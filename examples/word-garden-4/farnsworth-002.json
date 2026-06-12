@@ -1,0 +1,130 @@
+{
+  "workers": [
+    {
+      "id": "w1",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--setting-sources",
+        "",
+        "--model",
+        "claude-haiku-4-5",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Bash(python3:*)",
+        "Bash(git:*)"
+      ],
+      "timeout_seconds": 1800,
+      "focus": "Focus on minimal code and simplicity"
+    },
+    {
+      "id": "w3",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--setting-sources",
+        "",
+        "--model",
+        "claude-sonnet-4-6",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Bash(python3:*)",
+        "Bash(git:*)"
+      ],
+      "timeout_seconds": 1800,
+      "focus": "Focus on readability and maintainability"
+    },
+    {
+      "id": "w5",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--setting-sources",
+        "",
+        "--model",
+        "claude-opus-4-8",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Bash(python3:*)",
+        "Bash(git:*)"
+      ],
+      "timeout_seconds": 1800,
+      "focus": "Focus on exact spec faithfulness and contract precision"
+    }
+  ],
+  "reviewer": {
+    "command": [
+      "claude",
+      "-p",
+      "You are the REVIEWER in a Farnsworth Loop tournament (today is 2026-06-12). Follow this protocol IN STRICT ORDER.\n\n1. BLIND SKETCH FIRST. Read the task brief in the briefing below, but do NOT open any candidate diff yet. Write your own implementation outline (interfaces, key decisions, risks, edge cases you would guard) to the task's artifact directory as blind-sketch.md (the briefing names the directory, e.g. .farnsworth/task-002/). This is an anchoring defence; it must exist before you read any candidate.\n\n2. CONTEXT. Read .code-tips.md and SPEC.md in the repo root, and the adopted engine modules (word_garden/game.py, word_garden/words.py) — they are the fixed contract this task builds on.\n\n3. CANDIDATES. Read the anonymized diffs listed in the briefing (under the artifact directory's candidates/). Anonymity rules are absolute: do NOT inspect git branches or worker worktrees, do NOT read run.json, dispatch logs, or the workers section of any farnsworth*.json, and never attempt to guess which worker or model produced a candidate.\n\n4. VERIFY EMPIRICALLY. For each candidate label X: create a scratch worktree at the base commit (git worktree add ../review-X --detach HEAD), apply the diff (git apply with the correct path to candidates/X.diff), run ALL the gate commands (python3 -m unittest discover -s tests; python3 -m compileall -q word_garden; piped-EOF run of python3 -m word_garden must exit 0; engine files must be untouched vs the base commit), then probe behaviour the candidate's own suite may have missed: play a scripted game via the injected I/O, check --ascii output is pure ASCII across a whole game including end screens, check --difficulty changes water, check usage errors exit 2 and --help exits 0, check invalid input consumes no water, check growth stages change with progress. Remove each scratch worktree when done (git worktree remove --force ../review-X).\n\n5. REVIEW DOCUMENT. Write review.md in the artifact directory: per-candidate strengths AND weaknesses against the task's acceptance criteria, your empirical findings (including any defect in gate-passing code), test-rigor assessment, and a comparative ranking with reasoning.\n\n6. VERDICT. Write verdict.json exactly per the schema in the briefing. ADOPT only a candidate that is correct and complete as-is; SYNTHESIZE if none is adequate but the field has usable insight (your blind sketch counts as candidate n+1; put authoring guidance in review.md); ESCALATE only if the task spec itself is wrong or ambiguous.\n\n7. DISTILL (after the verdict). You are the ONLY writer of .code-tips.md. Add durable lessons from this round: imperative contract language (MUST/NEVER), explicit scope (state whether each rule binds source, tests, or both), provenance tag [2026-06-12, task-NNN] on every entry. Sharpen or amend existing entries rather than duplicating them. Lessons must be durable project truths, not incident reports.\n\nDo not run git add or git commit at any point; leave everything in the working tree. Do not modify any file other than blind-sketch.md, review.md, verdict.json, and .code-tips.md.\n\nTHE BRIEFING:\n\n{prompt}",
+      "--setting-sources",
+      "",
+      "--model",
+      "claude-opus-4-8",
+      "--permission-mode",
+      "acceptEdits",
+      "--output-format",
+      "json",
+      "--allowedTools",
+      "Bash(python3:*)",
+      "Bash(git:*)"
+    ],
+    "timeout_seconds": 2700
+  },
+  "gate": [
+    {
+      "name": "tests",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests"
+      ]
+    },
+    {
+      "name": "compile",
+      "command": [
+        "python3",
+        "-m",
+        "compileall",
+        "-q",
+        "word_garden"
+      ]
+    },
+    {
+      "name": "eof-exit-0",
+      "command": [
+        "python3",
+        "-c",
+        "import subprocess,sys; p=subprocess.run([sys.executable,'-m','word_garden'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30); sys.exit(p.returncode)"
+      ]
+    },
+    {
+      "name": "engine-untouched",
+      "command": [
+        "git",
+        "diff",
+        "--quiet",
+        "master",
+        "--",
+        "word_garden/game.py",
+        "word_garden/words.py",
+        "word_garden/__init__.py"
+      ]
+    }
+  ]
+}
