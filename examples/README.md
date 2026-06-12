@@ -5,6 +5,20 @@ source, task briefs, anonymized candidate diffs, reviews, verdicts, run
 logs, the distilled `.code-tips.md`, and an orchestrator process log. Every
 decision in each example is reconstructible from the files alone.
 
+The TUI word game is a demonstration subject only — the loop itself is
+task- and domain-agnostic (PRD Section 2.3): a task is any brief with
+acceptance criteria and a mechanical gate, whether that's one-shotting a
+whole program, a milestone slice, or a bug fix on an existing codebase
+(a Gitea/Forgejo fork, a new MCP server) whose own build/test commands
+become the gate. The three recorded runs all used MILESTONE-SLICE grains
+(task-001 = engine, task-002 = UI on top — sequential floors of one
+build). The queued next design, word-garden-4, uses the RE-SHOT grain
+instead: one-shot the entire game as task-001, distill the field's
+mistakes, then one-shot the entire game again as task-002 with only the
+lessons carried forward — attempt 2 replaces attempt 1, and the
+progression note reports the attempt-to-attempt delta, which is the
+loop's learning measurement on an identical problem.
+
 Each task also carries a thirty-second `summary.md` table
 (`.farnsworth/task-NNN/summary.md`, the output of
 `farnsworth report <task-id>`): one row per worker with its focus, gate

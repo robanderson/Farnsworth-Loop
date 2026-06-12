@@ -78,6 +78,41 @@ Rules:
 
 After the gate, the orchestrator measures divergence across candidates (approach, decomposition, files touched). If candidates substantially agree, proceed to review normally. If they scatter, the task was ambiguous: run the review and distillation, then re-dispatch the same task as a fresh blind round where workers receive the updated `.code-tips.md` but NOT the round 1 diffs. Distillation is the anti-anchoring filter: lessons travel, diffs do not. Two rounds maximum per task; a second scatter is an automatic escalation.
 
+### 2.3 Task Grain and Domain: the Loop Is Task-Agnostic
+
+A task is exactly three things: a brief (opaque text), acceptance
+criteria inside it, and a mechanical gate (configurable commands). The
+loop's machinery — dispatch, worktrees, gate, anonymized review, verdict,
+distillation — never inspects the task's content. Two consequences, both
+load-bearing:
+
+**Grain is the orchestrator's choice, not the protocol's.** Valid tasks
+include: one-shot an entire program from a spec; a milestone slice of a
+larger build; a bug fix; a refactor; a feature on a codebase the loop has
+never seen. The Word Garden examples (Sections 12–14) happened to use
+milestone slices (engine, then UI) — a choice made by those examples'
+briefs, not a property of the loop. The most instructive grain for
+MEASURING the loop is the **re-shot**: dispatch the whole problem as
+task-001, distill the field's mistakes, then dispatch the same whole
+problem again as task-002 — fresh blind workers, updated tips, no
+attempt-1 diffs (the Section 2.2 rule, promoted from a
+divergence-triggered exception to an explicit design choice). Attempt 2
+REPLACES attempt 1; the attempt-1 → attempt-2 delta on an identical
+problem is the cleanest direct measurement of "the project got smarter"
+the loop can produce. No recorded run has used the re-shot grain yet; it
+is the queued design for the next example.
+
+**Domain is the gate config's business, not the loop's.** Nothing in the
+protocol assumes Python, greenfield code, or a toy: point the loop at an
+existing repository — a Gitea/Forgejo fork, a new MCP server, a
+production service — and the gate becomes that project's own
+build/test/lint commands in `farnsworth.json`, the tips file accumulates
+that project's contracts, and briefs carry issues or change requests
+instead of spec sections. The CLI's only domain-flavored piece is the
+FALLBACK gate used when no `farnsworth.json` exists (`python3 -m unittest
+discover`), which any real project overrides. Greenfield demo, brownfield
+patch to a large Go codebase: same loop, different `farnsworth.json`.
+
 ## 3. Roles and Models
 
 All roles run Claude Code headless (`claude -p`) within the Anthropic ecosystem.
@@ -176,7 +211,7 @@ All loop state is file-based and inspectable: task briefs, candidate diffs, gate
 
 Every run additionally produces a short what-happened table — one row per worker (id, focus, exit, gate, candidate label, ADOPTED marker) plus the verdict and reasoning — written to `.farnsworth/<task-id>/summary.md`, printed at the end of `farnsworth run`, and reprintable any time with `farnsworth report <task-id>`. The table is the thirty-second read; `run.json` remains the contract of record.
 
-Whenever a verdict merges code, the summary also carries a reviewer-authored **progression note** (`review.progression` in `run.json`): how the merged code advances the previously adopted baseline — what it built on, what is new, what got better relative to the prior merged state, and which distilled lessons it visibly absorbed. The verdict reasoning explains why the winner beat the *field*; the progression note explains how the *project* moved. Without it, a reader of task-N's summary learns who won round N but not what round N added to rounds 1..N-1 — the exact question an outside user asks first. The reviewer writes it post-verdict (it has the cross-candidate and cross-task view); the orchestrator records it in `run.json` so `farnsworth report` reproduces it from the log alone.
+Whenever a verdict merges code, the summary also carries a reviewer-authored **progression note** (`review.progression` in `run.json`): how the merged code advances the previously adopted baseline — what it built on, what is new, what got better relative to the prior merged state, and which distilled lessons it visibly absorbed. The verdict reasoning explains why the winner beat the *field*; the progression note explains how the *project* moved. Without it, a reader of task-N's summary learns who won round N but not what round N added to rounds 1..N-1 — the exact question an outside user asks first. The reviewer writes it post-verdict (it has the cross-candidate and cross-task view); the orchestrator records it in `run.json` so `farnsworth report` reproduces it from the log alone. Under a re-shot task (Section 2.3) the baseline is the previous *attempt*, and the progression note becomes the loop's learning measurement itself: how attempt 2 improved on attempt 1.
 
 ## 5. MVP Scope
 
