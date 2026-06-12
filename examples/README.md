@@ -236,3 +236,12 @@ Then review the verdict, merge the winning branch (the reviewer has
 already distilled `.code-tips.md` as part of its protocol), sweep with
 `farnsworth clean task-001`, and dispatch task-002 the same way with
 `--config farnsworth-002.json`.
+
+Since 2026-06-12 there is a cheaper path for Anthropic-model fleets:
+**delegate dispatch** (PRD Section 4.1b) — worker entries carry `model`
+instead of `command`, `farnsworth run` prepares worktrees and briefing
+files and exits 3, the orchestrating Claude Code session spawns one
+subagent per briefing (billed to the subscription, not API credit), then
+`farnsworth gate <task-id>` and `farnsworth finalize <task-id>` complete
+the round. The word-garden-4 configs predate this and record the
+subprocess form.

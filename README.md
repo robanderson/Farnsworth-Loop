@@ -110,7 +110,44 @@ TASK: $(cat task-brief.md)" \
   --output-format json
 ```
 
-`--bare` keeps workers from inheriting orchestrator config (hooks, skills, CLAUDE.md). The worktree contains the blast radius of `acceptEdits`. Workers commit to their branch; the diff against main is the deliverable.
+`--bare` keeps workers from inheriting orchestrator config (hooks, skills, CLAUDE.md) — but note it also disables OAuth/keychain auth (Section 8), so subscription hosts use `--setting-sources ""` plus scoped `--allowedTools` instead. The worktree contains the blast radius of `acceptEdits`. Workers commit to their branch; the diff against main is the deliverable.
+
+### 4.1b Delegate dispatch (subscription-billed subagents)
+
+Subprocess `claude -p` bills to API / Agent-SDK credit. For Anthropic-model
+workers the default is now **delegate dispatch**: the Claude Code session
+that orchestrates the loop spawns one standard subagent per worker, which
+draws on the subscription instead. A worker entry carries `model` instead
+of `command` (`farnsworth.json` in this repo is the live example); the two
+forms are mutually exclusive per entry, and a fleet must be uniformly one
+mode. Subprocess dispatch remains the adapter for anything that is not an
+Anthropic model (GLM, Codex, local models — Section 5's non-goal stays
+open through `command`).
+
+A Python CLI cannot spawn host-session subagents, so delegate mode makes
+the loop PHASED around the two points where agents work, with every
+mechanical phase staying in the tool:
+
+```bash
+farnsworth run tasks/task-042.md   # worktrees + briefing files + ledger; exit 3
+# host session spawns one subagent per briefing (model per ledger, pinned
+# to its worktree, blind) — subscription billing
+farnsworth gate task-042           # commit check, gate, anonymize, review briefing; exit 3
+# host session spawns the reviewer subagent with review-briefing.md
+farnsworth finalize task-042       # validate verdict.json; run.json + summary.md; exit 0
+```
+
+The phase boundary stays the artifact, never the agent (Section 4.3):
+`gate` trusts only commits in worktrees, `finalize` trusts only a
+validating verdict.json — so hung, duplicated, or vanished subagents are
+absorbed by re-spawning and re-running the phase. The reviewer protocol
+(blind sketch, empirical verification, review.md, verdict, distillation)
+is written by the CLI into `review-briefing.md`, closing the gap where it
+previously had to travel inside the reviewer command template. Exit code 3
+("awaiting delegation") joins the 0/1/2 trichotomy. Known trade-off:
+delegate mode has no per-worker `total_cost_usd` stream, so cost rows in
+the summary come only from subprocess runs; the orchestrator notes
+delegate-round costs in the process log instead.
 
 ### 4.2 The knowledge artifact: `.code-tips.md`
 
@@ -181,6 +218,7 @@ Every run additionally produces a short what-happened table — one row per work
 In scope:
 
 - Single-task loop, CLI-invoked: `farnsworth run task-brief.md`
+- Delegate dispatch for Anthropic-model fleets (Section 4.1b): `run` -> `gate` -> `finalize` phases around host-session subagents, subscription-billed
 - Parallel blind dispatch to the 5-worker fleet via worktrees
 - Mechanical gate (configurable build/test/lint commands)
 - Anonymized review with three-outcome verdict
@@ -236,7 +274,7 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Reviewer cost dominates                 |*(observed in dogfooding: reviewer ~51–54% of worker spend)* Triage rule plus consolidation keep review depth where it pays; routine tasks skip the tournament            |
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
-|Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
+|Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit. Mitigated structurally: Anthropic-model fleets use delegate dispatch (Section 4.1b), which bills host-session subagents to the subscription; `claude -p` subprocess dispatch remains for non-Anthropic workers or API-key hosts                       |
 |Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example. On hosts with subscription OAuth the CLI dispatches live (first proven: Word Garden 4, Section 14)                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 |Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |

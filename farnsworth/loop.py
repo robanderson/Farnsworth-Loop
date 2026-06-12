@@ -187,10 +187,63 @@ def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
     }
 
 
+def load_and_validate_verdict(artifact_dir, label_to_worker_id):
+    """Load ``verdict.json`` from ``artifact_dir`` and validate the contract.
+
+    The verdict is the review phase's artifact: outcome is exactly one of
+    adopt/synthesize/escalate; adopt names a real candidate label; the
+    other outcomes carry a null candidate. Raises LoopError otherwise.
+    """
+    verdict_path = os.path.join(artifact_dir, "verdict.json")
+    try:
+        with open(verdict_path, "r", encoding="utf-8") as fh:
+            verdict = json.load(fh)
+    except FileNotFoundError:
+        raise LoopError("reviewer did not write verdict.json")
+    except json.JSONDecodeError as exc:
+        raise LoopError("verdict.json is not valid JSON: {0}".format(exc))
+
+    if not isinstance(verdict, dict):
+        raise LoopError("verdict.json root must be a JSON object")
+    for field in ("outcome", "candidate", "reasoning"):
+        if field not in verdict:
+            raise LoopError("verdict.json missing '{0}' field".format(field))
+
+    outcome = verdict["outcome"]
+    candidate_label = verdict["candidate"]
+
+    if outcome not in ("adopt", "synthesize", "escalate"):
+        raise LoopError(
+            "verdict outcome must be one of adopt/synthesize/escalate, got: {0}".format(
+                outcome
+            )
+        )
+
+    if outcome == "adopt":
+        if not candidate_label or candidate_label not in label_to_worker_id:
+            raise LoopError(
+                "outcome is 'adopt' but candidate is missing or invalid: {0}".format(
+                    candidate_label
+                )
+            )
+    else:
+        # synthesize or escalate
+        if candidate_label is not None:
+            raise LoopError(
+                "outcome is '{0}' but candidate should be null, got: {1}".format(
+                    outcome, candidate_label
+                )
+            )
+    return verdict
+
+
 def run(brief_path, config_path=None, cwd=None):
-    """Execute the multi-worker loop body with review.
+    """Execute the multi-worker loop body with review (subprocess dispatch).
 
     Returns the run-log dict. Raises LoopError on a precondition failure.
+    Delegate-mode configs must use the phased flow in ``delegate.py``
+    (prepare -> host session spawns subagents -> gate -> reviewer subagent
+    -> finalize); this entry point refuses them.
     """
     cwd = cwd or os.getcwd()
 
@@ -207,6 +260,12 @@ def run(brief_path, config_path=None, cwd=None):
         raise LoopError("task brief not found: {0}".format(brief_path))
 
     config = Config.load(config_path)
+    if config.mode == "delegate":
+        raise LoopError(
+            "config uses delegate dispatch (workers carry 'model'); use "
+            "'farnsworth run' to prepare, have the host session spawn the "
+            "subagents, then 'farnsworth gate' and 'farnsworth finalize'"
+        )
 
     task_id = task_id_from_brief(brief_path)
     parent = os.path.dirname(repo_root)
@@ -439,50 +498,7 @@ def run(brief_path, config_path=None, cwd=None):
             fh.write(reviewer_proc.stderr or "")
 
         # Parse and validate verdict.json.
-        verdict_path = os.path.join(artifact_dir, "verdict.json")
-        try:
-            with open(verdict_path, "r", encoding="utf-8") as fh:
-                verdict = json.load(fh)
-        except FileNotFoundError:
-            raise LoopError("reviewer did not write verdict.json")
-        except json.JSONDecodeError as exc:
-            raise LoopError("verdict.json is not valid JSON: {0}".format(exc))
-
-        # Validate verdict structure.
-        if not isinstance(verdict, dict):
-            raise LoopError("verdict.json root must be a JSON object")
-        if "outcome" not in verdict:
-            raise LoopError("verdict.json missing 'outcome' field")
-        if "candidate" not in verdict:
-            raise LoopError("verdict.json missing 'candidate' field")
-        if "reasoning" not in verdict:
-            raise LoopError("verdict.json missing 'reasoning' field")
-
-        outcome = verdict["outcome"]
-        candidate_label = verdict["candidate"]
-
-        if outcome not in ("adopt", "synthesize", "escalate"):
-            raise LoopError(
-                "verdict outcome must be one of adopt/synthesize/escalate, got: {0}".format(
-                    outcome
-                )
-            )
-
-        if outcome == "adopt":
-            if not candidate_label or candidate_label not in label_to_worker_id:
-                raise LoopError(
-                    "outcome is 'adopt' but candidate is missing or invalid: {0}".format(
-                        candidate_label
-                    )
-                )
-        else:
-            # synthesize or escalate
-            if candidate_label is not None:
-                raise LoopError(
-                    "outcome is '{0}' but candidate should be null, got: {1}".format(
-                        outcome, candidate_label
-                    )
-                )
+        verdict = load_and_validate_verdict(artifact_dir, label_to_worker_id)
 
     finished_at = _utcnow_iso()
 
