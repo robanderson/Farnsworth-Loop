@@ -125,3 +125,37 @@ but raises the reviewer's share of spend; per-task gate extensions are
 worth first-class support; manual agent dispatch is the working fallback
 where nested `claude -p` cannot authenticate; seed repos with
 `commit.gpgsign=false` under signing-enforced hosts.
+
+---
+
+## Housekeeping incident — zombie reviewer (2026-06-11)
+
+During the Word Garden run, the background-task panel showed an
+"Anonymized review task-001" agent still running 35+ minutes after the
+round had closed: an infrastructure retry had DUPLICATED the reviewer
+dispatch, the duplicate stalled mid-candidate-reading (~23k tokens, six
+reads, then silence), and the completed twin had long since delivered the
+verdict. The orchestrator had no record of the duplicate because it never
+received a launch acknowledgement for it; it was found by diffing the
+host's task ledger against the orchestrator's own dispatch list.
+
+Cleanup: programmatic stop failed (the host's task registry had been
+reset, so the id was unknown to TaskStop); the host UI's stop control is
+the remaining kill switch. State audit confirmed zero damage: both repos
+clean, no stray worktrees/branches, all phase artifacts complete — the
+duplicate had read but never written.
+
+What this hardened, now in the tool and PRD (Section 4.3):
+1. Per-command `timeout_seconds` for workers (kill -> exit_code -1 ->
+   gate what was committed) and reviewer (timeout = infra error; the
+   verdict cannot be partial).
+2. The idempotency rule that made this incident harmless, promoted to
+   protocol: a phase is complete when its ARTIFACT exists and validates,
+   never when an agent claims completion or goes quiet. Duplicates then
+   cost tokens, not correctness.
+3. `farnsworth clean <task-id>`: sweep leftover worktrees/branches so a
+   task id can be re-dispatched (collision pre-checks otherwise refuse);
+   dirty worktrees skipped without --force.
+4. Manual-mode ledger discipline: record every dispatch id at launch,
+   set a per-phase deadline, check transcript liveness at deadline,
+   stop-verify-redispatch only what's missing.

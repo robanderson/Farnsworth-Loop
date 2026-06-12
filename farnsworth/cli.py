@@ -13,6 +13,7 @@ import sys
 
 from .config import ConfigError, DEFAULT_CONFIG_NAME
 from .gitutil import GitError, repo_toplevel
+from .housekeeping import clean
 from .loop import LoopError, run
 
 
@@ -31,6 +32,17 @@ def build_parser():
         help="path to config JSON (default: {0} in repo root)".format(
             DEFAULT_CONFIG_NAME
         ),
+    )
+
+    clean_p = sub.add_parser(
+        "clean",
+        help="remove leftover worktrees/branches of a task so it can re-run",
+    )
+    clean_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
+    clean_p.add_argument(
+        "--force",
+        action="store_true",
+        help="also remove worktrees with uncommitted changes",
     )
     return parser
 
@@ -87,6 +99,28 @@ def main(argv=None):
             return 1
         else:
             return 0
+
+    if args.command == "clean":
+        try:
+            report = clean(args.task_id, force=args.force)
+        except GitError as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+
+        for path in report["removed_worktrees"]:
+            print("removed worktree {0}".format(path))
+        for branch in report["removed_branches"]:
+            print("removed branch {0}".format(branch))
+        for entry in report["skipped"]:
+            print("skipped {0}: {1}".format(entry["path"], entry["reason"]))
+        if not (
+            report["removed_worktrees"]
+            or report["removed_branches"]
+            or report["skipped"]
+        ):
+            print("nothing to clean for {0}".format(args.task_id))
+        # Exit code: 0 fully clean, 1 something was skipped.
+        return 1 if report["skipped"] else 0
 
     parser.print_help(sys.stderr)
     return 2

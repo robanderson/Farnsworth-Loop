@@ -114,6 +114,15 @@ class LoopTestBase(unittest.TestCase):
         _git(["commit", "-m", "add config"], self.repo)
         return cfg_path
 
+    def _config_file_dict(self, cfg):
+        """Write an arbitrary config dict as farnsworth.json and commit it."""
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "add config"], self.repo)
+        return cfg_path
+
     def _track_worktree(self, worktree_id):
         """Track a worktree for cleanup (e.g., 'task-042-w1')."""
         wt = os.path.join(self.tmp, worktree_id)

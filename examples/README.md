@@ -80,7 +80,16 @@ Process findings, distilled from `.farnsworth/orchestrator-log.md`:
    agent tokens (~31k, 12 tool calls); a Haiku needed ~76k and 64 calls to
    reach a weaker result. "Cheap model" and "cheap attempt" are not the
    same thing — per-attempt cost data belongs in the run log.
-6. **Managed-sandbox findings (environment):** a nested headless
+6. **Dispatches hang, die, and duplicate — plan for it.** An infrastructure
+   retry duplicated the task-001 reviewer dispatch; the duplicate stalled
+   mid-review and sat as a zombie for 35+ minutes after its twin had
+   already delivered the verdict. It was harmless only because the loop
+   treats the *artifact* (a validating verdict.json) as the phase boundary,
+   not an agent's completion claim. Refinements: per-command
+   `timeout_seconds` in `farnsworth.json`, a `farnsworth clean <task-id>`
+   command to sweep leftovers before re-dispatch, and a dispatch-ledger +
+   liveness-check protocol for manual mode (PRD Section 4.3).
+7. **Managed-sandbox findings (environment):** a nested headless
    `claude -p` cannot authenticate where credentials are host-managed file
    descriptors, so this run used manual agent dispatch (orchestrator and
    reviewer as agents, workers as parallel sub-agents pinned to worktrees)
