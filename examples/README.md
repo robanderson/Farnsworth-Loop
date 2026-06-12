@@ -12,12 +12,17 @@ whole program, a milestone slice, or a bug fix on an existing codebase
 (a Gitea/Forgejo fork, a new MCP server) whose own build/test commands
 become the gate. The three recorded runs all used MILESTONE-SLICE grains
 (task-001 = engine, task-002 = UI on top — sequential floors of one
-build). The queued next design, word-garden-4, uses the RE-SHOT grain
-instead: one-shot the entire game as task-001, distill the field's
-mistakes, then one-shot the entire game again as task-002 with only the
-lessons carried forward — attempt 2 replaces attempt 1, and the
-progression note reports the attempt-to-attempt delta, which is the
-loop's learning measurement on an identical problem.
+build), and all three were also run as FIXED two-task pipelines — the
+task list was authored before the first dispatch, which PRD Section 2.4
+now forbids. The queued next design, word-garden-4, corrects both at
+once: it is GOAL-DRIVEN (the goal brief is SPEC section 20's acceptance
+criteria; `farnsworth done` decides after every merge whether to keep
+cycling — 2 iterations or 200, emergent, never a pre-planned list) and
+uses the RE-SHOT grain where useful: one-shot the entire game, distill
+the field's mistakes, one-shot it again with only the lessons carried
+forward — attempt 2 replaces attempt 1, and the progression note reports
+the attempt-to-attempt delta, the loop's learning measurement on an
+identical problem.
 
 Each task also carries a thirty-second `summary.md` table
 (`.farnsworth/task-NNN/summary.md`, the output of

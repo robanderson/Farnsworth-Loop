@@ -137,6 +137,19 @@ def _run_gate(gate, worktree):
     return passed, results
 
 
+def check_done(goal, repo_root):
+    """Run the goal's done checks at ``repo_root``.
+
+    The loop-termination probe (PRD Section 2.4): exit-style truth about
+    whether the primary goal's mechanical completion criteria pass against
+    the currently merged state. Returns ``{"passed": bool, "results":
+    [...]}`` in the same shape as a gate result. The reviewer's attestation
+    is the other half of "done"; this is only the mechanical half.
+    """
+    passed, results = _run_gate(goal["done"], repo_root)
+    return {"passed": passed, "results": results}
+
+
 def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
     """Run a single worker and return (exit_code, gate_passed, gate_results).
 

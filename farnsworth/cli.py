@@ -3,6 +3,13 @@
 Usage::
 
     python3 -m farnsworth run <task-brief.md> [--config <path>]
+    python3 -m farnsworth report <task-id>
+    python3 -m farnsworth clean <task-id> [--force]
+    python3 -m farnsworth done [--config <path>]
+
+``done`` is the loop-termination probe (PRD Section 2.4): it runs the
+goal's mechanical completion checks against the merged state and exits
+0 when the primary goal is complete, 1 when the loop should keep cycling.
 """
 
 from __future__ import annotations
@@ -12,10 +19,10 @@ import json
 import os
 import sys
 
-from .config import ConfigError, DEFAULT_CONFIG_NAME
+from .config import Config, ConfigError, DEFAULT_CONFIG_NAME
 from .gitutil import GitError, repo_toplevel
 from .housekeeping import clean
-from .loop import LoopError, run
+from .loop import LoopError, check_done, run
 from .report import summary_table
 
 
@@ -52,6 +59,18 @@ def build_parser():
         help="print the short what-happened table for a completed task",
     )
     report_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
+
+    done_p = sub.add_parser(
+        "done",
+        help="run the goal's completion checks: exit 0 done, 1 keep looping",
+    )
+    done_p.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_NAME,
+        help="path to config JSON (default: {0} in repo root)".format(
+            DEFAULT_CONFIG_NAME
+        ),
+    )
     return parser
 
 
@@ -105,6 +124,33 @@ def main(argv=None):
             return 2
         print(summary_table(run_log))
         return 0
+
+    if args.command == "done":
+        try:
+            repo_root = repo_toplevel(os.getcwd())
+            config = Config.load(
+                args.config if os.path.isabs(args.config)
+                else os.path.join(repo_root, args.config)
+            )
+        except (ConfigError, GitError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+        if config.goal is None:
+            print(
+                "error: no goal configured -- add a \"goal\" entry with "
+                "\"done\" checks to {0} (PRD Section 2.4)".format(args.config),
+                file=sys.stderr,
+            )
+            return 2
+
+        outcome = check_done(config.goal, repo_root)
+        for result in outcome["results"]:
+            print(result["autopsy"])
+        if outcome["passed"]:
+            print("GOAL COMPLETE: all done checks pass.")
+            return 0
+        print("GOAL NOT MET: keep looping (dispatch the next task).")
+        return 1
 
     if args.command == "clean":
         try:
