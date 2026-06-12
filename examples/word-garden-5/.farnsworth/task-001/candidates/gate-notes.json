@@ -1,0 +1,3 @@
+{
+ "gate": "all candidates passed all six gate checks (tests, compiles, plays-eof, plays-ascii, help, usage-error) and all hygiene checks (clean tree, base files untouched, no bytecode)"
+}

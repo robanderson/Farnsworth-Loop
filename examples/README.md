@@ -10,19 +10,21 @@ task- and domain-agnostic (PRD Section 2.3): a task is any brief with
 acceptance criteria and a mechanical gate, whether that's one-shotting a
 whole program, a milestone slice, or a bug fix on an existing codebase
 (a Gitea/Forgejo fork, a new MCP server) whose own build/test commands
-become the gate. The three recorded runs all used MILESTONE-SLICE grains
-(task-001 = engine, task-002 = UI on top — sequential floors of one
-build), and all three were also run as FIXED two-task pipelines — the
-task list was authored before the first dispatch, which PRD Section 2.4
-now forbids. The queued next design, word-garden-4, corrects both at
-once: it is GOAL-DRIVEN (the goal brief is SPEC section 20's acceptance
-criteria; `farnsworth done` decides after every merge whether to keep
-cycling — 2 iterations or 200, emergent, never a pre-planned list) and
-uses the RE-SHOT grain where useful: one-shot the entire game, distill
-the field's mistakes, one-shot it again with only the lessons carried
-forward — attempt 2 replaces attempt 1, and the progression note reports
-the attempt-to-attempt delta, the loop's learning measurement on an
-identical problem.
+become the gate. The first three recorded runs all used MILESTONE-SLICE
+grains (task-001 = engine, task-002 = UI on top — sequential floors of
+one build), and all three were also run as FIXED two-task pipelines —
+the task list was authored before the first dispatch, which PRD Section
+2.4 now forbids (a run-4 orchestrator session repeated exactly that
+mistake and is preserved only as the PRD's cautionary example).
+word-garden-5 is the corrected design, executed: GOAL-DRIVEN (the goal
+brief plus `farnsworth done` checks decide after every merge whether to
+keep cycling — iteration count emergent, never a pre-planned list) with
+the WHOLE-PROGRAM grain (one-shot the entire game; had the goal not
+been met, the next gap-derived task could have been the RE-SHOT —
+attempt 2 replacing attempt 1 with only distilled lessons carried
+forward). The goal was met in one iteration, which is itself the
+honest pricing of the re-shot: it only triggers when attempt 1 leaves
+a gap.
 
 Each task also carries a thirty-second `summary.md` table
 (`.farnsworth/task-NNN/summary.md`, the output of
@@ -48,6 +50,7 @@ retroactively in their `run.json`); earlier runs predate the feature.
 | [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
 | [`word-garden-2/`](word-garden-2/) | The same game, rebuilt from the same spec as a controlled REPLICATION of run 1 (fresh seed, empty tips file) | 2 | adopt, adopt |
 | [`word-garden-3/`](word-garden-3/) | The same game a third time — first live run of CROSS-PROJECT SEED TIPS and FOCUS-DIVERSIFIED DISPATCH | 2 | adopt, adopt |
+| [`word-garden-5/`](word-garden-5/) | The same game, GOAL-DRIVEN: whole-program grain, seed v2 (generalized lessons), constructed review env — goal met in 1 iteration | 1 | adopt |
 
 ## Word Garden — how this example was produced
 
@@ -245,6 +248,66 @@ What the run showed:
 
 Play it: identical commands to word-garden-1, from `examples/word-garden-3`.
 
+## Word Garden 5 — the goal-driven run (2026-06-12)
+
+Same SPEC, but a different shape of run: the first project under the
+PRD Section 2.4 termination contract. `GOAL.md` + six `goal.done`
+checks were seeded alongside the spec; the orchestrator derived ONE
+task from the goal gap (the entire game, whole-program grain), and
+after the merge `farnsworth done` plus a reviewer goal-attestation
+decided the exit. Exit: DONE at 1 iteration. Three other firsts: the
+cross-project seed shipped as v2 (10 entries, including the GENERALIZED
+predicate lesson queued by run 3 — the "generalize while distilling"
+rule's first product); the reviewer ran in the CLI's new CONSTRUCTED
+review environment (base tree + labeled diffs + gate notes, nothing
+else); and the per-task gate extensions from runs 1–3 (piped-EOF,
+help/usage exit codes) ran as first-class gate config. Full process
+report: [`word-garden-5/.farnsworth/orchestrator-log.md`](word-garden-5/.farnsworth/orchestrator-log.md).
+
+| | run 3 t-001 (9 seed tips) | run 5 t-001 (10 seed tips, whole game) |
+|---|---|---|
+| Gate | 5/5 | 5/5 (six checks) |
+| Engine-behavior bugs in field | 1 | **0** |
+| Spec-deviation defects in field | 0 | 3 (ASCII stage collapse) |
+| Winner | Sonnet | **Sonnet** (readability) |
+| Iterations (emergent) | n/a (fixed pipeline) | **1** (goal-driven) |
+
+What the run showed:
+
+1. **Seed v2 closed the predicate hole.** The generalized tip-10 entry
+   was honored by all five candidates — every `is_lost` carries its own
+   not-won guard, directly tested. The defect class that shipped in
+   both prior empty-or-narrower-seed engine rounds did not appear.
+   Generalizing at distillation time widens memory's scope for free.
+2. **The gate's blind spot, new exemplar.** Three of five candidates
+   passed the `plays-ascii` gate (exit 0, pure ASCII) while collapsing
+   SPEC 10's five growth stages to 1–4 distinct glyphs. Mechanical
+   checks verify exit codes and character sets; DISTINCTNESS — meaning
+   — needed the reviewer. Distilled as tips 11–15.
+3. **Goal-driven cycling stops honestly.** One iteration, because the
+   attestation found no residual gap. No pre-planned second task, no
+   forced re-shot — the run-4 failure mode is structurally absent.
+4. **Constructed review env worked on first live use** — and live use
+   immediately caught a briefing-path bug the fake-reviewer smoke test
+   couldn't (the briefed diff path didn't match where the env serves
+   the diffs). Lesson for the loop's own tests: a fake reviewer that
+   globs instead of following the briefing text validates plumbing,
+   not the contract.
+5. **Reviewer economics, two new data points.** Tournament review fell
+   to ~39% of worker spend (lowest recorded — pre-labeled diffs in a
+   ready-made env reduce review overhead), but the goal contract adds
+   a per-goal attestation dispatch (~68k tokens here) that the
+   economics must now name.
+6. **Repeat signatures.** Identical file footprints even at
+   whole-program grain (4th run; M4's metric must read content);
+   Haiku-most-motion (4th run); focus-alignment ≠ advantage (the
+   accessibility-focused candidate had the worst ASCII display);
+   duplicate dispatches absorbed by the artifact boundary — this time
+   in the attestation phase, a NEW artifact type, which is the rule
+   working generically.
+
+Play it: identical commands to word-garden-1, from `examples/word-garden-5`.
+
 ## Reproducing with the CLI
 
 `word-garden-1/farnsworth.json` records the exact fleet this run emulated.
@@ -254,9 +317,15 @@ On a machine with an authenticated `claude` binary:
 git init my-word-garden && cd my-word-garden
 git config commit.gpgsign false   # if your host forces signing
 # copy in SPEC.md, farnsworth.json, .gitignore, tasks/ from this example
+cp /path/to/Farnsworth-Loop/seed-tips.md .code-tips.md   # cross-project seed (M3)
 git add -A && git commit -m "seed"
 PYTHONPATH=/path/to/Farnsworth-Loop python3 -m farnsworth run tasks/task-001.md
 ```
+
+For a goal-driven run (the word-garden-5 shape), also copy in `GOAL.md`
+and a `goal` block in `farnsworth.json`, then after every merge let
+`PYTHONPATH=... python3 -m farnsworth done` decide whether to derive the
+next task or stop.
 
 Then review the verdict, merge the winning branch, let the reviewer
 distill `.code-tips.md`, and dispatch task-002 the same way.

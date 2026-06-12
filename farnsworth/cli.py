@@ -163,11 +163,18 @@ def main(argv=None):
             print("removed worktree {0}".format(path))
         for branch in report["removed_branches"]:
             print("removed branch {0}".format(branch))
+        if report.get("removed_review_env"):
+            print(
+                "removed review environment {0}".format(
+                    report["removed_review_env"]
+                )
+            )
         for entry in report["skipped"]:
             print("skipped {0}: {1}".format(entry["path"], entry["reason"]))
         if not (
             report["removed_worktrees"]
             or report["removed_branches"]
+            or report.get("removed_review_env")
             or report["skipped"]
         ):
             print("nothing to clean for {0}".format(args.task_id))
