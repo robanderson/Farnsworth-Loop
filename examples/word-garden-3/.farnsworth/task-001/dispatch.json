@@ -1,0 +1,14 @@
+{
+  "task_id": "task-001",
+  "mode": "manual-agent-dispatch",
+  "base_commit": "6cfef01b03023ef77b291601caa94a65d555800d",
+  "dispatched_at": "2026-06-12T00:00:00Z",
+  "tips_state": "cross-project seed (9 entries), first live trial",
+  "ledger": [
+    {"id": "w1", "model": "haiku-4.5", "focus": "Focus on test rigor and edge cases.", "worktree": "../wg3-w1", "branch": "task-001-w1", "deadline_seconds": 1800, "status": "dispatched"},
+    {"id": "w2", "model": "haiku-4.5", "focus": "Focus on simplicity and economy of implementation.", "worktree": "../wg3-w2", "branch": "task-001-w2", "deadline_seconds": 1800, "status": "dispatched"},
+    {"id": "w3", "model": "sonnet-4.6", "focus": "Focus on readability and maintainability.", "worktree": "../wg3-w3", "branch": "task-001-w3", "deadline_seconds": 1800, "status": "dispatched"},
+    {"id": "w4", "model": "sonnet-4.6", "focus": "Focus on defensive robustness: validate inputs and fail loudly on contract violations.", "worktree": "../wg3-w4", "branch": "task-001-w4", "deadline_seconds": 1800, "status": "dispatched"},
+    {"id": "w5", "model": "opus-4.8", "focus": "Focus on API ergonomics for the downstream UI task that will build on this engine.", "worktree": "../wg3-w5", "branch": "task-001-w5", "deadline_seconds": 1800, "status": "dispatched"}
+  ]
+}

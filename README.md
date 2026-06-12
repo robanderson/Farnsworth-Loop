@@ -220,6 +220,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Third measurement note, from the Word Garden 2 replication (Section 13): defects-per-round in gate-passing candidates is the loop's primary EARLY learning signal — it improved under tips in both runs (1→0, 2→1) while the winning model's identity did not reproduce (metric 2 is long-horizon, noisy at one round per cell). Reviewer share also tracks worker economy, not just field size: a triaged round with heavy worker attempts kept the reviewer at ~55%, not the 68% seen before.*
 
+*Fourth measurement note, from Word Garden 3 (Section 14): count defects per round in two ledgers — BEHAVIORAL bugs and CONTRACT-level deviations — and attribute each to whether a tips entry covered its class. Attribution is the seed experiment's real readout: in run 3, every defect class covered by a seed entry was absent from the field, and the one behavioral bug that shipped was exactly the lesson the domain-general curation rule had excluded from the seed. Also: with foci in play, record the winning FOCUS alongside the winning model; two rounds in, focus-task alignment predicts where candidates invest, not who wins.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -239,14 +241,16 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 |Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |
 |Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
-|Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
+|Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry; Word Garden 3 — duplicates in every background phase, all absorbed)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
+|Reviewer environment leaks worker identity |*(observed: Word Garden 3)* A naive clone for the reviewer carries worker-named branches (`task-001-w1`…), de-anonymizing candidates by id. Construct the review environment: base tree + labeled diffs + gate notes ONLY — no refs, no worktrees, no mapping files                                  |
+|Workers "improve" a required signature     |*(observed: Word Garden 3 — an extra `new_game_fn` param forfeited an otherwise-winning candidate)* Briefs and tips state required signatures are exact and CLOSED contracts; proposed improvements go to escalation or a follow-up task, never silently into the diff                          |
 
 ## 9. Milestones
 
 1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
 1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
-1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI. (The lifecycle is already running manually — two distillation commits so far — M3 moves it into the tool.)
-1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12; measurement and round-2 automation remain.)*
+1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips.
+1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from three runs: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks.)*
 1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six recorded runs.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 
@@ -361,6 +365,62 @@ What the replication confirmed, broke, and added:
    stated scope (the MSG_*-reuse tip didn't say it bound tests too; 2 of 3
    workers string-matched literals in tests). Distillation rule is now:
    contract language AND explicit scope ("in source and tests").
+
+## 14. The Extensions Run: Word Garden 3 (examples/word-garden-3)
+
+The third Word Garden run (2026-06-12): same spec, byte-identical task
+briefs, same fleet mix — but the first LIVE run of two queued extensions:
+the **cross-project tips seed** (9 curated domain-general entries from
+prior projects' distillations, injected before round 1) and
+**focus-diversified dispatch** (Section 2.1). Two variables changed vs the
+run-2 baseline; defect attribution is therefore done per defect CLASS
+against seed coverage, and foci are judged by field divergence, not defect
+count. Full forensics: [`examples/word-garden-3/`](examples/word-garden-3/).
+
+| Metric | task-001 (9 seed tips, 5 workers) | task-002 (seed + 14 project tips, 3 triaged) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 3/3 |
+| Behavioral bugs in gate-passing field | 1 | 0 |
+| Contract-level defects in field | 0 | 2 |
+| Verdict | adopt | adopt |
+| Winning model (focus) | **Sonnet 4.6** (defensive robustness) | **Opus 4.8** (readability) |
+| Worker agent tokens | ~262k | ~226k |
+| Reviewer agent tokens (share) | ~149k (57%) | ~125k (55%) |
+
+What it settled, sharpened, and surfaced:
+
+1. **Settled: cross-project seed tips work, attributably.** Every defect
+   class covered by a seed entry was absent from the field — including
+   the argparse `SystemExit` swallow that had shipped in BOTH prior
+   projects' UI rounds (reviewer's audit: 0/9 seed entries violated).
+   The run's single behavioral bug was word-garden-1's `is_lost`
+   missing-win-guard defect — the one lesson that existed only as
+   another project's PROJECT-scoped tip, excluded from the seed by the
+   domain-general rule. Memory's scope boundary is visible in the defect
+   data from both sides. Seed graduates into M3.
+2. **Sharpened: distillation should generalize.** The `is_lost` lesson
+   was always an instance of a general class ("a standalone predicate
+   must not rely on a caller's check ordering"). New distillation rule:
+   reviewers write the general form for the seed pile AND the specific
+   form for project tips.
+3. **Settled: foci diversify without corrupting.** Test counts spread
+   36–145 across rounds; candidates invested along their lenses; zero
+   contract-amendment misreads; anonymization held (foci disclosed as an
+   unattributed set). Alignment isn't advantage: the
+   accessibility-focused candidate produced the round's best
+   accessibility work and still lost on a signature deviation.
+4. **Surfaced: a reviewer-environment leak class.** Worker-named branches
+   in a naively-cloned review repo de-anonymize the field; the review
+   environment must be constructed from base tree + labeled diffs + gate
+   notes only. (Risk table updated; belongs in the CLI's review dispatch.)
+5. **Surfaced: closed-contract signatures.** A good-faith extra parameter
+   on a required signature forfeited an otherwise-winning candidate;
+   briefs now state required signatures are exact and closed.
+6. **Third confirmations:** duplicate dispatches absorbed by the
+   artifact-boundary rule (now including a duplicated reviewer, twice);
+   footprint-based divergence measurement blind even under deliberate
+   diversification; Haiku spending the field's most motion on a
+   non-winning candidate (3 runs for 3).
 
 -----
 

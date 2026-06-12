@@ -1,0 +1,78 @@
+{
+  "workers": [
+    {
+      "id": "w1",
+      "focus": "Focus on test rigor and edge cases.",
+      "command": [
+        "claude", "-p", "{prompt}", "--bare",
+        "--model", "claude-haiku-4-5",
+        "--permission-mode", "acceptEdits",
+        "--output-format", "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w2",
+      "focus": "Focus on simplicity and economy of implementation.",
+      "command": [
+        "claude", "-p", "{prompt}", "--bare",
+        "--model", "claude-haiku-4-5",
+        "--permission-mode", "acceptEdits",
+        "--output-format", "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w3",
+      "focus": "Focus on readability and maintainability.",
+      "command": [
+        "claude", "-p", "{prompt}", "--bare",
+        "--model", "claude-sonnet-4-6",
+        "--permission-mode", "acceptEdits",
+        "--output-format", "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w4",
+      "focus": "Focus on defensive robustness: validate inputs and fail loudly on contract violations.",
+      "command": [
+        "claude", "-p", "{prompt}", "--bare",
+        "--model", "claude-sonnet-4-6",
+        "--permission-mode", "acceptEdits",
+        "--output-format", "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w5",
+      "focus": "Focus on API ergonomics for the downstream UI task that will build on this engine.",
+      "command": [
+        "claude", "-p", "{prompt}", "--bare",
+        "--model", "claude-opus-4-8",
+        "--permission-mode", "acceptEdits",
+        "--output-format", "json"
+      ],
+      "timeout_seconds": 1800
+    }
+  ],
+  "reviewer": {
+    "command": [
+      "claude", "-p", "{prompt}", "--bare",
+      "--model", "claude-opus-4-8",
+      "--permission-mode", "acceptEdits",
+      "--output-format", "json"
+    ],
+    "timeout_seconds": 2700
+  },
+  "gate": [
+    {
+      "name": "tests",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]
+    },
+    {
+      "name": "compile",
+      "command": ["python3", "-m", "compileall", "-q", "word_garden"]
+    }
+  ]
+}
