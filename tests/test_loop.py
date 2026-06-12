@@ -1189,9 +1189,33 @@ class TestReviewEnvironment(LoopTestBase):
         self.assertIn("review.md", briefing)
         self.assertIn("code-tips.next.md", briefing)
         self.assertIn("progression", briefing)
-        self.assertIn("git reset --hard", briefing)
+        # Reset alone cannot remove files a candidate diff CREATED (they
+        # are untracked after git apply — fatal on greenfield tasks); the
+        # briefing must prescribe the clean step with the exclusion that
+        # protects the reviewer's own notes.
+        self.assertIn(
+            "git reset --hard && git clean -fd -e .farnsworth", briefing
+        )
         # The sketch comes before the diffs may be read.
         self.assertIn("BEFORE reading any candidate diff", briefing)
+
+
+class TestWorkerPreamble(unittest.TestCase):
+    """The rules of engagement every dispatched worker receives."""
+
+    def test_preamble_forbids_delegation(self):
+        # Observed live (wine-stock-report-generator-1): a worker spawned a
+        # nested agent and ended its turn "complete" with zero commits — a
+        # plausible completion claim with no artifact. The preamble must
+        # forbid delegation outright, in both dispatch modes (the preamble
+        # is shared).
+        from farnsworth.loop import WORKER_PREAMBLE
+
+        rendered = WORKER_PREAMBLE.format(
+            worker_id="w1", branch="task-001-w1", briefing="body"
+        )
+        self.assertIn("never spawn, launch, or delegate", rendered)
+        self.assertIn("COMMIT", rendered)
 
 
 if __name__ == "__main__":

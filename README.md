@@ -427,6 +427,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Gate passes a worker that never committed|*(observed live: Word Garden 4 task-002 — a worker left all its work untracked; the gate ran in the worktree and passed while the candidate diff `base..HEAD` was empty, so the briefing vouched for a 0-line candidate)* Enforced in code since 2026-06-12: no commits on the branch = gate failure with autopsy, uncommitted work archived to `<id>-uncommitted.diff`, empty diffs never take a label. The reviewer's empirical probe is the backstop and caught it live|
 |Typo'd `--config` silently dispatches the default fleet|*(found in review 2026-06-12: `Config.load` fell back to the built-in default config — whose old form carried the `--bare` flag proven 100% fatal — whenever the named path was missing, contradicting its own docstring)* Fixed in code: an explicitly named config that does not exist is an error in every subcommand; relative `--config` paths anchor at the repo root uniformly; the built-in default worker command now uses the word-garden-4-proven `--setting-sources ""` + scoped `--allowedTools` form. `farnsworth preflight` is the standing defence|
 |Workers briefed without rules of engagement (subprocess mode)|*(found in review 2026-06-12: the worker preamble — commit contract, tips-file hygiene, blindness — existed only in delegate dispatch; word-garden-4's non-committing worker was a subprocess run)* The preamble is shared by both dispatch modes, and the hygiene rules are also enforced mechanically: a candidate whose commits touch `.code-tips.md`, the fleet config, or the task brief fails the gate with an autopsy|
+|Worker delegates its attempt to a nested agent|*(observed: wine-stock-report-generator-1 task-001 — a worker spawned a nested implementation agent and ended its turn "complete" with zero commits on its branch; the orphaned nested agent later finished as a duplicate in the same worktree)* The artifact rule catches it (commits are the deliverable; completion claims are not) and re-dispatch recovers the round; WORKER_PREAMBLE now forbids spawning/delegating outright, in both dispatch modes|
+|`git reset --hard` cannot clean a greenfield candidate in review|*(observed: wine-stock-report-generator-1 — the first reviewer dispatch hung mid-examination; forensics showed an applied candidate sitting UNTRACKED on a clean base, because files a diff CREATES are untracked after `git apply` and reset does not touch them — candidates stack, and naive `git clean -fd` would delete the reviewer's own notes)* The review briefing now prescribes `git reset --hard && git clean -fd -e .farnsworth` (the served diffs are committed in the review base and survive regardless)|
 |Re-gating serves stale labels to the reviewer|*(found in review 2026-06-12: `farnsworth gate` re-runs — the documented recovery for hung subagents — reshuffled labels but left previous labels' diffs in `candidates/` and never refreshed an existing review environment)* Fixed in code: re-gate sweeps the candidates dir before relabeling and refreshes the served diffs in an already-constructed review env — the word-garden-5 briefed-path bug class, closed from the other side|
 
 ## 9. Milestones
@@ -720,6 +722,70 @@ What it settled and surfaced:
    candidate shipped the worst ASCII display); duplicate dispatches
    absorbed by the artifact-boundary rule — this run in the attestation
    phase, a new artifact type, the rule working generically.
+## 17. The Cross-Domain, Delegate-Dispatched Run: Wine Stock Report Generator (examples/wine-stock-report-generator-1)
+
+The first subject outside the Word Garden family (2026-06-12), chosen to
+test generalization on both axes at once: a NEW domain (a realistic
+small-business CLI — warehouse stock CSV in, Markdown stock report out,
+from a wine-industry PRD with an embedded real fixture) and a NEW
+dispatch mode (the first live run of Section 4.1b delegate dispatch:
+`run` → host-session worker subagents → `gate` → reviewer subagent →
+`finalize` → `adopt --clean` → `done` → attestation, every mechanical
+phase in the CLI). Run shape otherwise identical to word-garden-5:
+goal-driven, whole-program grain, 12-entry seed, focus-diversified
+2H/2S/1O fleet. Full forensics:
+[`examples/wine-stock-report-generator-1/`](examples/wine-stock-report-generator-1/).
+
+| Metric | task-001 (12 seed tips, 5 workers, whole-program grain) |
+|---|---|
+| First-pass gate rate | 5/5 (seven checks) |
+| Behavioral bugs in field | 1 (parser over-rejection) |
+| Spec-deviation defects | 1 (conditional Data Warnings section) |
+| Test-quality defects | 2 (unexercised prompt seam; handle leaks) |
+| Defects in seed-covered classes | **0** (12 entries audited) |
+| Verdict | adopt |
+| Winning model (focus) | **Opus 4.8** (report faithfulness) |
+| Dispatch incidents | 2 (worker self-delegation; hung reviewer) — both absorbed |
+| Divergence (content) | 0.64 — first run with the M4 metric recorded |
+| Iterations to goal (emergent) | **1** — exit DONE |
+
+What it settled and surfaced:
+
+1. **Settled: the memory thesis crosses domains.** Zero defects in the
+   classes the seed covers; ALL four field defects in classes no tip
+   yet covered (conditional section rendering, tolerant-parser
+   over-rejection, unexercised injection seams, test resource hygiene)
+   — the word-garden-5 both-sides signature, reproduced in a
+   CSV/reporting domain the seed had never seen. Three new generalized
+   entries routed into the seed pile (entries 13–15).
+2. **Surfaced: worker self-delegation, a new dispatch-failure class.**
+   A worker spawned a nested agent and ended its turn with a confident
+   completion claim and zero commits; its orphan later duplicated work
+   in the same worktree. The artifact rule absorbed both halves.
+   WORKER_PREAMBLE now forbids delegation (risk table updated).
+3. **Surfaced: the review protocol's cleanup instruction was wrong for
+   greenfield.** A hung reviewer's forensics showed why: `git apply` of
+   an all-new-files candidate leaves it UNTRACKED, `reset --hard`
+   cannot remove it, and naive `git clean -fd` would destroy the
+   reviewer's notes. Briefing fixed in the CLI
+   (`reset --hard && clean -fd -e .farnsworth`), with tests.
+4. **Settled: delegate dispatch works end-to-end** — worktrees,
+   briefings, ledger, commit-as-artifact, hygiene gate, constructed
+   review env, verdict validation, adopt, done probe all mechanical;
+   only the agent phases ran as subagents. Trade-off confirmed: no
+   per-worker dollar stream (token counts recorded in the process log).
+5. **Focus-alignment ≠ advantage, fifth round — now from both
+   directions at once:** the verdict's discriminator was test rigor;
+   the test-rigor-focused worker lost on an entirely untested prompt
+   path while the report-faithfulness-focused worker won ON test rigor.
+6. **Queued (greenfield ergonomics):** preflight's `gate-at-base` is
+   red by design on a round-1 seed and needs a greenfield-aware
+   diagnosis (one exit-code check also passed at base for the wrong
+   reason); `run`/`prepare` refuses untracked `.farnsworth/` files that
+   `adopt` tolerates — the orchestrator log had to be committed
+   mid-flow; `gate` should copy the review briefing INTO the review env
+   so the reviewer never reads outside its directory.
+
 -----
 
 *Ralph persists. Karpathy measures. Farnsworth learns.*

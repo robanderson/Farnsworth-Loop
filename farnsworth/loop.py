@@ -49,6 +49,9 @@ Rules of engagement:
   current branch ({branch}) with clear messages. Your committed diff against
   the base commit is the deliverable; uncommitted work does not exist.
 - Run the project's tests yourself before finishing.
+- Do the work YOURSELF, in this session: never spawn, launch, or delegate
+  to sub-agents. A delegated attempt ends your turn with a completion
+  claim and no commits, which counts as no attempt at all.
 - Never create or modify `.code-tips.md` (read-only briefing material).
 - You work blind: do not look for, or at, other workers' attempts.
 
@@ -883,9 +886,15 @@ def build_review_briefing(
     )
     lines.append(
         "2. Examine every candidate: apply its diff (git apply), exercise "
-        "the result empirically, then git reset --hard before the next "
-        "(the diffs and your notes are untracked and survive the reset). "
-        "Record what is good AND bad in each candidate, not just a ranking."
+        "the result empirically, then return to base with "
+        "`git reset --hard && git clean -fd -e .farnsworth` before the "
+        "next. The clean step matters: files a diff CREATES are untracked "
+        "after git apply, so reset alone leaves them behind and candidates "
+        "would stack (worst on greenfield tasks, where a candidate is ALL "
+        "new files). The `-e .farnsworth` exclusion protects your own "
+        "notes; the labeled diffs are committed in the review base and "
+        "survive regardless. Record what is good AND bad in each "
+        "candidate, not just a ranking."
     )
     lines.append(
         "3. Write the full review to .farnsworth/{0}/review.md.".format(

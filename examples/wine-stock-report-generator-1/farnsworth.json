@@ -1,0 +1,101 @@
+{
+  "workers": [
+    {
+      "id": "w1",
+      "model": "claude-haiku-4-5",
+      "focus": "Focus on test rigor and edge cases.",
+      "timeout_seconds": 2700
+    },
+    {
+      "id": "w2",
+      "model": "claude-haiku-4-5",
+      "focus": "Focus on simplicity and economy of implementation.",
+      "timeout_seconds": 2700
+    },
+    {
+      "id": "w3",
+      "model": "claude-sonnet-4-6",
+      "focus": "Focus on readability and maintainability.",
+      "timeout_seconds": 2700
+    },
+    {
+      "id": "w4",
+      "model": "claude-sonnet-4-6",
+      "focus": "Focus on defensive robustness: validate inputs and fail loudly on contract violations.",
+      "timeout_seconds": 2700
+    },
+    {
+      "id": "w5",
+      "model": "claude-opus-4-8",
+      "focus": "Focus on faithfulness to the PRD's report format and on user-facing clarity of the generated report.",
+      "timeout_seconds": 2700
+    }
+  ],
+  "reviewer": {
+    "model": "claude-opus-4-8",
+    "timeout_seconds": 3600
+  },
+  "gate": [
+    {
+      "name": "tests",
+      "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]
+    },
+    {
+      "name": "compiles",
+      "command": ["python3", "-m", "compileall", "-q", "wine_stock_reporter"]
+    },
+    {
+      "name": "report-noninteractive",
+      "command": ["sh", "-c", "rm -f gate-report.md && python3 -m wine_stock_reporter examples/stock_sample.csv --no-interactive --output gate-report.md && test -s gate-report.md"]
+    },
+    {
+      "name": "report-interactive-eof",
+      "command": ["sh", "-c", "rm -f gate-report-eof.md && printf '' | python3 -m wine_stock_reporter examples/stock_sample.csv --output gate-report-eof.md && test -s gate-report-eof.md"]
+    },
+    {
+      "name": "help",
+      "command": ["sh", "-c", "python3 -m wine_stock_reporter --help > /dev/null"]
+    },
+    {
+      "name": "usage-error",
+      "command": ["sh", "-c", "python3 -m wine_stock_reporter --bogus 2> /dev/null; test $? -eq 2"]
+    },
+    {
+      "name": "missing-file",
+      "command": ["sh", "-c", "python3 -m wine_stock_reporter no-such-file.csv --no-interactive 2> /dev/null; test $? -eq 1"]
+    }
+  ],
+  "goal": {
+    "brief": "GOAL.md",
+    "done": [
+      {
+        "name": "acceptance",
+        "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]
+      },
+      {
+        "name": "compiles",
+        "command": ["python3", "-m", "compileall", "-q", "wine_stock_reporter"]
+      },
+      {
+        "name": "report-noninteractive",
+        "command": ["sh", "-c", "rm -f gate-report.md && python3 -m wine_stock_reporter examples/stock_sample.csv --no-interactive --output gate-report.md && test -s gate-report.md"]
+      },
+      {
+        "name": "report-interactive-eof",
+        "command": ["sh", "-c", "rm -f gate-report-eof.md && printf '' | python3 -m wine_stock_reporter examples/stock_sample.csv --output gate-report-eof.md && test -s gate-report-eof.md"]
+      },
+      {
+        "name": "help",
+        "command": ["sh", "-c", "python3 -m wine_stock_reporter --help > /dev/null"]
+      },
+      {
+        "name": "usage-error",
+        "command": ["sh", "-c", "python3 -m wine_stock_reporter --bogus 2> /dev/null; test $? -eq 2"]
+      },
+      {
+        "name": "missing-file",
+        "command": ["sh", "-c", "python3 -m wine_stock_reporter no-such-file.csv --no-interactive 2> /dev/null; test $? -eq 1"]
+      }
+    ]
+  }
+}

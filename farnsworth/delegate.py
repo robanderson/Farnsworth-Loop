@@ -65,8 +65,10 @@ candidate diffs and gate notes — nothing else). Work ONLY in this
 directory. Follow the Review Protocol in the briefing below exactly,
 writing every artifact at the path it names; the orchestrator copies your
 artifacts back to the repo of record and installs code-tips.next.md after
-the merge. Use `git apply` to try a candidate and `git reset --hard` to
-return to base between candidates; never `git add` or `git commit`.
+the merge. Use `git apply` to try a candidate and `git reset --hard &&
+git clean -fd -e .farnsworth` to return to base between candidates (reset
+alone leaves a candidate's newly created files behind as untracked debris;
+the exclusion protects your notes); never `git add` or `git commit`.
 
 {briefing}
 """
