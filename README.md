@@ -4,7 +4,7 @@
 
 **Author:** Rob Anderson
 **Date:** 12 June 2026
-**Status:** Draft v2.0 (v1.1 revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date; v1.2 folds in the 12 June hardening pass: preflight, metrics, adopt, recorded divergence, mechanical hygiene gate, cost capture, goal artifacts; **v2.0, 12 June 2026 evening,** adopts the two-phase explore→rebuild task loop, gate-1 as evidence, the champion mechanism, Phase-0 objectives interview, smallest-gateable-slice derivation, and requirements grammars — Sections 2, 2.2, 2.3, 2.5, 2.6 — distilled from the wine-stock run, Section 17, and the operator design review that followed it. The CLI implements the v1 flow until M7.)
+**Status:** Draft v2.1 (v1.1 revised 11 June 2026 after dogfooding tasks 001–002 — yes, the loop shipped a day before its own PRD date; v1.2 folds in the 12 June hardening pass: preflight, metrics, adopt, recorded divergence, mechanical hygiene gate, cost capture, goal artifacts; **v2.0, 12 June 2026 evening,** adopts the two-phase explore→rebuild task loop, gate-1 as evidence, the champion mechanism, Phase-0 objectives interview, smallest-gateable-slice derivation, and requirements grammars — Sections 2, 2.2, 2.3, 2.5, 2.6 — distilled from the wine-stock run, Section 17, and the operator design review that followed it. The CLI implements the v1 flow until M7. **v2.1, same day:** delegate dispatch is now the default and the only sanctioned mode for Anthropic models — the June 2026 subscription caps on `claude -p` make subprocess dispatch wrong for parallel fleets; `claude -p` is repositioned as the future third-party adapter (GLM, MiniMax, Qwen, local). Sections 3, 4.1/4.1b, 8; the CLI's built-in default fleet is delegate.)
 **Repo:** farnsworth-loop
 
 -----
@@ -14,12 +14,21 @@
 ```bash
 cd your-project                  # a clean git repo with farnsworth.json
 python3 -m farnsworth preflight  # canary the fleet config BEFORE spending
-python3 -m farnsworth run tasks/task-001.md   # dispatch -> gate -> review
+python3 -m farnsworth run tasks/task-001.md   # worktrees + briefings (exit 3)
+# spawn one subagent per briefing from the orchestrating Claude Code
+# session (delegate dispatch -- subscription-billed, Section 4.1b)
+python3 -m farnsworth gate task-001           # gate, anonymize, review briefing (exit 3)
+# spawn the reviewer subagent pinned to the constructed review environment
+python3 -m farnsworth finalize task-001       # validate verdict; run.json + summary
 python3 -m farnsworth report task-001         # the thirty-second table
 python3 -m farnsworth adopt task-001 --clean  # merge winner, install tips, sweep
 python3 -m farnsworth done       # goal probe: exit 0 done / 1 keep looping
 python3 -m farnsworth metrics    # cross-run health table from all run.json
 ```
+
+(Subprocess `command` fleets — the third-party adapter, Section 4.1 —
+collapse the first three steps into one: `farnsworth run` dispatches,
+gates, and reviews end-to-end.)
 
 Sections 1–2 are the why and the protocol; Section 5 is the CLI's scope;
 the `examples/` directory holds complete forensic records of real runs.
@@ -413,7 +422,15 @@ and derive the checks from the structure.
 
 ## 3. Roles and Models
 
-All roles run Claude Code headless (`claude -p`) within the Anthropic ecosystem.
+All roles run as Claude Code SUBAGENTS of the orchestrating host session —
+delegate dispatch (Section 4.1b), billed to the subscription. Headless
+`claude -p` subprocesses are no longer used for Anthropic-model roles:
+since June 2026, subscription `claude -p` draws from a separate, CAPPED
+Agent SDK credit (Section 8, billing row), which is the wrong economics
+for exactly the high-volume parallel fleets the loop dispatches. The
+subprocess adapter (Section 4.1) is retained for the future third-party
+fleet milestone — GLM, MiniMax, Qwen, local models — where a `claude -p`
+style CLI invocation is the appropriate harness.
 
 |Role                  |Model                           |Count|Responsibility                                                                                       |
 |----------------------|--------------------------------|-----|-----------------------------------------------------------------------------------------------------|
@@ -427,9 +444,20 @@ Worker diversity note: within one model family, diversity comes from capability 
 
 ## 4. Mechanism
 
-### 4.1 Worker dispatch
+### 4.1 Subprocess dispatch (`claude -p`): the third-party adapter
 
-Each worker is a headless Claude Code process in its own worktree:
+> **Not for Anthropic models.** Since June 2026, subscription `claude -p`
+> draws from a separate, capped Agent SDK credit; Anthropic-model fleets
+> dispatch as delegate subagents (4.1b), which is also the CLI's built-in
+> default when no `farnsworth.json` exists. This section is the adapter
+> kept open for the future third-party milestone — GLM, MiniMax, Qwen,
+> Codex, local models — anything driven by a headless CLI command. The
+> command-form lessons below were learned on `claude -p` and generalize
+> to any worker CLI: canary the command form before a tournament spends.
+
+A subprocess worker is a headless CLI process in its own worktree
+(historical `claude -p` example; a third-party CLI slots into the same
+`command` template):
 
 ```bash
 git worktree add ../task-042-w1 -b task-042-w1
@@ -443,19 +471,18 @@ TASK: $(cat task-brief.md)" \
   --output-format json
 ```
 
-`--bare` keeps workers from inheriting orchestrator config (hooks, skills, CLAUDE.md) — but note it also disables OAuth/keychain auth (Section 8), so subscription hosts use `--setting-sources ""` plus scoped `--allowedTools` instead. The worktree contains the blast radius of `acceptEdits`. Workers commit to their branch; the diff against main is the deliverable.
+`--bare` keeps workers from inheriting orchestrator config (hooks, skills, CLAUDE.md) — but note it also disables OAuth/keychain auth (Section 8), so subscription hosts used `--setting-sources ""` plus scoped `--allowedTools` instead. The worktree contains the blast radius of `acceptEdits`. Workers commit to their branch; the diff against main is the deliverable. Subprocess mode is also the only mode with a per-worker dollar stream (`total_cost_usd` parsed from `--output-format json`).
 
-### 4.1b Delegate dispatch (subscription-billed subagents)
+### 4.1b Delegate dispatch (the default; subscription-billed subagents)
 
-Subprocess `claude -p` bills to API / Agent-SDK credit. For Anthropic-model
-workers the default is now **delegate dispatch**: the Claude Code session
-that orchestrates the loop spawns one standard subagent per worker, which
-draws on the subscription instead. A worker entry carries `model` instead
-of `command` (`farnsworth.json` in this repo is the live example); the two
-forms are mutually exclusive per entry, and a fleet must be uniformly one
-mode. Subprocess dispatch remains the adapter for anything that is not an
-Anthropic model (GLM, Codex, local models — Section 5's non-goal stays
-open through `command`).
+For Anthropic-model workers the loop uses **delegate dispatch**: the
+Claude Code session that orchestrates the loop spawns one standard
+subagent per worker, which draws on the subscription. A worker entry
+carries `model` instead of `command` (`farnsworth.json` in this repo is
+the live example, and the CLI's built-in default fleet is delegate);
+the two forms are mutually exclusive per entry, and a fleet must be
+uniformly one mode. Subprocess dispatch (4.1) remains the adapter for
+anything that is not an Anthropic model.
 
 A Python CLI cannot spawn host-session subagents, so delegate mode makes
 the loop PHASED around the two points where agents work, with every
@@ -555,7 +582,7 @@ Whenever a verdict merges code, the summary also carries a reviewer-authored **p
 In scope:
 
 - Single-task loop, CLI-invoked: `farnsworth run task-brief.md`
-- Delegate dispatch for Anthropic-model fleets (Section 4.1b): `run` -> `gate` -> `finalize` phases around host-session subagents, subscription-billed
+- Delegate dispatch for Anthropic-model fleets (Section 4.1b) — the default and the only sanctioned mode for Anthropic models since the June 2026 `claude -p` subscription caps: `run` -> `gate` -> `finalize` phases around host-session subagents, subscription-billed; the CLI's built-in default fleet is delegate
 - Parallel blind dispatch to the 5-worker fleet via worktrees
 - Mechanical gate (configurable build/test/lint commands)
 - Anonymized review with three-outcome verdict
@@ -576,7 +603,7 @@ Explicit non-goals (MVP):
 
 - No UI before the markdown loop works end to end. The TUI memory-map aesthetic is a later milestone, not MVP.
 - No scheduler or daemon. The CLI runs one task per invocation; CYCLING is the orchestrator's job (Section 2.4), with `farnsworth done` as its termination probe. A `farnsworth loop` command that automates the cycle is post-MVP.
-- No cross-provider workers (GLM, MiniMax, Codex, local models). The dispatch interface must not preclude them, but MVP is Anthropic-only by design.
+- No cross-provider workers (GLM, MiniMax, Qwen, Codex, local models). The dispatch interface must not preclude them — the subprocess `command` adapter (Section 4.1) is their landing spot, with the same blind/anonymized protocol — but MVP is Anthropic-only by design.
 - No autonomous PRD/contract mutation. Escalations surface to a human.
 - No fine-tuning, no embeddings, no vector store. The context layer is the only memory.
 
@@ -622,8 +649,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Reviewer cost dominates                 |*(observed in dogfooding: reviewer ~51–54% of worker spend)* Triage rule plus consolidation keep review depth where it pays; routine tasks skip the tournament            |
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
-|Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit. Mitigated structurally: Anthropic-model fleets use delegate dispatch (Section 4.1b), which bills host-session subagents to the subscription; `claude -p` subprocess dispatch remains for non-Anthropic workers or API-key hosts                       |
-|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example; UPDATED Word Garden 5: auth worked briefly — a real worker built and gate-passed via the CLI — then went intermittent, which is worse than absent: never trust a passing auth probe for a whole run)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for most recorded runs, with Word Garden 5 driving the CLI's own briefing/review-env/report/done code from manual mode. Word Garden 4 (Section 15) ran fully CLI-dispatched on subscription OAuth before run 5 hit the intermittency — treat auth as per-run weather: canary every phase, fall back to delegate or manual dispatch when it turns                  |
+|Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate, CAPPED monthly Agent SDK credit — fatal economics for the loop's parallel fleets. Resolved structurally (v2.1): Anthropic-model fleets use delegate dispatch ONLY (Section 4.1b), which bills host-session subagents to the subscription, and the CLI's built-in default fleet is delegate; `claude -p` subprocess dispatch is reserved for third-party models (GLM, MiniMax, Qwen, local) and API-key hosts (Section 4.1)                       |
+|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example; UPDATED Word Garden 5: auth worked briefly — a real worker built and gate-passed via the CLI — then went intermittent, which is worse than absent: never trust a passing auth probe for a whole run)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for most recorded runs, with Word Garden 5 driving the CLI's own briefing/review-env/report/done code from manual mode. Word Garden 4 (Section 15) ran fully CLI-dispatched on subscription OAuth before run 5 hit the intermittency — treat auth as per-run weather: canary every phase, fall back to delegate or manual dispatch when it turns. *Since v2.1 this whole risk class is confined to the third-party subprocess adapter (Section 4.1): Anthropic fleets never spawn nested `claude -p`*                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 |Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |
 |Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
