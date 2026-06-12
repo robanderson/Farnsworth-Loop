@@ -62,6 +62,22 @@ def _parse_timeout(obj, label):
     return timeout
 
 
+def _parse_focus(obj, label):
+    """Return a validated optional ``focus`` directive from ``obj``.
+
+    None when absent; otherwise a non-empty string (e.g. "Focus on runtime
+    speed"). Anything else is a ConfigError.
+    """
+    focus = obj.get("focus")
+    if focus is None:
+        return None
+    if not isinstance(focus, str) or not focus.strip():
+        raise ConfigError(
+            "{0} focus must be a non-empty string".format(label)
+        )
+    return focus.strip()
+
+
 class Config:
     """Parsed run configuration."""
 
@@ -125,6 +141,9 @@ class Config:
                         "timeout": _parse_timeout(
                             entry, "worker '{0}'".format(worker_id)
                         ),
+                        "focus": _parse_focus(
+                            entry, "worker '{0}'".format(worker_id)
+                        ),
                     }
                 )
         elif legacy_worker is not None:
@@ -140,6 +159,7 @@ class Config:
                     "id": "w1",
                     "command": list(command),
                     "timeout": _parse_timeout(legacy_worker, "worker"),
+                    "focus": _parse_focus(legacy_worker, "worker"),
                 }
             ]
         else:

@@ -5,6 +5,15 @@ source, task briefs, anonymized candidate diffs, reviews, verdicts, run
 logs, the distilled `.code-tips.md`, and an orchestrator process log. Every
 decision in each example is reconstructible from the files alone.
 
+Each task also carries a thirty-second `summary.md` table
+(`.farnsworth/task-NNN/summary.md`, the output of
+`farnsworth report <task-id>`): one row per worker with its focus, gate
+result, and candidate label, then the verdict. These were generated for
+all recorded runs when the summary-table feature landed (2026-06-12);
+the Focus column reads `-` for these runs because focus-diversified
+dispatch (PRD Section 2.1) did not exist yet — both features await their
+first live tournament.
+
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
 | [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |

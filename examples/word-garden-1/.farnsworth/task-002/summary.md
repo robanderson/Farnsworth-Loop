@@ -1,0 +1,13 @@
+# Run summary -- task-002
+
+Base commit `08fda542a404`, 2026-06-11T00:00:00Z -> 2026-06-11T23:44:12Z.
+
+| Worker | Focus | Exit | Gate | Candidate | Result |
+|---|---|---:|---|---|---|
+| w1 | - | 0 | PASS | B |  |
+| w2 | - | 0 | PASS | A | ADOPTED |
+| w3 | - | 0 | PASS | C |  |
+
+**Verdict:** adopt candidate A
+
+**Reasoning:** All three pass the gate and play full emoji and ASCII games with clean EOF/Ctrl-C handling; none has a correctness bug. A is adopted: it has the most rigorous, positive-asserting test suite (80 tests incl. per-character ASCII-purity, e2e win/loss/EOF/invalid-input/ascii), correct CLI exit codes (--help 0, bad arg 2), and the only faithful §10 ASCII stage table (five distinct ASCII glyphs [.] [*] [+] [#] [x]), with water/weeds correctly labelled+counted per §18 (bare weed count matching the spec example). C is the close runner-up — strongest §18 accessibility (a Garden: <glyph> <text-label> line that survives ASCII mode) and clean main.py, but mis-formats weeds as N/max_water and is functionally equivalent otherwise; if per-stage text labels are later wanted, port C's Garden line onto A. B is third: it has two real shortfalls — it swallows argparse SystemExit so --help and usage errors both exit 1 (wrong CLI contract), and its ASCII mode collapses all five growth stages (and both end screens) to a single '*', losing the §10 stage distinction with no compensating text. A's only flaws are cosmetic (a redundant static title seedling plus a bare unlabelled stage glyph line, and trailing spaces), none of which are spec or contract violations.

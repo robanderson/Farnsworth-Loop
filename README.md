@@ -33,7 +33,7 @@ TASK -> DISPATCH (parallel, blind) -> GATE (mechanical) -> REVIEW (anonymized)
 
 One iteration in detail:
 
-1. **Dispatch.** Orchestrator creates one git worktree per worker and dispatches the same task brief to all workers in parallel. Each brief is: current `.code-tips.md` + task specification. Workers run blind: no worker sees another worker’s output, and no worker sees its own prior attempts.
+1. **Dispatch.** Orchestrator creates one git worktree per worker and dispatches the same task brief to all workers in parallel. Each brief is: current `.code-tips.md` + task specification + an optional per-worker **focus directive** (Section 2.1). Workers run blind: no worker sees another worker’s output, no worker sees another worker’s focus, and no worker sees its own prior attempts.
 1. **Gate.** Each worktree passes a mechanical filter before any model judges it: build succeeds, tests pass, linter passes. Failures are reduced to a one-line autopsy (“Worker C: 3 test failures in auth”). Only passing candidates proceed to full review.
 1. **Review.** The reviewer receives passing diffs labeled A, B, C in randomized order with no model attribution, plus one-line autopsies of the failures, and scores all candidates against the task’s acceptance criteria. The review covers what is good AND bad in each implementation, not just a ranking.
 1. **Verdict.** Exactly one of three outcomes:
@@ -43,7 +43,38 @@ One iteration in detail:
 1. **Distill.** The reviewer writes durable lessons from this iteration into `.code-tips.md`. Only the review phase may write this file; workers are read-only consumers. Commit message convention: `Good news, everyone! <summary of lesson>`.
 1. **Merge.** Winning diff merges to main. Worktrees are destroyed. Loop continues.
 
-### 2.1 Two-Round Mode (divergence-triggered)
+### 2.1 Focus-Diversified Dispatch
+
+Each worker may carry a one-line focus directive in `farnsworth.json` —
+"Focus on runtime speed", "Focus on security", "Focus on minimal
+dependencies", "Focus on readability and maintainability", "Focus on test
+rigor and edge cases", … The purpose is to FORCE the blind field apart:
+identical briefings to same-family models produce convergent candidates
+(observed: identical file footprints in every round run so far), which
+starves both the review and the two-round trigger of signal. A focused
+field searches more of the code space in round/task 1 and hands the
+reviewer genuinely varied implementations whose distilled trade-offs feed
+round/task 2.
+
+Rules:
+
+- **A focus is a lens, never a contract amendment.** The dispatch wrapper
+  appends the directive with an explicit precedence sentence: the task
+  brief and its acceptance criteria always win. A candidate that uses its
+  focus to deviate from the spec loses in review like any other deviation.
+- **Foci stay blind in review.** The review briefing discloses the round's
+  directives as a sorted, UNATTRIBUTED set — the reviewer should know the
+  field was deliberately diversified (so divergence is not misread as task
+  ambiguity), but a per-candidate focus would link labels to worker specs
+  and break anonymization. The mapping unseals with the rest post-verdict.
+- **Recorded, not hidden.** Each worker's focus lands in `run.json` and in
+  the run summary table, so per-focus win rates accumulate alongside
+  per-model win rates (Section 7).
+- **Round 2 narrows.** When two-round mode triggers, the orchestrator may
+  drop or re-aim foci for the re-dispatch: round 1 explores, distillation
+  extracts what the exploration taught, round 2 converges on it.
+
+### 2.2 Two-Round Mode (divergence-triggered)
 
 After the gate, the orchestrator measures divergence across candidates (approach, decomposition, files touched). If candidates substantially agree, proceed to review normally. If they scatter, the task was ambiguous: run the review and distillation, then re-dispatch the same task as a fresh blind round where workers receive the updated `.code-tips.md` but NOT the round 1 diffs. Distillation is the anti-anchoring filter: lessons travel, diffs do not. Two rounds maximum per task; a second scatter is an automatic escalation.
 
@@ -143,6 +174,8 @@ artifact, and re-dispatches only the phases whose artifacts are missing.
 
 All loop state is file-based and inspectable: task briefs, candidate diffs, gate results, review documents, verdicts, and the tips file all live in the repo (under `.farnsworth/` for per-task artifacts). No database. A human can reconstruct any decision from git history alone. The orchestrator additionally keeps a running process-findings journal in `.farnsworth/orchestrator-log.md`, written after each merge.
 
+Every run additionally produces a short what-happened table — one row per worker (id, focus, exit, gate, candidate label, ADOPTED marker) plus the verdict and reasoning — written to `.farnsworth/<task-id>/summary.md`, printed at the end of `farnsworth run`, and reprintable any time with `farnsworth report <task-id>`. The table is the thirty-second read; `run.json` remains the contract of record.
+
 ## 5. MVP Scope
 
 In scope:
@@ -153,7 +186,9 @@ In scope:
 - Anonymized review with three-outcome verdict
 - `.code-tips.md` lifecycle (reviewer-written, worker-injected, provenance-stamped)
 - Divergence-triggered two-round mode
+- Per-worker focus directives with unattributed disclosure to the reviewer (Section 2.1)
 - JSON run log per task with per-model costs (from `--output-format json`)
+- Run summary table: `.farnsworth/<task-id>/summary.md` + `farnsworth report <task-id>` (Section 4.4)
 - Housekeeping: per-command `timeout_seconds` and `farnsworth clean <task-id>` (Section 4.3)
 
 Explicit non-goals (MVP):
@@ -202,6 +237,7 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
 |Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
+|Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |
 |Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
 |Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
 
@@ -210,8 +246,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
 1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
 1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI. (The lifecycle is already running manually — two distillation commits so far — M3 moves it into the tool.)
-1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule.
-1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README.
+1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12; measurement and round-2 automation remain.)*
+1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six recorded runs.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 
 ## 10. Acceptance Criteria (faithfulness contract)
@@ -227,7 +263,9 @@ Later agents and reviewers score the implementation against this checklist:
 - [ ] Round 2 workers receive updated tips but no round 1 diffs. *(not yet exercised — no divergence trigger so far)*
 - [x] All decisions reconstructible from git history alone (no hidden state).
 - [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
-- [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; two data points banked)*
+- [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; six data points banked)*
+- [x] Every run yields a `summary.md` table a human can read in thirty seconds; `farnsworth report <task-id>` reprints it from `run.json` alone.
+- [x] Focus directives never reach the reviewer attributed to a candidate or worker id; each worker sees only its own focus.
 
 ## 11. Dogfooding Findings (tasks 001–002)
 

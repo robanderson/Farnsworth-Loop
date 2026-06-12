@@ -24,7 +24,7 @@ import os
 import random
 import subprocess
 
-from . import gitutil
+from . import gitutil, report
 from .config import Config
 
 
@@ -62,6 +62,25 @@ def build_briefing(repo_root, brief_path):
     with open(brief_path, "r", encoding="utf-8") as fh:
         brief = fh.read()
     return tips + "\n\nTASK: " + brief
+
+
+def focus_briefing(briefing, focus):
+    """Append a worker's focus directive to the shared briefing.
+
+    The directive is a lens for choices the task brief leaves open — its
+    purpose is to widen the code space the blind field searches — never a
+    license to deviate from the brief, which stays supreme.
+    """
+    if not focus:
+        return briefing
+    return (
+        briefing
+        + "\n\nFOCUS DIRECTIVE: "
+        + focus
+        + "\nApply this focus wherever the task brief leaves an "
+        "implementation choice open. The task brief and its acceptance "
+        "criteria always take precedence over the focus directive."
+    )
 
 
 def _substitute_prompt(command, prompt):
@@ -237,7 +256,7 @@ def run(brief_path, config_path=None, cwd=None):
             future = executor.submit(
                 _run_worker,
                 worker_spec,
-                briefing,
+                focus_briefing(briefing, worker_spec.get("focus")),
                 worktree_abs,
                 artifact_dir,
                 config.gate,
@@ -305,6 +324,7 @@ def run(brief_path, config_path=None, cwd=None):
                 "worktree": worktree_spec["worktree_rel"],
                 "exit_code": result["exit_code"],
                 "stdout_file": result["stdout_name"],
+                "focus": config.workers[i].get("focus"),
                 "gate": {
                     "passed": result["gate_passed"],
                     "results": result["gate_results"],
@@ -323,9 +343,20 @@ def run(brief_path, config_path=None, cwd=None):
                 "candidates passed gate but no reviewer configured in config"
             )
 
-        # Build the review briefing.
+        # Build the review briefing. Focus directives are disclosed as a
+        # sorted, UNATTRIBUTED set: the reviewer should know the field was
+        # deliberately diversified, but a per-candidate focus would link
+        # labels back to worker specs and break anonymization.
+        focus_directives = sorted(
+            {w.get("focus") for w in config.workers if w.get("focus")}
+        )
         review_briefing = build_review_briefing(
-            brief_path, repo_root, artifact_dir, candidates, failed_workers
+            brief_path,
+            repo_root,
+            artifact_dir,
+            candidates,
+            failed_workers,
+            focus_directives=focus_directives,
         )
 
         # Run the reviewer. A hung reviewer is an infrastructure failure:
@@ -420,19 +451,29 @@ def run(brief_path, config_path=None, cwd=None):
     else:
         run_log["review"] = None
 
-    # (j) Write run.json in the MAIN repo.
+    # (j) Write run.json and the short what-happened table in the MAIN repo.
     with open(os.path.join(artifact_dir, "run.json"), "w", encoding="utf-8") as fh:
         json.dump(run_log, fh, indent=2)
         fh.write("\n")
+    with open(os.path.join(artifact_dir, "summary.md"), "w", encoding="utf-8") as fh:
+        fh.write(report.summary_table(run_log))
 
     return run_log
 
 
-def build_review_briefing(brief_path, repo_root, artifact_dir, candidates, failed_workers):
+def build_review_briefing(
+    brief_path,
+    repo_root,
+    artifact_dir,
+    candidates,
+    failed_workers,
+    focus_directives=None,
+):
     """Build the anonymized review briefing.
 
     Contains: task brief verbatim, labels and relative paths to diffs, one-line
-    autopsies of failed workers (anonymized), and instructions for the verdict.
+    autopsies of failed workers (anonymized), the round's focus directives as
+    an unattributed sorted list (when any), and instructions for the verdict.
     """
     with open(brief_path, "r", encoding="utf-8") as fh:
         brief_text = fh.read()
@@ -446,6 +487,20 @@ def build_review_briefing(brief_path, repo_root, artifact_dir, candidates, faile
         label = candidate["label"]
         diff_path = "candidates/{0}.diff".format(label)
         lines.append("- Candidate {0}: {1}".format(label, diff_path))
+
+    if focus_directives:
+        lines.append("")
+        lines.append("## Field Diversity")
+        lines.append("")
+        lines.append(
+            "Workers in this round were dispatched with the following focus "
+            "directives (listed sorted and UNATTRIBUTED -- the mapping to "
+            "candidates is sealed). Judge each candidate against the task's "
+            "acceptance criteria, not against any guessed focus."
+        )
+        lines.append("")
+        for directive in focus_directives:
+            lines.append("- {0}".format(directive))
 
     if failed_workers:
         lines.append("")

@@ -794,6 +794,162 @@ class TestConfig(unittest.TestCase):
         self.assertIsNotNone(cfg.reviewer)
         self.assertEqual(cfg.reviewer["command"], ["reviewer", "{prompt}"])
 
+    def test_focus_parsed_and_optional(self):
+        """Per-worker focus is optional; present focus is kept verbatim."""
+        cfg_dict = {
+            "workers": [
+                {
+                    "id": "w1",
+                    "command": ["cmd"],
+                    "focus": "Focus on runtime speed",
+                },
+                {"id": "w2", "command": ["cmd"]},
+            ],
+            "gate": [],
+        }
+        cfg = config.Config.from_dict(cfg_dict)
+        self.assertEqual(cfg.workers[0]["focus"], "Focus on runtime speed")
+        self.assertIsNone(cfg.workers[1]["focus"])
+
+    def test_invalid_focus_rejected(self):
+        """Focus must be a non-empty string when present."""
+        for bad in ["", "   ", 7, ["Focus on security"]]:
+            cfg_dict = {
+                "workers": [{"id": "w1", "command": ["cmd"], "focus": bad}],
+                "gate": [],
+            }
+            with self.assertRaises(config.ConfigError):
+                config.Config.from_dict(cfg_dict)
+
+
+# A fake worker that records the briefing it received AND commits, so the
+# focus tests can assert per-worker briefing content on gate-passing branches.
+ECHO_COMMIT_WORKER_PY = (
+    "import sys,subprocess,pathlib;"
+    "pathlib.Path('briefing.txt').write_text(sys.argv[1]);"
+    "subprocess.run(['git','add','-A']);"
+    "subprocess.run(['git','commit','-m','echo briefing'])"
+)
+
+
+class TestFocusDirectives(LoopTestBase):
+    """Per-worker focus directives widen the searched code space (blind field
+    diversity); each worker sees only its own directive."""
+
+    def _focus_config(self):
+        return {
+            "workers": [
+                {
+                    "id": "w1",
+                    "command": ["python3", "-c", ECHO_COMMIT_WORKER_PY, "{prompt}"],
+                    "focus": "Focus on runtime speed",
+                },
+                {
+                    "id": "w2",
+                    "command": ["python3", "-c", ECHO_COMMIT_WORKER_PY, "{prompt}"],
+                    "focus": "Focus on security",
+                },
+                {
+                    "id": "w3",
+                    "command": ["python3", "-c", ECHO_COMMIT_WORKER_PY, "{prompt}"],
+                },
+            ],
+            "reviewer": {"command": ["python3", "-c", FAKE_REVIEWER_PY, "{prompt}"]},
+            "gate": [{"name": "noop", "command": ["python3", "-c", ""]}],
+        }
+
+    def test_each_worker_briefed_with_only_its_own_focus(self):
+        brief = self._write_brief(body="UNIQUE_TASK_BODY")
+        cfg_path = self._config_file_dict(self._focus_config())
+        for w in ("w1", "w2", "w3"):
+            self._track_worktree("task-042-{0}".format(w))
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        briefings = {}
+        for w in ("w1", "w2", "w3"):
+            path = os.path.join(self.tmp, "task-042-{0}".format(w), "briefing.txt")
+            with open(path, "r", encoding="utf-8") as fh:
+                briefings[w] = fh.read()
+
+        # Each focused worker got exactly its own directive, after the task.
+        self.assertIn("FOCUS DIRECTIVE: Focus on runtime speed", briefings["w1"])
+        self.assertNotIn("Focus on security", briefings["w1"])
+        self.assertIn("FOCUS DIRECTIVE: Focus on security", briefings["w2"])
+        self.assertNotIn("runtime speed", briefings["w2"])
+        # The directive never outranks the brief, and says so.
+        self.assertIn("take precedence", briefings["w1"])
+        # An unfocused worker gets the plain briefing.
+        self.assertNotIn("FOCUS DIRECTIVE", briefings["w3"])
+        self.assertIn("UNIQUE_TASK_BODY", briefings["w3"])
+
+        # run.json records each worker's focus (null when absent).
+        by_id = {w["id"]: w for w in run_log["workers"]}
+        self.assertEqual(by_id["w1"]["focus"], "Focus on runtime speed")
+        self.assertEqual(by_id["w2"]["focus"], "Focus on security")
+        self.assertIsNone(by_id["w3"]["focus"])
+
+    def test_summary_table_written_and_shows_focus(self):
+        brief = self._write_brief()
+        cfg_path = self._config_file_dict(self._focus_config())
+        for w in ("w1", "w2", "w3"):
+            self._track_worktree("task-042-{0}".format(w))
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        summary_path = os.path.join(
+            self.repo, ".farnsworth", "task-042", "summary.md"
+        )
+        with open(summary_path, "r", encoding="utf-8") as fh:
+            summary = fh.read()
+        # The on-disk table is exactly the rendering of the run log.
+        from farnsworth.report import summary_table
+
+        self.assertEqual(summary, summary_table(run_log))
+        self.assertIn("| Worker | Focus | Exit | Gate | Candidate | Result |", summary)
+        self.assertIn("Focus on runtime speed", summary)
+        self.assertIn("ADOPTED", summary)
+        self.assertIn("**Verdict:** adopt candidate A", summary)
+
+    def test_review_briefing_lists_directives_unattributed(self):
+        """Focus directives reach the reviewer as a sorted set, never mapped
+        to candidates or worker ids."""
+        from farnsworth.loop import build_review_briefing
+
+        brief = self._write_brief()
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-042")
+        os.makedirs(artifact_dir, exist_ok=True)
+        candidates = [{"label": "A"}, {"label": "B"}]
+
+        briefing = build_review_briefing(
+            brief,
+            self.repo,
+            artifact_dir,
+            candidates,
+            [],
+            focus_directives=["Focus on runtime speed", "Focus on security"],
+        )
+
+        self.assertIn("## Field Diversity", briefing)
+        self.assertIn("- Focus on runtime speed", briefing)
+        self.assertIn("- Focus on security", briefing)
+        self.assertIn("UNATTRIBUTED", briefing)
+        # No worker ids anywhere near the directives.
+        self.assertNotIn("w1", briefing)
+        self.assertNotIn("w2", briefing)
+
+    def test_review_briefing_omits_section_without_focus(self):
+        from farnsworth.loop import build_review_briefing
+
+        brief = self._write_brief()
+        artifact_dir = os.path.join(self.repo, ".farnsworth", "task-042")
+        os.makedirs(artifact_dir, exist_ok=True)
+
+        briefing = build_review_briefing(
+            brief, self.repo, artifact_dir, [{"label": "A"}], [], focus_directives=[]
+        )
+        self.assertNotIn("Field Diversity", briefing)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -181,3 +181,40 @@ projects (run 2 re-committed a defect run 1 had already distilled in the
 other project's tips), and a distillation rule upgrade — contract language
 AND explicit scope, after an imperative tip was ignored outside the scope
 it failed to state.
+
+---
+
+## Loop upgrade — summary tables and focus-diversified dispatch (2026-06-12)
+
+Two protocol upgrades, implemented directly in the tool (maintainer mode,
+not a tournament — the changes are to the loop itself, requested by the
+human after the Word Garden 2 replication):
+
+1. **Per-run summary table.** Every run now ends with a short
+   what-happened table (worker / focus / exit / gate / candidate /
+   ADOPTED, then verdict + reasoning), written to
+   `.farnsworth/<task-id>/summary.md`, printed by `farnsworth run`, and
+   reprintable with the new `farnsworth report <task-id>`. Generated
+   retroactively for all six recorded runs (loop tasks 001–002, both Word
+   Garden examples). Motivation: run.json is the contract, but nobody can
+   read a tournament's outcome from it in thirty seconds.
+
+2. **Focus directives.** Each worker in `farnsworth.json` may carry a
+   one-line focus ("Focus on runtime speed", "Focus on security", "Focus
+   on minimal dependencies", ...) appended to its briefing with an
+   explicit the-brief-wins precedence sentence. Motivation: every round
+   run so far produced IDENTICAL file footprints across the field — blind
+   same-family workers converge, which starves the review of variety and
+   the two-round trigger of signal. Foci force the field apart in
+   round/task 1; the reviewer receives the round's directives as a
+   sorted UNATTRIBUTED set (per-candidate focus would deanonymize);
+   `run.json` and the summary table record each worker's focus so
+   per-focus win rates can accumulate. Round 2 narrows: drop or re-aim
+   foci after distillation.
+
+PRD updated: new Section 2.1, Section 4.4 audit paragraph, MVP scope,
+risk row (focus read as contract amendment), milestone notes on M4/M5,
+two new acceptance criteria. Tests: 46 passing (focus isolation per
+worker, unattributed reviewer disclosure, table rendering, summary.md ==
+rendered run.json). First live exercise: the next tournament dispatched
+from this repo.
