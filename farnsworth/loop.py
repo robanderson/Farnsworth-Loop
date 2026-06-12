@@ -574,6 +574,7 @@ def build_review_briefing(
     with open(brief_path, "r", encoding="utf-8") as fh:
         brief_text = fh.read()
 
+    task_id = os.path.basename(artifact_dir)
     lines = [brief_text]
     lines.append("")
     lines.append("## Candidates")
@@ -581,7 +582,10 @@ def build_review_briefing(
 
     for candidate in candidates:
         label = candidate["label"]
-        diff_path = "candidates/{0}.diff".format(label)
+        # The path the review environment actually serves the diff at.
+        diff_path = ".farnsworth/{0}/candidates/{1}.diff".format(
+            task_id, label
+        )
         lines.append("- Candidate {0}: {1}".format(label, diff_path))
 
     if focus_directives:
@@ -607,7 +611,6 @@ def build_review_briefing(
                 autopsy = gate_result["autopsy"]
                 lines.append("- a failed candidate: {0}".format(autopsy))
 
-    task_id = os.path.basename(artifact_dir)
     lines.append("")
     lines.append("## Review Protocol")
     lines.append("")
