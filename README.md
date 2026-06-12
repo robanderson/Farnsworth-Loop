@@ -111,8 +111,13 @@ attempt-1 diffs (the Section 2.2 rule, promoted from a
 divergence-triggered exception to an explicit design choice). Attempt 2
 REPLACES attempt 1; the attempt-1 → attempt-2 delta on an identical
 problem is the cleanest direct measurement of "the project got smarter"
-the loop can produce. No recorded run has used the re-shot grain yet; it
-is the queued design for the next example.
+the loop can produce. Word Garden 5 (Section 15) ran the whole-program
+grain as re-shot attempt 1 under the Section 2.4 goal contract — and
+the goal was met in one iteration, so attempt 2 never triggered. That
+is the re-shot priced correctly: it is a CONTINGENT grain, dispatched
+only when the done probe says attempt 1 left a gap, so it measures
+learning exactly when there is something to learn. The attempt-2
+measurement remains unexercised.
 
 **Domain is the gate config's business, not the loop's.** Nothing in the
 protocol assumes Python, greenfield code, or a toy: point the loop at an
@@ -320,6 +325,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Fourth measurement note, from Word Garden 3 (Section 14): count defects per round in two ledgers — BEHAVIORAL bugs and CONTRACT-level deviations — and attribute each to whether a tips entry covered its class. Attribution is the seed experiment's real readout: in run 3, every defect class covered by a seed entry was absent from the field, and the one behavioral bug that shipped was exactly the lesson the domain-general curation rule had excluded from the seed. Also: with foci in play, record the winning FOCUS alongside the winning model; two rounds in, focus-task alignment predicts where candidates invest, not who wins.*
 
+*Fifth measurement note, from Word Garden 5 (Section 15): under the goal contract, add two ledger lines — ITERATIONS-TO-GOAL (the emergent cycle count; the loop's headline efficiency number once goals are the unit of work) and the ATTESTATION dispatch's cost (a fixed per-goal overhead, ~68k tokens in run 5, distinct from per-task review spend). And keep the two defect ledgers honest about novelty: run 5's field had ZERO defects in classes covered by tips, while all four defects found were in classes no tip yet covered (ASCII stage distinctness, dead constants) — the loop's residual defect rate is concentrated precisely where memory hasn't been yet, which is the learning thesis read from the other side.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -335,12 +342,12 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
-|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example                  |
+|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example; UPDATED Word Garden 5: auth worked briefly — a real worker built and gate-passed via the CLI — then went intermittent, which is worse than absent: never trust a passing auth probe for a whole run)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for all recorded runs, with Word Garden 5 driving the CLI's own briefing/review-env/report/done code from manual mode                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
 |Focus directive read as a contract amendment|Dispatch wrapper appends an explicit precedence sentence (brief wins); reviewer scores against acceptance criteria only; per-candidate focus sealed until post-verdict (Section 2.1)                                                                  |
 |Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
 |Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry; Word Garden 3 — duplicates in every background phase, all absorbed)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
-|Reviewer environment leaks worker identity |*(observed: Word Garden 3)* A naive clone for the reviewer carries worker-named branches (`task-001-w1`…), de-anonymizing candidates by id. Construct the review environment: base tree + labeled diffs + gate notes ONLY — no refs, no worktrees, no mapping files                                  |
+|Reviewer environment leaks worker identity |*(observed: Word Garden 3; IMPLEMENTED in the CLI 2026-06-12, first live use Word Garden 5)* A naive clone for the reviewer carries worker-named branches (`task-001-w1`…), and `farnsworth.json` maps ids to models/foci. The CLI now constructs the review environment: exported base tree minus `farnsworth.json` and prior `.farnsworth/` artifacts, re-initialized as a fresh single-commit repo, plus labeled diffs + gate notes ONLY; reviewer artifacts are copied back post-verdict and `farnsworth clean` sweeps the env                                  |
 |Workers "improve" a required signature     |*(observed: Word Garden 3 — an extra `new_game_fn` param forfeited an otherwise-winning candidate)* Briefs and tips state required signatures are exact and CLOSED contracts; proposed improvements go to escalation or a follow-up task, never silently into the diff                          |
 |Pre-planned task pipeline masquerades as the loop|*(observed: a run-4 orchestrator pre-authored "task-001 engine, task-002 UI" before the first dispatch and treated finishing the list as finishing the job)* Section 2.4: one next task per cycle, derived from the goal gap post-merge; `farnsworth done` decides continuation, never a checklist|
 
@@ -348,8 +355,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 1. **M1, Skeleton** — ✅ **done (task-001, adopted from a 5-way tournament):** dispatch + worktrees + gate + JSON run log, single worker. Proves plumbing.
 1. **M2, Tournament** — ✅ **done (task-002, adopted from a 5-way tournament):** full multi-worker blind dispatch, anonymized review briefing, configurable reviewer, three-outcome verdict, manual merge.
-1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips.
-1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from three runs: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks.)*
+1. **M3, Memory:** `.code-tips.md` lifecycle + injection + consolidation pass automated in the CLI, **plus the cross-project tips seed** — validated live in Word Garden 3 (Section 14): a 9-entry domain-general seed suppressed every defect class it covered, in a fresh project, in both rounds. M3 also adopts the run-3 distillation refinement: when a project lesson instantiates a general class, the reviewer writes the general form for the seed pile and the specific form for project tips. *(Two pieces shipped 2026-06-12 and live-validated in Word Garden 5: the CLI review briefing now instructs the reviewer to produce `code-tips.next.md` — the complete next tips file, installed by the orchestrator post-merge — and seed v2 carried the first GENERALIZED entry, which suppressed its defect class across the whole field.)*
+1. **M4, Adaptive:** divergence measurement + two-round mode + triage rule. *(Focus-diversified dispatch — the divergence FORCING half of this milestone — shipped 2026-06-12 and had its first live tournament in Word Garden 3: foci measurably spread the field with zero contract-amendment misreads. The measurement half has a confirmed requirement from four runs — including Word Garden 5 at whole-program grain: file footprints are identical even under deliberate diversification — the metric must read content, not file lists, or round 2 will never trigger on well-briefed tasks.)*
 1. **M5, Instrumentation:** metrics dashboard from JSON logs; publish gate-success-over-time chart in the README. *(First piece shipped 2026-06-12: per-run summary table in `summary.md` / `farnsworth report`, generated retroactively for all six recorded runs.)*
 1. **M6, Theater:** TUI memory-map visualization of the fleet (post-MVP, separate doc).
 
@@ -521,6 +528,67 @@ What it settled, sharpened, and surfaced:
    footprint-based divergence measurement blind even under deliberate
    diversification; Haiku spending the field's most motion on a
    non-winning candidate (3 runs for 3).
+
+## 15. The Goal-Driven Run: Word Garden 5 (examples/word-garden-5)
+
+The fifth Word Garden run (2026-06-12) and the first project executed
+under the Section 2.4 termination contract end to end: a goal brief +
+six mechanical done checks seeded up front, ONE task derived from the
+goal gap (the entire game, whole-program grain — Section 2.3's re-shot
+attempt 1), and the exit decided by `farnsworth done` plus a reviewer
+goal-attestation rather than a task list. Also first-run here: the
+cross-project seed v2 (10 entries, including the generalized predicate
+lesson — the run-3 "generalize while distilling" rule's first product)
+and the CLI's constructed review environment (Section 8's reviewer-leak
+mitigation, implemented in `farnsworth.loop` this run). Full forensics:
+[`examples/word-garden-5/`](examples/word-garden-5/).
+
+| Metric | task-001 (10 seed tips, 5 workers, whole-program grain) |
+|---|---|
+| First-pass gate rate | 5/5 (six checks, incl. per-task extensions as first-class config) |
+| Engine-behavior bugs in field | **0** |
+| Spec-deviation defects in field | 3 (ASCII growth-stage collapse) |
+| Verdict | adopt |
+| Winning model (focus) | **Sonnet 4.6** (readability) |
+| Worker agent tokens | ~256k |
+| Reviewer tournament tokens (share) | ~101k (39%) |
+| Goal attestation tokens | ~68k |
+| Iterations to goal (emergent) | **1** — exit DONE |
+
+What it settled and surfaced:
+
+1. **Settled: goal-driven cycling stops honestly.** The done probe and
+   the attestation — not the orchestrator, not a list — ended the loop
+   at one iteration. The re-shot never triggered because attempt 1 left
+   no gap; that is the re-shot priced correctly (it measures learning
+   exactly when there is something to learn).
+2. **Settled: generalized seed entries widen memory's scope for free.**
+   The tip-10 general form ("a standalone predicate must not rely on a
+   caller's check ordering") was honored by all five candidates; the
+   `is_lost` defect class that shipped in two prior projects' rounds
+   was absent. Zero engine-behavior bugs in a whole-program field.
+3. **Surfaced: the gate's blind spot has a sharper exemplar.** Three of
+   five candidates passed the `plays-ascii` gate (exit 0, pure ASCII)
+   while collapsing SPEC's five growth stages to 1–4 distinct glyphs.
+   Gates verify exit codes and character sets; distinctness — meaning —
+   was reviewer territory. Now distilled as project tips 11–15.
+4. **Surfaced: fake-phase tests validate plumbing, not contracts.** The
+   constructed review env worked on first live use, and first live use
+   immediately caught a briefing bug the smoke test missed (briefed
+   diff path != served diff path) because the fake reviewer globbed
+   instead of following the briefing text.
+5. **Economics: review share fell, attestation appeared.** Tournament
+   review at ~39% of worker spend is the lowest recorded (pre-labeled
+   diffs in a ready-made env cut review overhead), but each completed
+   GOAL now carries one attestation dispatch — a fixed per-goal cost
+   new to the ledger.
+6. **Fourth confirmations:** identical file footprints even at
+   whole-program grain (M4's divergence metric must read content);
+   Haiku spending the field's most motion for a non-winning candidate;
+   focus-alignment is not advantage (the accessibility-focused
+   candidate shipped the worst ASCII display); duplicate dispatches
+   absorbed by the artifact-boundary rule — this run in the attestation
+   phase, a new artifact type, the rule working generically.
 
 -----
 

@@ -1,0 +1,252 @@
+{
+  "task_id": "task-001",
+  "started_at": "2026-06-12T04:35:00Z",
+  "finished_at": "2026-06-12T05:05:00Z",
+  "base_commit": "4574249855057af28ad0a6b6cc0b5584a82b098e",
+  "mode": "manual-agent-dispatch (CLI helpers for briefings, review env, report, done)",
+  "tips_state": "cross-project seed v2, 10 entries (first run with the generalized predicate entry)",
+  "workers": [
+    {
+      "id": "w1",
+      "model": "haiku-4.5",
+      "focus": "Focus on test rigor and edge cases.",
+      "branch": "task-001-w1",
+      "worktree": "../task-001-w1",
+      "exit_code": 0,
+      "tests": 85,
+      "agent_tokens": "~64k/66 calls",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "plays-eof",
+            "exit_code": 0,
+            "autopsy": "plays-eof: exit 0"
+          },
+          {
+            "name": "plays-ascii",
+            "exit_code": 0,
+            "autopsy": "plays-ascii: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "D"
+    },
+    {
+      "id": "w2",
+      "model": "haiku-4.5",
+      "focus": "Focus on simplicity and economy of implementation.",
+      "branch": "task-001-w2",
+      "worktree": "../task-001-w2",
+      "exit_code": 0,
+      "tests": 75,
+      "agent_tokens": "~61k/49",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "plays-eof",
+            "exit_code": 0,
+            "autopsy": "plays-eof: exit 0"
+          },
+          {
+            "name": "plays-ascii",
+            "exit_code": 0,
+            "autopsy": "plays-ascii: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "A"
+    },
+    {
+      "id": "w3",
+      "model": "sonnet-4.6",
+      "focus": "Focus on readability and maintainability.",
+      "branch": "task-001-w3",
+      "worktree": "../task-001-w3",
+      "exit_code": 0,
+      "tests": 88,
+      "agent_tokens": "~40k/27",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "plays-eof",
+            "exit_code": 0,
+            "autopsy": "plays-eof: exit 0"
+          },
+          {
+            "name": "plays-ascii",
+            "exit_code": 0,
+            "autopsy": "plays-ascii: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "E"
+    },
+    {
+      "id": "w4",
+      "model": "sonnet-4.6",
+      "focus": "Focus on defensive robustness: validate inputs and fail loudly on contract violations.",
+      "branch": "task-001-w4",
+      "worktree": "../task-001-w4",
+      "exit_code": 0,
+      "tests": 98,
+      "agent_tokens": "~45k/29",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "plays-eof",
+            "exit_code": 0,
+            "autopsy": "plays-eof: exit 0"
+          },
+          {
+            "name": "plays-ascii",
+            "exit_code": 0,
+            "autopsy": "plays-ascii: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "C"
+    },
+    {
+      "id": "w5",
+      "model": "opus-4.8",
+      "focus": "Focus on accessibility and display faithfulness to the spec's screens.",
+      "branch": "task-001-w5",
+      "worktree": "../task-001-w5",
+      "exit_code": 0,
+      "tests": 59,
+      "agent_tokens": "~46k/22",
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compiles",
+            "exit_code": 0,
+            "autopsy": "compiles: exit 0"
+          },
+          {
+            "name": "plays-eof",
+            "exit_code": 0,
+            "autopsy": "plays-eof: exit 0"
+          },
+          {
+            "name": "plays-ascii",
+            "exit_code": 0,
+            "autopsy": "plays-ascii: exit 0"
+          },
+          {
+            "name": "help",
+            "exit_code": 0,
+            "autopsy": "help: exit 0"
+          },
+          {
+            "name": "usage-error",
+            "exit_code": 0,
+            "autopsy": "usage-error: exit 0"
+          }
+        ]
+      },
+      "candidate_label": "B"
+    }
+  ],
+  "divergence": "file footprints identical (4th run; metric blind to content even at whole-program grain); pairwise content deltas 2.2k-3.2k lines, test counts 59-98; no round-2 trigger",
+  "review": {
+    "exit_code": 0,
+    "environment": "../task-001-review",
+    "defects_in_gate_passing_field": "3 SPEC-10 deviations (ASCII growth-stage collapse: A=1, B=2, D=4 distinct glyphs of 5) + 1 tip-7 violation (C: dead constants re-typed in ui.py); 0 engine-behavior bugs",
+    "verdict": {
+      "outcome": "adopt",
+      "candidate": "E",
+      "reasoning": "All five candidates pass the six gates and all hygiene checks; the round is decided on behavioral probing the gate cannot see. The two discriminators are (1) five DISTINCT growth stages under --ascii and (2) single-sourcing the win/loss screen text per tip 7. Only C and E keep all five stages distinct in ASCII (A collapses to 1 glyph, B to 2, D to 4 with near-win==win). Of those two, C carries a genuine tip-7 violation: it defines MSG_WIN_TITLE/MSG_LOSS_TITLE in game.py but leaves them DEAD while ui.py re-types the same header literals (two copies that can drift) \u2014 the most-repeated seed defect across prior rounds. E is the only candidate that keeps all five ASCII stages distinct AND imports the screen header/body constants into ui.py and tests (tip-7 clean), with dedicated SPEC 6.6/6.7 end screens, a guarded is_lost directly tested on the won-at-zero-water boundary (tip 10), try/finally-pinned win/loss e2e tests, and an explicit assertion that --ascii output contains zero non-ASCII chars. Its only blemishes are non-defects: an inert smell (the win/loss title held in status_message contains an emoji, but the end-screen renderer ignores that field so no ASCII leak ever occurs \u2014 verified empirically) and a literal-wording nit (the growth glyph derives win/loss from predicates rather than the state flags, which agree on every reachable state). No behavioral defect was found in E. C is a close second and would also be defensible; B is the most readable but its ASCII stages collapse to 2; A lacks dedicated end screens and drops the loss water-sense text.",
+      "progression": "E delivers the complete game in one shot \u2014 engine, UI, CLI, and a 88-test suite \u2014 from the base commit (no prior merged Word Garden code existed; this is round 1 of WG5). It builds directly on the seeded cross-project tips and visibly absorbs them: injectable input_fn/output_fn/rng with a module-level (non-seeded) random default (tip 6); argparse with no SystemExit swallowing so --help exits 0 and usage errors exit 2 (tip 4); select_word/water_for that raise ValueError on unknown difficulty and empty pool, with tests forcing the path (tip 5); a standalone is_lost carrying its own not-won guard and a dedicated test on the won-at-zero-water boundary (tip 10); message constants single-sourced and imported into ui.py and tests, including the win/loss screen headers and bodies (tip 7); forced-scenario win/loss e2e tests with a pinned word restored in try/finally (tips 3, 8); and faithful SPEC 6.6/6.7 end screens whose terminal text is asserted, not just the flags (tip 1). What is newly proven this round and feeds the next briefing as tips 11-15: the --ascii fallback must keep the five growth stages mutually DISTINCT (not just emoji-free) \u2014 a collapse the gate cannot catch and which sank A/B/D; dedicated end screens must carry both the SPEC header and the out-of-water text; state fields must stay render-neutral (no embedded glyphs); the win/loss render branch should read the state flags rather than recompute predicates; and win/loss screen text is message text governed by tip 7. E is the cleanest embodiment of these, so adopting it advances the merged state to a fully playable, spec-faithful game while the new tips harden the field against the ASCII-collapse and screen-text-duplication defects that this round exposed."
+    }
+  }
+}

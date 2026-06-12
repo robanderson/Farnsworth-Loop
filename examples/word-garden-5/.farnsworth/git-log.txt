@@ -1,0 +1,8 @@
+* fee04a0 task-001 attestation: GOAL MET; loop exit DONE at 1 iteration; closing metrics and process findings
+* a82f67e task-001 audit: run log, review, blind sketch, candidate diffs, attribution (unsealed post-verdict)
+* 861a002 Good news, everyone! ASCII mode must keep the five growth stages distinct; end screens are dedicated, render-neutral, flag-driven, single-sourced (tips 11-15 from task-001 review)
+*   c8271d3 task-001: adopt candidate E (w3, sonnet-4.6, readability focus) — complete Word Garden in one shot
+|\  
+| * 5bf4833 feat: implement complete Word Garden game (task-001)
+|/  
+* 4574249 seed: SPEC, GOAL contract, fleet config, 10-entry cross-project tips seed, task-001 brief
