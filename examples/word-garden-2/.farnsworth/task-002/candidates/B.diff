@@ -1,0 +1,873 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..63a82f8
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,107 @@
++# Word Garden
++
++> Word Garden is a small TUI game designed as a more cheerful alternative to Hangman. It is intended as a slightly more adventurous "Hello World" project for testing AI-assisted software development. The game includes input validation, state management, a simple loop, win/loss conditions, and a friendly terminal interface.
++
++Word Garden is a friendly terminal word-guessing game. Guess the hidden word before the garden runs out of water. It is like Hangman, but with plants instead of gallows.
++
++## How to Play
++
++Run the game from the repo root:
++
++```bash
++python3 -m word_garden
++```
++
++With options:
++
++```bash
++python3 -m word_garden --difficulty easy
++python3 -m word_garden --difficulty hard
++python3 -m word_garden --ascii
++python3 -m word_garden --difficulty normal --ascii
++```
++
++## Options
++
++| Option | Values | Default | Description |
++|---|---|---|---|
++| `--difficulty` | `easy`, `normal`, `hard` | `normal` | Controls word length and starting water |
++| `--ascii` | flag | off | Uses plain ASCII symbols instead of emoji |
++
++### Difficulty levels
++
++| Difficulty | Water | Word length |
++|---|---|---|
++| Easy | 8 | 4–6 letters |
++| Normal | 6 | 5–8 letters |
++| Hard | 4 | 7+ letters |
++
++## Rules
++
++1. A random word is chosen and displayed as blanks: `_ _ _ _ _ _`
++2. Guess one letter at a time.
++3. A correct guess reveals all matching positions. The garden grows.
++4. An incorrect guess costs one unit of water and causes a weed to appear.
++5. Win by revealing the whole word before the water runs out.
++6. Lose if water reaches zero before the word is fully revealed.
++
++Invalid input (empty, multiple characters, numbers, symbols) is rejected and does not consume water.
++
++## Sample Screen
++
++```
++🌱 Word Garden
++
++Plant:  🌿
++
++Word:      G _ R _ E _
++Guessed:   A E G R
++Water:  4/6 💧💧💧💧
++Weeds:  2 🌿🌿
++
++Good guess! The garden grows.
++
++Guess a letter:
++```
++
++### ASCII mode
++
++```
++Word Garden
++
++Plant:  *
++
++Word:      G _ R _ E _
++Guessed:   A E G R
++Water:  4/6 [****--]
++Weeds:  2 [--]
++
++Good guess! The garden grows.
++
++Guess a letter:
++```
++
++## Exit
++
++Press `Ctrl-D` (EOF) or `Ctrl-C` at any time to quit cleanly.
++
++## Project Structure
++
++```
++word_garden/
++  __init__.py     — public API re-exports
++  __main__.py     — python3 -m word_garden entry point
++  game.py         — game state and rules (pure logic, no I/O)
++  words.py        — word list and difficulty-aware selection
++  ui.py           — terminal rendering (pure rendering, no I/O)
++  main.py         — game loop and argument parsing (only I/O module)
++tests/
++  test_game.py    — engine tests
++  test_ui.py      — UI and integration tests
++```
++
++## Running Tests
++
++```bash
++python3 -m unittest discover -s tests
++```
+diff --git a/tests/test_ui.py b/tests/test_ui.py
+new file mode 100644
+index 0000000..d336997
+--- /dev/null
++++ b/tests/test_ui.py
+@@ -0,0 +1,510 @@
++"""Tests for word_garden.ui (rendering) and word_garden.main (game loop).
++
++Covers SPEC.md sections 9, 10, 15, 18 and task-002 acceptance criteria.
++"""
++
++from __future__ import annotations
++
++import random
++import unittest
++
++from word_garden.game import GameState, apply_guess, new_game
++from word_garden.ui import loss_screen, render, win_screen
++from word_garden.main import main
++
++
++# ---------------------------------------------------------------------------
++# Helpers
++# ---------------------------------------------------------------------------
++
++def make_state(secret_word: str = "GARDEN", water: int = 6) -> GameState:
++    """Build a known GameState without relying on random selection."""
++    return GameState(
++        secret_word=secret_word,
++        guessed_letters=set(),
++        remaining_water=water,
++        weed_count=0,
++        max_water=water,
++    )
++
++
++def scripted_main(inputs: list[str], difficulty: str = "normal") -> tuple[int, list[str]]:
++    """Run main() with a scripted sequence of inputs, capturing output.
++
++    Returns (exit_code, list_of_output_lines).
++    Raises EOFError automatically after the inputs are exhausted to simulate
++    Ctrl-D if the game hasn't ended yet.
++    """
++    inputs_iter = iter(inputs)
++    captured: list[str] = []
++
++    def fake_input(prompt: str = "") -> str:
++        try:
++            return next(inputs_iter)
++        except StopIteration:
++            raise EOFError
++
++    def fake_print(*args, **kwargs) -> None:
++        sep = kwargs.get("sep", " ")
++        end = kwargs.get("end", "\n")
++        text = sep.join(str(a) for a in args)
++        captured.append(text)
++
++    code = main(
++        argv=["--difficulty", difficulty],
++        input_fn=fake_input,
++        output_fn=fake_print,
++    )
++    return code, captured
++
++
++# ---------------------------------------------------------------------------
++# render() — emoji mode
++# ---------------------------------------------------------------------------
++
++class RenderEmojiModeTests(unittest.TestCase):
++    """Basic structure and accessibility requirements (SPEC.md 9, 18)."""
++
++    def test_contains_title(self):
++        state = make_state("GARDEN")
++        output = render(state)
++        self.assertIn("Word Garden", output)
++
++    def test_contains_masked_word(self):
++        state = make_state("GARDEN")
++        output = render(state)
++        # All blanks at start.
++        self.assertIn("_ _ _ _ _ _", output)
++
++    def test_water_label_and_count(self):
++        state = make_state("GARDEN", water=6)
++        output = render(state)
++        # Accessibility: text label plus numeric fraction.
++        self.assertIn("Water:", output)
++        self.assertIn("6/6", output)
++
++    def test_weed_label_and_count(self):
++        state = make_state("GARDEN", water=6)
++        output = render(state)
++        self.assertIn("Weeds:", output)
++        self.assertIn("0", output)
++
++    def test_guessed_letters_sorted(self):
++        state = make_state("GARDEN")
++        apply_guess(state, "R")
++        apply_guess(state, "A")
++        output = render(state)
++        self.assertIn("A R", output)
++
++    def test_status_message_shown(self):
++        state = make_state("GARDEN")
++        apply_guess(state, "G")
++        output = render(state)
++        self.assertIn(state.status_message, output)
++
++    def test_no_status_message_when_empty(self):
++        state = make_state("GARDEN")
++        # Fresh state has empty status message.
++        output = render(state)
++        # Just check no trailing blank lines beyond what we expect.
++        self.assertEqual(state.status_message, "")
++
++    def test_emoji_water_symbols_present(self):
++        state = make_state("GARDEN", water=3)
++        output = render(state)
++        self.assertIn("💧", output)
++
++    def test_emoji_weed_symbols_present(self):
++        state = make_state("GARDEN", water=6)
++        apply_guess(state, "Z")  # wrong guess -> 1 weed
++        output = render(state)
++        self.assertIn("🌿", output)
++
++    def test_partial_water_shown(self):
++        state = make_state("GARDEN", water=6)
++        apply_guess(state, "Z")  # water now 5
++        output = render(state)
++        self.assertIn("5/6", output)
++
++
++# ---------------------------------------------------------------------------
++# render() — ascii mode
++# ---------------------------------------------------------------------------
++
++class RenderAsciiModeTests(unittest.TestCase):
++    """ASCII mode must contain NO non-ASCII characters (SPEC.md 10, 18)."""
++
++    def _assert_pure_ascii(self, text: str) -> None:
++        for i, ch in enumerate(text):
++            self.assertLess(
++                ord(ch), 128,
++                f"Non-ASCII character {ch!r} (U+{ord(ch):04X}) found at position {i}",
++            )
++
++    def test_ascii_output_contains_no_non_ascii_chars(self):
++        state = make_state("GARDEN", water=6)
++        apply_guess(state, "G")  # one correct guess
++        apply_guess(state, "Z")  # one wrong guess
++        output = render(state, ascii_mode=True)
++        self._assert_pure_ascii(output)
++
++    def test_ascii_mode_still_has_water_label_and_count(self):
++        state = make_state("GARDEN", water=6)
++        output = render(state, ascii_mode=True)
++        self.assertIn("Water:", output)
++        self.assertIn("6/6", output)
++
++    def test_ascii_mode_still_has_weed_label_and_count(self):
++        state = make_state("GARDEN", water=6)
++        output = render(state, ascii_mode=True)
++        self.assertIn("Weeds:", output)
++
++    def test_ascii_water_bracket_symbols(self):
++        state = make_state("GARDEN", water=3)
++        output = render(state, ascii_mode=True)
++        self.assertIn("[", output)
++        self.assertIn("***", output)
++
++    def test_ascii_weed_bracket_symbols(self):
++        state = make_state("GARDEN", water=6)
++        apply_guess(state, "Z")  # 1 weed
++        apply_guess(state, "Q")  # 2 weeds
++        output = render(state, ascii_mode=True)
++        self.assertIn("--", output)
++
++    def test_ascii_title_no_emoji(self):
++        state = make_state()
++        output = render(state, ascii_mode=True)
++        self.assertIn("Word Garden", output)
++        self._assert_pure_ascii(output)
++
++    def test_win_screen_ascii_no_non_ascii(self):
++        state = make_state("CAB", water=6)
++        for ch in "CAB":
++            apply_guess(state, ch)
++        output = win_screen(state, ascii_mode=True)
++        self._assert_pure_ascii(output)
++
++    def test_loss_screen_ascii_no_non_ascii(self):
++        state = make_state("GARDEN", water=2)
++        apply_guess(state, "Q")
++        apply_guess(state, "Z")
++        output = loss_screen(state, ascii_mode=True)
++        self._assert_pure_ascii(output)
++
++
++# ---------------------------------------------------------------------------
++# Growth stages
++# ---------------------------------------------------------------------------
++
++class GrowthStageTests(unittest.TestCase):
++    """render() reflects the correct growth stage emoji (SPEC.md section 10)."""
++
++    def test_start_stage_emoji(self):
++        state = make_state("GARDEN")
++        output = render(state)
++        # Start stage: 🌱
++        self.assertIn("🌱", output)
++
++    def test_progress_stage_emoji(self):
++        # Guess 1 of 5 unique letters in GARDEN (less than 75%).
++        state = make_state("GARDEN")
++        apply_guess(state, "G")
++        output = render(state)
++        # Progress stage: 🌿 for plant, separate from weed symbol in output.
++        self.assertIn("🌿", output)
++
++    def test_near_win_stage_emoji(self):
++        # GARDEN has 6 unique letters: G, A, R, D, E, N.
++        # Reveal 5 of 6 = 83% >= 75% => near_win
++        state = make_state("GARDEN")
++        for ch in "GARDE":
++            apply_guess(state, ch)
++        output = render(state)
++        self.assertIn("🌷", output)
++
++    def test_win_stage_emoji(self):
++        state = make_state("CAB", water=6)
++        for ch in "CAB":
++            apply_guess(state, ch)
++        output = render(state)
++        self.assertIn("🌻", output)
++
++    def test_loss_stage_emoji(self):
++        state = make_state("GARDEN", water=2)
++        apply_guess(state, "Q")
++        apply_guess(state, "Z")
++        output = render(state)
++        self.assertIn("🥀", output)
++
++    def test_start_stage_ascii(self):
++        state = make_state("GARDEN")
++        output = render(state, ascii_mode=True)
++        # ASCII start: "."
++        self.assertIn(".", output)
++
++    def test_win_stage_ascii(self):
++        state = make_state("CAB", water=6)
++        for ch in "CAB":
++            apply_guess(state, ch)
++        output = render(state, ascii_mode=True)
++        self.assertIn("@", output)
++
++    def test_loss_stage_ascii(self):
++        state = make_state("GARDEN", water=2)
++        apply_guess(state, "Q")
++        apply_guess(state, "Z")
++        output = render(state, ascii_mode=True)
++        self.assertIn("X", output)
++
++
++# ---------------------------------------------------------------------------
++# win_screen / loss_screen
++# ---------------------------------------------------------------------------
++
++class WinScreenTests(unittest.TestCase):
++    def test_win_screen_contains_word(self):
++        state = make_state("GARDEN")
++        for ch in "GARDEN":
++            apply_guess(state, ch)
++        output = win_screen(state)
++        self.assertIn("GARDEN", output)
++
++    def test_win_screen_contains_bloom(self):
++        state = make_state("GARDEN")
++        output = win_screen(state)
++        self.assertIn("Bloom!", output)
++
++    def test_win_screen_contains_thriving(self):
++        state = make_state("GARDEN")
++        output = win_screen(state)
++        self.assertIn("thriving", output)
++
++    def test_win_screen_emoji_mode(self):
++        state = make_state("GARDEN")
++        output = win_screen(state, ascii_mode=False)
++        self.assertIn("🌻", output)
++
++
++class LossScreenTests(unittest.TestCase):
++    def test_loss_screen_reveals_word(self):
++        state = make_state("GARDEN", water=2)
++        apply_guess(state, "Q")
++        apply_guess(state, "Z")
++        output = loss_screen(state)
++        self.assertIn("GARDEN", output)
++
++    def test_loss_screen_contains_water_message(self):
++        state = make_state("GARDEN", water=2)
++        output = loss_screen(state)
++        self.assertIn("water", output.lower())
++
++    def test_loss_screen_encouragement(self):
++        state = make_state("GARDEN", water=2)
++        output = loss_screen(state)
++        self.assertIn("Try again", output)
++
++    def test_loss_screen_emoji_mode(self):
++        state = make_state("GARDEN")
++        output = loss_screen(state, ascii_mode=False)
++        self.assertIn("🥀", output)
++
++
++# ---------------------------------------------------------------------------
++# Scripted end-to-end main() tests
++# ---------------------------------------------------------------------------
++
++class MainWinTest(unittest.TestCase):
++    """A scripted game that ends in a win."""
++
++    def test_scripted_win_shows_win_screen(self):
++        # CAB: easy 3-letter word does not exist in the word list, so use a
++        # real word. We force 'easy' difficulty and use 'GARDEN' by monkeypatching
++        # new_game via injected inputs that spell out a known word.
++        # Strategy: use MEADOW (6 letters), normal difficulty, water=6.
++        # Guess all letters of MEADOW with no wrong guesses.
++        inputs = list("MEADOW")
++        code, output = scripted_main(inputs, difficulty="normal")
++        full_output = "\n".join(output)
++        # We can't guarantee MEADOW was selected, so just check a win happened.
++        # Instead, use a deterministic approach by patching new_game directly.
++        self.assertEqual(code, 0)
++
++    def test_deterministic_win(self):
++        """Force a specific word by monkeypatching new_game in main."""
++        import word_garden.main as wg_main
++        import word_garden.game as wg_game
++
++        original_new_game = wg_main.new_game
++        test_state = GameState(
++            secret_word="CAT",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        wg_main.new_game = lambda difficulty: test_state
++
++        captured: list[str] = []
++        inputs_iter = iter(["C", "A", "T"])
++
++        def fake_input(prompt: str = "") -> str:
++            try:
++                return next(inputs_iter)
++            except StopIteration:
++                raise EOFError
++
++        def fake_print(*args, **kwargs) -> None:
++            captured.append(" ".join(str(a) for a in args))
++
++        try:
++            code = wg_main.main(argv=[], input_fn=fake_input, output_fn=fake_print)
++        finally:
++            wg_main.new_game = original_new_game
++
++        full = "\n".join(captured)
++        self.assertEqual(code, 0)
++        self.assertIn("Bloom!", full)
++        self.assertIn("CAT", full)
++
++
++class MainLossTest(unittest.TestCase):
++    """A scripted game that ends in a loss."""
++
++    def test_deterministic_loss(self):
++        """Force a loss by patching new_game and using only wrong guesses."""
++        import word_garden.main as wg_main
++
++        original_new_game = wg_main.new_game
++        test_state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=3,
++            weed_count=0,
++            max_water=3,
++        )
++        wg_main.new_game = lambda difficulty: test_state
++
++        captured: list[str] = []
++        inputs_iter = iter(["Q", "X", "Z"])
++
++        def fake_input(prompt: str = "") -> str:
++            try:
++                return next(inputs_iter)
++            except StopIteration:
++                raise EOFError
++
++        def fake_print(*args, **kwargs) -> None:
++            captured.append(" ".join(str(a) for a in args))
++
++        try:
++            code = wg_main.main(argv=[], input_fn=fake_input, output_fn=fake_print)
++        finally:
++            wg_main.new_game = original_new_game
++
++        full = "\n".join(captured)
++        self.assertEqual(code, 0)
++        self.assertIn("water", full.lower())
++        self.assertIn("GARDEN", full)
++
++
++class MainEofTest(unittest.TestCase):
++    def test_eof_exits_cleanly(self):
++        captured: list[str] = []
++
++        def fake_input(prompt: str = "") -> str:
++            raise EOFError
++
++        def fake_print(*args, **kwargs) -> None:
++            captured.append(" ".join(str(a) for a in args))
++
++        code = main(argv=[], input_fn=fake_input, output_fn=fake_print)
++        full = "\n".join(captured)
++        self.assertEqual(code, 0)
++        self.assertIn("Goodbye", full)
++
++
++class MainInvalidInputTest(unittest.TestCase):
++    def test_invalid_input_does_not_consume_water(self):
++        """Invalid input shows error and re-prompts without touching state."""
++        import word_garden.main as wg_main
++
++        original_new_game = wg_main.new_game
++        test_state = GameState(
++            secret_word="CAT",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        wg_main.new_game = lambda difficulty: test_state
++
++        captured: list[str] = []
++        # First give invalid input, then valid guesses to finish the game.
++        inputs_iter = iter(["123", "C", "A", "T"])
++
++        def fake_input(prompt: str = "") -> str:
++            try:
++                return next(inputs_iter)
++            except StopIteration:
++                raise EOFError
++
++        def fake_print(*args, **kwargs) -> None:
++            captured.append(" ".join(str(a) for a in args))
++
++        try:
++            code = wg_main.main(argv=[], input_fn=fake_input, output_fn=fake_print)
++        finally:
++            wg_main.new_game = original_new_game
++
++        full = "\n".join(captured)
++        self.assertEqual(code, 0)
++        # Water should have stayed at 6 (no wrong guesses, no invalid penalty)
++        self.assertIn("6/6", full)
++        self.assertIn("Bloom!", full)
++
++
++class MainAsciiModeTest(unittest.TestCase):
++    def test_ascii_mode_flag_no_non_ascii_in_output(self):
++        import word_garden.main as wg_main
++
++        original_new_game = wg_main.new_game
++        test_state = GameState(
++            secret_word="CAT",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        wg_main.new_game = lambda difficulty: test_state
++
++        captured: list[str] = []
++        inputs_iter = iter(["C", "A", "T"])
++
++        def fake_input(prompt: str = "") -> str:
++            try:
++                return next(inputs_iter)
++            except StopIteration:
++                raise EOFError
++
++        def fake_print(*args, **kwargs) -> None:
++            captured.append(" ".join(str(a) for a in args))
++
++        try:
++            code = wg_main.main(
++                argv=["--ascii"], input_fn=fake_input, output_fn=fake_print
++            )
++        finally:
++            wg_main.new_game = original_new_game
++
++        full = "\n".join(captured)
++        self.assertEqual(code, 0)
++        for i, ch in enumerate(full):
++            self.assertLess(
++                ord(ch), 128,
++                f"Non-ASCII char {ch!r} at index {i} in ASCII-mode output",
++            )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/word_garden/__main__.py b/word_garden/__main__.py
+new file mode 100644
+index 0000000..978e25b
+--- /dev/null
++++ b/word_garden/__main__.py
+@@ -0,0 +1,7 @@
++"""Entry point for ``python3 -m word_garden``."""
++
++import sys
++
++from word_garden.main import main
++
++sys.exit(main())
+diff --git a/word_garden/main.py b/word_garden/main.py
+new file mode 100644
+index 0000000..45a583a
+--- /dev/null
++++ b/word_garden/main.py
+@@ -0,0 +1,82 @@
++"""Main game loop for Word Garden — the only I/O module.
++
++Entry point: :func:`main`. Use ``python3 -m word_garden`` to play.
++See SPEC.md sections 15, 20, 21.
++"""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from typing import Callable
++
++from word_garden.game import apply_guess, new_game, validate_guess
++from word_garden.ui import loss_screen, render, win_screen
++
++
++def main(
++    argv: list[str] | None = None,
++    input_fn: Callable[..., str] = input,
++    output_fn: Callable[..., None] = print,
++) -> int:
++    """Run one game session, returning an exit code (0 = clean exit).
++
++    *argv* is forwarded to argparse; ``None`` uses ``sys.argv[1:]``.
++    *input_fn* and *output_fn* are injectable for testing.
++    """
++    parser = argparse.ArgumentParser(
++        prog="word_garden",
++        description="Word Garden — a friendly terminal word-guessing game.",
++    )
++    parser.add_argument(
++        "--difficulty",
++        choices=["easy", "normal", "hard"],
++        default="normal",
++        help="Difficulty level (default: normal).",
++    )
++    parser.add_argument(
++        "--ascii",
++        action="store_true",
++        default=False,
++        dest="ascii_mode",
++        help="Use ASCII fallback instead of emoji.",
++    )
++    args = parser.parse_args(argv)
++
++    state = new_game(args.difficulty)
++
++    try:
++        while not state.game_over:
++            output_fn(render(state, ascii_mode=args.ascii_mode))
++            output_fn("")
++
++            try:
++                raw = input_fn("Guess a letter: ")
++            except EOFError:
++                output_fn("")
++                output_fn("Goodbye! Come back and grow a new garden soon.")
++                return 0
++
++            letter, error = validate_guess(raw)
++            if letter is None:
++                output_fn(error)
++                continue
++
++            apply_guess(state, letter)
++
++        # Game ended — show the final screen.
++        if state.won:
++            output_fn(win_screen(state, ascii_mode=args.ascii_mode))
++        else:
++            output_fn(loss_screen(state, ascii_mode=args.ascii_mode))
++
++    except KeyboardInterrupt:
++        output_fn("")
++        output_fn("Goodbye! Come back and grow a new garden soon.")
++        return 0
++
++    return 0
++
++
++if __name__ == "__main__":  # pragma: no cover
++    sys.exit(main())
+diff --git a/word_garden/ui.py b/word_garden/ui.py
+new file mode 100644
+index 0000000..25023cb
+--- /dev/null
++++ b/word_garden/ui.py
+@@ -0,0 +1,137 @@
++"""Terminal UI rendering for Word Garden.
++
++Pure rendering — no I/O. Every function returns a string.
++See SPEC.md sections 5, 9, 10, 15, 18.
++"""
++
++from __future__ import annotations
++
++from word_garden.game import GameState, display_word
++
++# ---------------------------------------------------------------------------
++# Growth-stage glyphs
++# ---------------------------------------------------------------------------
++
++_STAGE_EMOJI = {
++    "start": "🌱",
++    "progress": "🌿",
++    "near_win": "🌷",
++    "win": "🌻",
++    "loss": "🥀",
++}
++
++_STAGE_ASCII = {
++    "start": ".",
++    "progress": "*",
++    "near_win": "+",
++    "win": "@",
++    "loss": "X",
++}
++
++_WATER_EMOJI = "💧"
++_WEED_EMOJI = "🌿"
++
++
++def _growth_stage(state: GameState) -> str:
++    """Return the growth stage key for the current state."""
++    if state.game_over and state.won:
++        return "win"
++    if state.game_over and not state.won:
++        return "loss"
++
++    # Fraction of letters revealed out of unique letters in the word.
++    unique_letters = set(state.secret_word)
++    revealed = unique_letters & state.guessed_letters
++    if not unique_letters:
++        fraction = 0.0
++    else:
++        fraction = len(revealed) / len(unique_letters)
++
++    if fraction == 0.0:
++        return "start"
++    elif fraction >= 0.75:
++        return "near_win"
++    else:
++        return "progress"
++
++
++def render(state: GameState, ascii_mode: bool = False) -> str:
++    """Return the full turn display for *state* (SPEC.md section 9).
++
++    Order: title, plant/garden status, masked word, guessed letters, water,
++    weeds, previous turn status message. The ``ascii_mode`` flag switches
++    between emoji and ASCII fallback (SPEC.md section 10 / 18).
++    """
++    stage_key = _growth_stage(state)
++
++    if ascii_mode:
++        glyphs = _STAGE_ASCII
++        title = "Word Garden"
++        plant_label = f"Plant:  {glyphs[stage_key]}"
++        water_symbols = "[" + "*" * state.remaining_water + "]"
++        weed_symbols = "[" + "-" * state.weed_count + "]"
++    else:
++        glyphs = _STAGE_EMOJI
++        title = f"{glyphs['start']} Word Garden"
++        plant_label = f"Plant:  {glyphs[stage_key]}"
++        water_symbols = _WATER_EMOJI * state.remaining_water
++        weed_symbols = _WEED_EMOJI * state.weed_count
++
++    word_display = display_word(state)
++
++    guessed_sorted = " ".join(sorted(state.guessed_letters))
++
++    # Accessibility (SPEC.md section 18): always include text label + count.
++    water_line = (
++        f"Water:  {state.remaining_water}/{state.max_water} {water_symbols}".rstrip()
++    )
++    weed_line = (
++        f"Weeds:  {state.weed_count} {weed_symbols}".rstrip()
++    )
++
++    lines = [
++        title,
++        "",
++        plant_label,
++        "",
++        f"Word:      {word_display}",
++        f"Guessed:   {guessed_sorted}",
++        water_line,
++        weed_line,
++    ]
++
++    if state.status_message:
++        lines.append("")
++        lines.append(state.status_message)
++
++    return "\n".join(lines)
++
++
++def win_screen(state: GameState, ascii_mode: bool = False) -> str:
++    """Return the win screen (SPEC.md section 6.6)."""
++    if ascii_mode:
++        header = "@  Bloom!"
++    else:
++        header = "🌻 Bloom!"
++
++    return "\n".join([
++        header,
++        "",
++        f"You guessed the word: {state.secret_word}",
++        "The garden is thriving.",
++    ])
++
++
++def loss_screen(state: GameState, ascii_mode: bool = False) -> str:
++    """Return the loss screen (SPEC.md section 6.7), revealing the word."""
++    if ascii_mode:
++        header = "X  The garden ran out of water."
++    else:
++        header = "🥀 The garden ran out of water."
++
++    return "\n".join([
++        header,
++        "",
++        f"The word was: {state.secret_word}",
++        "Try again and grow a new garden.",
++    ])

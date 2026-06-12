@@ -5,14 +5,24 @@ source, task briefs, anonymized candidate diffs, reviews, verdicts, run
 logs, the distilled `.code-tips.md`, and an orchestrator process log. Every
 decision in each example is reconstructible from the files alone.
 
+Each task also carries a thirty-second `summary.md` table
+(`.farnsworth/task-NNN/summary.md`, the output of
+`farnsworth report <task-id>`): one row per worker with its focus, gate
+result, and candidate label, then the verdict. These were generated for
+all recorded runs when the summary-table feature landed (2026-06-12);
+the Focus column reads `-` for these runs because focus-diversified
+dispatch (PRD Section 2.1) did not exist yet — both features await their
+first live tournament.
+
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
-| [`word-garden/`](word-garden/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
+| [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
+| [`word-garden-2/`](word-garden-2/) | The same game, rebuilt from the same spec as a controlled REPLICATION of run 1 (fresh seed, empty tips file) | 2 | adopt, adopt |
 
 ## Word Garden — how this example was produced
 
 The game was developed end-to-end by two Farnsworth iterations on
-2026-06-11, from the spec in [`word-garden/SPEC.md`](word-garden/SPEC.md):
+2026-06-11, from the spec in [`word-garden-1/SPEC.md`](word-garden-1/SPEC.md):
 
 - **task-001 (core engine):** full 5-worker blind tournament
   (2x Haiku 4.5, 2x Sonnet 4.6, 1x Opus 4.8). Gate 5/5. Verdict: ADOPT —
@@ -27,7 +37,7 @@ The game was developed end-to-end by two Farnsworth iterations on
 Play it:
 
 ```bash
-cd examples/word-garden
+cd examples/word-garden-1
 python3 -m word_garden            # emoji mode
 python3 -m word_garden --ascii    # ASCII fallback
 python3 -m word_garden --difficulty hard
@@ -98,9 +108,49 @@ Process findings, distilled from `.farnsworth/orchestrator-log.md`:
    seed repos and test fixtures must set `commit.gpgsign=false` locally
    (the loop's own test suite was fixed accordingly).
 
+## Word Garden 2 — the replication run (2026-06-12)
+
+Same spec, byte-identical task-001 brief, same fleet mix, same gate — re-run
+from a fresh seed with an EMPTY tips file, to see which run-1 findings
+reproduce. Full process report: [`word-garden-2/.farnsworth/orchestrator-log.md`](word-garden-2/.farnsworth/orchestrator-log.md).
+
+| | run 1 task-001 | run 2 task-001 | run 1 task-002 (tips) | run 2 task-002 (tips) |
+|---|---|---|---|---|
+| Gate | 5/5 | 5/5 | 3/3 | 3/3 |
+| Bugs in gate-passing field | 1 | 2 | 0 | 1 |
+| Winner | Opus | **Opus** ✓ | Sonnet | **Opus** ✗ |
+
+What replicated, and what didn't:
+
+1. **Replicated:** empty-tips round won by the strongest model; gate
+   filters mechanics while review catches real bugs in gate-passing code
+   (a "flags right, message wrong" terminal-guess defect in two
+   candidates); tips cut the field's defect rate (2 → 1); duplicated
+   dispatches absorbed harmlessly by the artifact-boundary rule; Haiku
+   spending the most motion for the weakest candidates.
+2. **Did NOT replicate:** the win moving down the cost ladder once tips
+   entered the briefing. Opus won both rounds. Conclusion folded into the
+   PRD: the durable, twice-reproduced effect of tips is the field's defect
+   FLOOR, not the winner's identity — track defects-per-round as the
+   primary learning signal, and treat per-model win rates as noise until
+   there are many more rounds.
+3. **New finding — memory is project-scoped, mistakes are not.** Run 2's
+   Haiku committed exactly the argparse defect (`try/except SystemExit`
+   swallowing usage exit codes) that run 1 had already distilled into
+   word-garden-1's tips — but this fresh project's memory was empty, and
+   its engine round produced no CLI tips. Proposed loop extension:
+   a small curated CROSS-PROJECT tips seed for round 1 of new projects.
+4. **Tip-phrasing finding, level 2:** run 1 learned advisory tips get
+   ignored; run 2 learned imperative tips ALSO get ignored outside their
+   stated scope (the MSG_*-reuse tip didn't say "applies to tests too";
+   2 of 3 workers string-matched literals in tests). Distillation rule now:
+   contract language AND explicit scope.
+
+Play it: identical commands to word-garden-1, from `examples/word-garden-2`.
+
 ## Reproducing with the CLI
 
-`word-garden/farnsworth.json` records the exact fleet this run emulated.
+`word-garden-1/farnsworth.json` records the exact fleet this run emulated.
 On a machine with an authenticated `claude` binary:
 
 ```bash

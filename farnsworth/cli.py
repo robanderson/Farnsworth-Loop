@@ -8,6 +8,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -15,6 +16,7 @@ from .config import ConfigError, DEFAULT_CONFIG_NAME
 from .gitutil import GitError, repo_toplevel
 from .housekeeping import clean
 from .loop import LoopError, run
+from .report import summary_table
 
 
 def build_parser():
@@ -44,36 +46,19 @@ def build_parser():
         action="store_true",
         help="also remove worktrees with uncommitted changes",
     )
+
+    report_p = sub.add_parser(
+        "report",
+        help="print the short what-happened table for a completed task",
+    )
+    report_p.add_argument("task_id", metavar="task-id", help="e.g. task-042")
     return parser
 
 
-def _print_summary(run_log, repo_root):
-    """Print ASCII-only summary of the run."""
+def _print_summary(run_log):
+    """Print the short what-happened table for the run."""
     print("")
-    print("Run summary for {0}".format(run_log["task_id"]))
-    print("")
-    for worker in run_log["workers"]:
-        gate = worker["gate"]
-        status = "PASS" if gate["passed"] else "FAIL"
-        label = ""
-        if worker["candidate_label"] is not None:
-            label = " [candidate {0}]".format(worker["candidate_label"])
-        print("worker {0}: gate {1}{2}".format(worker["id"], status, label))
-        for result in gate["results"]:
-            print("  - {0}".format(result["autopsy"]))
-    print("")
-
-    review = run_log.get("review")
-    if review is None:
-        print("No candidates passed gate; no review.")
-    else:
-        verdict = review["verdict"]
-        print(
-            "Verdict: {0} [candidate: {1}]".format(
-                verdict["outcome"], verdict["candidate"]
-            )
-        )
-        print("Reasoning: {0}".format(verdict["reasoning"]))
+    print(summary_table(run_log))
 
 
 def main(argv=None):
@@ -87,8 +72,7 @@ def main(argv=None):
             print("error: {0}".format(exc), file=sys.stderr)
             return 2
 
-        repo_root = repo_toplevel(os.getcwd())
-        _print_summary(run_log, repo_root)
+        _print_summary(run_log)
 
         # Exit code logic:
         # 0: valid verdict was produced (any outcome)
@@ -99,6 +83,28 @@ def main(argv=None):
             return 1
         else:
             return 0
+
+    if args.command == "report":
+        try:
+            repo_root = repo_toplevel(os.getcwd())
+        except GitError as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+        run_json = os.path.join(repo_root, ".farnsworth", args.task_id, "run.json")
+        try:
+            with open(run_json, "r", encoding="utf-8") as fh:
+                run_log = json.load(fh)
+        except FileNotFoundError:
+            print("error: no run log at {0}".format(run_json), file=sys.stderr)
+            return 2
+        except json.JSONDecodeError as exc:
+            print(
+                "error: {0} is not valid JSON: {1}".format(run_json, exc),
+                file=sys.stderr,
+            )
+            return 2
+        print(summary_table(run_log))
+        return 0
 
     if args.command == "clean":
         try:

@@ -14,7 +14,8 @@
         "--output-format",
         "json"
       ],
-      "timeout_seconds": 1800
+      "timeout_seconds": 1800,
+      "focus": "Focus on minimal code and simplicity"
     }
   ],
   "reviewer": {

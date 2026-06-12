@@ -110,11 +110,11 @@ round went 2 -> 0 once tips entered the briefing.
 ## Word Garden example — first external project (2026-06-11)
 
 The loop's first run against a project that is not itself:
-`examples/word-garden/`, a terminal word-guessing game built in two
+`examples/word-garden-1/`, a terminal word-guessing game built in two
 iterations (5-worker tournament for the core engine, triaged 3-worker
 tournament for the UI; both verdicts ADOPT). Full forensics and the
 process report live with the example: `examples/README.md` and
-`examples/word-garden/.farnsworth/orchestrator-log.md`.
+`examples/word-garden-1/.farnsworth/orchestrator-log.md`.
 
 Headline: the thesis generalized. No-tips round won by Opus; tips-in-
 briefing round won by Sonnet over Opus, with field defects falling from
@@ -159,3 +159,62 @@ What this hardened, now in the tool and PRD (Section 4.3):
 4. Manual-mode ledger discipline: record every dispatch id at launch,
    set a per-phase deadline, check transcript liveness at deadline,
    stop-verify-redispatch only what's missing.
+
+---
+
+## Word Garden 2 — first replication run (2026-06-12)
+
+The loop's first controlled replication: `examples/word-garden-2/`, the
+same spec, byte-identical task-001 brief, fleet, and gate as word-garden-1,
+re-seeded with an empty tips file. Both verdicts ADOPT; full process report
+in `examples/word-garden-2/.farnsworth/orchestrator-log.md`.
+
+Headline: the parts of the thesis that are mechanism replicated (review
+catches real bugs the gate passes; tips cut the field's defect rate 2 -> 1;
+duplicate dispatches absorbed by the artifact-boundary rule — it happened
+again, in both rounds). The part that was narrative did not: Opus won BOTH
+rounds, breaking the three-round cheaper-model-wins streak. PRD updated
+(Section 13, Section 7 third measurement note, new risk row): the loop's
+early learning signal is defects-per-round in gate-passing candidates, not
+winner identity. Two refinements queued: a cross-project tips seed for new
+projects (run 2 re-committed a defect run 1 had already distilled in the
+other project's tips), and a distillation rule upgrade — contract language
+AND explicit scope, after an imperative tip was ignored outside the scope
+it failed to state.
+
+---
+
+## Loop upgrade — summary tables and focus-diversified dispatch (2026-06-12)
+
+Two protocol upgrades, implemented directly in the tool (maintainer mode,
+not a tournament — the changes are to the loop itself, requested by the
+human after the Word Garden 2 replication):
+
+1. **Per-run summary table.** Every run now ends with a short
+   what-happened table (worker / focus / exit / gate / candidate /
+   ADOPTED, then verdict + reasoning), written to
+   `.farnsworth/<task-id>/summary.md`, printed by `farnsworth run`, and
+   reprintable with the new `farnsworth report <task-id>`. Generated
+   retroactively for all six recorded runs (loop tasks 001–002, both Word
+   Garden examples). Motivation: run.json is the contract, but nobody can
+   read a tournament's outcome from it in thirty seconds.
+
+2. **Focus directives.** Each worker in `farnsworth.json` may carry a
+   one-line focus ("Focus on runtime speed", "Focus on security", "Focus
+   on minimal dependencies", ...) appended to its briefing with an
+   explicit the-brief-wins precedence sentence. Motivation: every round
+   run so far produced IDENTICAL file footprints across the field — blind
+   same-family workers converge, which starves the review of variety and
+   the two-round trigger of signal. Foci force the field apart in
+   round/task 1; the reviewer receives the round's directives as a
+   sorted UNATTRIBUTED set (per-candidate focus would deanonymize);
+   `run.json` and the summary table record each worker's focus so
+   per-focus win rates can accumulate. Round 2 narrows: drop or re-aim
+   foci after distillation.
+
+PRD updated: new Section 2.1, Section 4.4 audit paragraph, MVP scope,
+risk row (focus read as contract amendment), milestone notes on M4/M5,
+two new acceptance criteria. Tests: 46 passing (focus isolation per
+worker, unattributed reviewer disclosure, table rendering, summary.md ==
+rendered run.json). First live exercise: the next tournament dispatched
+from this repo.
