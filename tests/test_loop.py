@@ -715,11 +715,16 @@ FAKE_REVIEWER_PY = (
 
 class TestConfig(unittest.TestCase):
     def test_default_config_when_absent(self):
+        # The default fleet is DELEGATE mode: subscription `claude -p` is
+        # capped since June 2026, so subprocess dispatch must never be the
+        # silent default for an Anthropic-model fleet (PRD Section 4.1b).
         cfg = config.Config.load(None)
-        # New default uses "workers" list with one entry.
         self.assertEqual(len(cfg.workers), 1)
         self.assertEqual(cfg.workers[0]["id"], "w1")
-        self.assertTrue(any("{prompt}" in a for a in cfg.workers[0]["command"]))
+        self.assertEqual(cfg.mode, "delegate")
+        self.assertIsNone(cfg.workers[0]["command"])
+        self.assertTrue(cfg.workers[0]["model"])
+        self.assertTrue(cfg.reviewer and cfg.reviewer["model"])
         self.assertEqual(cfg.gate[0]["name"], "tests")
 
     def test_invalid_config_rejected(self):

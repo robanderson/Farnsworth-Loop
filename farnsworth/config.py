@@ -13,33 +13,24 @@ import os
 
 DEFAULT_CONFIG_NAME = "farnsworth.json"
 
-# Used when no config file is found. The worker command is the form
-# word-garden-4's pre-flight proved runnable: `--setting-sources ""` isolates
-# without killing OAuth/keychain auth the way `--bare` does, and the scoped
-# --allowedTools grants are what headless acceptEdits workers need to test
-# and commit (PRD Section 8, the two config-fatality rows).
+# Used when no config file is found. Delegate dispatch (PRD Section 4.1b):
+# Anthropic-model fleets run as host-session subagents billed to the
+# subscription — from 15 June 2026, subscription `claude -p` draws from a
+# separate, CAPPED Agent SDK credit, which makes subprocess dispatch the
+# wrong default for the high-volume parallel fleets the loop runs. The
+# per-worker `command` form remains supported as the adapter for
+# third-party models (GLM, MiniMax, Qwen, local) and API-key hosts
+# (PRD Section 4.1).
 DEFAULT_CONFIG = {
     "workers": [
         {
             "id": "w1",
-            "command": [
-                "claude",
-                "-p",
-                "{prompt}",
-                "--setting-sources",
-                "",
-                "--model",
-                "claude-haiku-4-5",
-                "--permission-mode",
-                "acceptEdits",
-                "--allowedTools",
-                "Bash(python3:*)",
-                "Bash(git:*)",
-                "--output-format",
-                "json",
-            ],
+            "model": "claude-haiku-4-5",
         }
     ],
+    "reviewer": {
+        "model": "claude-opus-4-8",
+    },
     "gate": [
         {"name": "tests", "command": ["python3", "-m", "unittest", "discover"]}
     ],
@@ -89,10 +80,13 @@ def _parse_focus(obj, label):
 def _parse_dispatch(entry, label):
     """Return (command, model) for a worker/reviewer entry.
 
-    Exactly one of ``command`` (subprocess dispatch, e.g. ``claude -p`` or
-    any non-Anthropic CLI) or ``model`` (delegate dispatch: the host
-    session spawns a subagent on that Anthropic model, which bills to the
-    subscription rather than API credit) must be present.
+    Exactly one of ``model`` (delegate dispatch — the default and only
+    sanctioned mode for Anthropic models: the host session spawns a
+    subagent on that model, billed to the subscription; subscription
+    ``claude -p`` is separately capped since June 2026) or ``command``
+    (subprocess dispatch — the adapter for third-party models such as
+    GLM, MiniMax, Qwen, or local models, and for API-key hosts) must be
+    present.
     """
     command = entry.get("command")
     model = entry.get("model")

@@ -1,13 +1,17 @@
 """Delegate dispatch: workers and reviewer as host-session subagents.
 
-Subprocess dispatch (``claude -p``) bills to API / Agent-SDK credit. When a
-worker runs an Anthropic model, the cheaper path is standard agent
-delegation: the Claude Code session that orchestrates the loop spawns one
-subagent per worker, which draws on the subscription. A Python CLI cannot
-spawn those subagents itself — delegation is a capability of the host
-session — so the loop becomes PHASED around the two points where agents do
-the work. Every mechanical phase stays in the CLI; only dispatch is handed
-to the session:
+The default — and the only sanctioned mode for Anthropic models.
+Subprocess dispatch (``claude -p``) bills to API / Agent-SDK credit, and
+since June 2026 subscription ``claude -p`` draws from a separate, capped
+monthly credit — the wrong economics for the loop's high-volume parallel
+fleets. Delegation is standard agent dispatch instead: the Claude Code
+session that orchestrates the loop spawns one subagent per worker, which
+draws on the subscription. (Subprocess ``command`` workers remain the
+adapter for third-party models — GLM, MiniMax, Qwen, local — and
+API-key hosts.) A Python CLI cannot spawn host-session subagents itself —
+delegation is a capability of the host session — so the loop becomes
+PHASED around the two points where agents do the work. Every mechanical
+phase stays in the CLI; only dispatch is handed to the session:
 
   1. ``farnsworth run <brief>``   (delegate config) -> worktrees, per-worker
      briefing files, dispatch ledger. Exit 3: awaiting worker delegation.

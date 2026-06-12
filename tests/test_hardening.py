@@ -48,13 +48,17 @@ class TestExplicitConfig(unittest.TestCase):
         cfg = config.Config.load("/definitely/not/there.json")
         self.assertEqual(cfg.workers[0]["id"], "w1")
 
-    def test_default_worker_command_avoids_known_fatal_flags(self):
-        # word-garden-4 pre-flight: --bare kills OAuth, and headless
-        # acceptEdits without --allowedTools denies all Bash.
+    def test_default_fleet_is_delegate_not_subprocess(self):
+        # word-garden-4 pre-flight found the old subprocess default fatal
+        # twice over (--bare kills OAuth; headless acceptEdits denies all
+        # Bash). The strongest fix landed with the June 2026 subscription
+        # caps on `claude -p`: the default fleet carries no subprocess
+        # command at all — Anthropic models dispatch as host-session
+        # subagents (delegate mode), and `command` workers exist only as
+        # the third-party adapter.
         cfg = config.Config.load(None)
-        command = cfg.workers[0]["command"]
-        self.assertNotIn("--bare", command)
-        self.assertIn("--allowedTools", command)
+        self.assertEqual(cfg.mode, "delegate")
+        self.assertIsNone(cfg.workers[0]["command"])
 
 
 class TestExplicitConfigCli(LoopTestBase):

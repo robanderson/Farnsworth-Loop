@@ -440,13 +440,26 @@ python3 -m unittest discover -s tests   # 73 tests
 
 ## Reproducing with the CLI
 
-Word Garden 4 IS the CLI reproduction — start from
+> **Dispatch-mode note (v2.1):** the subprocess `claude -p` flow below is
+> the HISTORICAL record of how word-garden-4 ran, preserved because its
+> command-form lessons transfer to the future third-party adapter (GLM,
+> MiniMax, Qwen, local models — PRD Section 4.1). Since the June 2026
+> subscription caps on `claude -p`, Anthropic-model reproduction uses
+> **delegate dispatch** (PRD Section 4.1b, the CLI default): worker
+> entries carry `model` instead of `command` —
+> `wine-stock-report-generator-1/farnsworth.json` is the live example —
+> and the round runs as `farnsworth run` (exit 3) → spawn one subagent
+> per briefing from the orchestrating Claude Code session →
+> `farnsworth gate` (exit 3) → spawn the reviewer subagent →
+> `farnsworth finalize`.
+
+Word Garden 4 IS the subprocess-CLI reproduction — start from
 `word-garden-4/farnsworth.json`, which is the first fleet config proven to
 run live. (The configs recorded with runs 1–2 carry `--bare`, which never
 reads OAuth/keychain and so cannot authenticate on subscription hosts, and
 they lack the `--allowedTools` grants headless workers need to test and
 commit. Word Garden 4's pre-flight found both.) On a machine with an
-authenticated `claude` binary:
+authenticated `claude` binary and uncapped `claude -p` (API-key host):
 
 ```bash
 git init my-word-garden && cd my-word-garden
@@ -473,11 +486,9 @@ Then review the verdict, merge the winning branch, install the reviewer's
 (word-garden-4 used a per-task `--config farnsworth-002.json` for its
 triaged round).
 
-Since 2026-06-12 there is a cheaper path for Anthropic-model fleets:
-**delegate dispatch** (PRD Section 4.1b) — worker entries carry `model`
-instead of `command`, `farnsworth run` prepares worktrees and briefing
-files and exits 3, the orchestrating Claude Code session spawns one
-subagent per briefing (billed to the subscription, not API credit), then
-`farnsworth gate <task-id>` and `farnsworth finalize <task-id>` complete
-the round. The recorded word-garden configs predate this and keep the
-subprocess form.
+For Anthropic-model fleets, delegate dispatch (the v2.1 default — see
+the note at the top of this section) is not merely cheaper but required:
+subscription `claude -p` is capped since June 2026. The recorded
+word-garden configs predate this and keep the subprocess form as the
+forensic record; wine-stock-report-generator-1 is the first recorded
+delegate-dispatch run.
