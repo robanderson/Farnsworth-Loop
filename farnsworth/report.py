@@ -3,6 +3,12 @@
 ``summary_table`` turns a run log (the ``run.json`` contract) into a small
 GitHub-flavored markdown table plus the verdict, readable both in a terminal
 and when committed next to the run log. Output is ASCII-only.
+
+When the run log's review block carries a ``progression`` note (the
+reviewer's post-verdict explanation of how the merged code advances the
+previously adopted baseline), it is rendered after the reasoning, so the
+summary answers both questions a reader has: who won the round, and how
+the project moved.
 """
 
 from __future__ import annotations
@@ -69,5 +75,9 @@ def summary_table(run_log):
         lines.append("")
         reasoning = verdict.get("reasoning") or verdict.get("rationale") or ""
         lines.append("**Reasoning:** {0}".format(reasoning))
+        progression = review.get("progression") if review else None
+        if progression:
+            lines.append("")
+            lines.append("**Progression:** {0}".format(progression))
     lines.append("")
     return "\n".join(lines)

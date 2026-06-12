@@ -14,6 +14,16 @@ the Focus column reads `-` for runs 1–2 because focus-diversified
 dispatch (PRD Section 2.1) did not exist yet. Run 3 was the first live
 tournament for both features.
 
+Since 2026-06-12 each merging verdict's summary also ends with a
+**progression note** (PRD Section 4.4): the reviewer's explanation of how
+the adopted code advances the previously adopted baseline — what it built
+on, what is new, what got better, and which distilled lessons it visibly
+absorbed. The verdict reasoning says why the winner beat the round's
+field; the progression note says how the project moved between tasks
+(e.g. how word-garden-3's accepted task-002 build improves on its
+task-001 engine). Present for word-garden-3's two tasks (recorded
+retroactively in their `run.json`); earlier runs predate the feature.
+
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
 | [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |

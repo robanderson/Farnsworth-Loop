@@ -86,6 +86,44 @@ class TestSummaryTable(unittest.TestCase):
         self.assertIn("No candidates passed the gate; no review was run.", table)
         self.assertNotIn("ADOPTED", table)
 
+    def test_progression_note_rendered_when_present(self):
+        workers = [_worker("w1", label="A")]
+        review = {
+            "exit_code": 0,
+            "verdict": {
+                "outcome": "adopt",
+                "candidate": "A",
+                "reasoning": "A is correct and complete.",
+            },
+            "progression": (
+                "Built on the task-001 engine (frozen); adds the UI layer "
+                "and raises the suite from 80 to 105 tests."
+            ),
+        }
+        table = summary_table(_run_log(workers, review))
+
+        self.assertIn(
+            "**Progression:** Built on the task-001 engine (frozen); "
+            "adds the UI layer and raises the suite from 80 to 105 tests.",
+            table,
+        )
+        # Progression follows the verdict block, never precedes it.
+        self.assertLess(table.index("**Verdict:**"), table.index("**Progression:**"))
+
+    def test_progression_absent_renders_no_block(self):
+        workers = [_worker("w1", label="A")]
+        review = {
+            "exit_code": 0,
+            "verdict": {
+                "outcome": "adopt",
+                "candidate": "A",
+                "reasoning": "A is correct and complete.",
+            },
+        }
+        table = summary_table(_run_log(workers, review))
+
+        self.assertNotIn("**Progression:**", table)
+
     def test_synthesize_verdict_has_no_adopted_row(self):
         workers = [_worker("w1", label="A")]
         review = {

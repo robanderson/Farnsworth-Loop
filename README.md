@@ -176,6 +176,8 @@ All loop state is file-based and inspectable: task briefs, candidate diffs, gate
 
 Every run additionally produces a short what-happened table — one row per worker (id, focus, exit, gate, candidate label, ADOPTED marker) plus the verdict and reasoning — written to `.farnsworth/<task-id>/summary.md`, printed at the end of `farnsworth run`, and reprintable any time with `farnsworth report <task-id>`. The table is the thirty-second read; `run.json` remains the contract of record.
 
+Whenever a verdict merges code, the summary also carries a reviewer-authored **progression note** (`review.progression` in `run.json`): how the merged code advances the previously adopted baseline — what it built on, what is new, what got better relative to the prior merged state, and which distilled lessons it visibly absorbed. The verdict reasoning explains why the winner beat the *field*; the progression note explains how the *project* moved. Without it, a reader of task-N's summary learns who won round N but not what round N added to rounds 1..N-1 — the exact question an outside user asks first. The reviewer writes it post-verdict (it has the cross-candidate and cross-task view); the orchestrator records it in `run.json` so `farnsworth report` reproduces it from the log alone.
+
 ## 5. MVP Scope
 
 In scope:
@@ -188,7 +190,7 @@ In scope:
 - Divergence-triggered two-round mode
 - Per-worker focus directives with unattributed disclosure to the reviewer (Section 2.1)
 - JSON run log per task with per-model costs (from `--output-format json`)
-- Run summary table: `.farnsworth/<task-id>/summary.md` + `farnsworth report <task-id>` (Section 4.4)
+- Run summary table: `.farnsworth/<task-id>/summary.md` + `farnsworth report <task-id>`, including the reviewer's progression note on merging verdicts (Section 4.4)
 - Housekeeping: per-command `timeout_seconds` and `farnsworth clean <task-id>` (Section 4.3)
 
 Explicit non-goals (MVP):
@@ -269,6 +271,7 @@ Later agents and reviewers score the implementation against this checklist:
 - [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
 - [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; six data points banked)*
 - [x] Every run yields a `summary.md` table a human can read in thirty seconds; `farnsworth report <task-id>` reprints it from `run.json` alone.
+- [x] Every merging verdict's summary carries a progression note explaining how the adopted code advances the previously adopted baseline, not just why it beat the field. *(introduced 2026-06-12 after Word Garden 3; present for both of that run's tasks)*
 - [x] Focus directives never reach the reviewer attributed to a candidate or worker id; each worker sees only its own focus.
 
 ## 11. Dogfooding Findings (tasks 001–002)
