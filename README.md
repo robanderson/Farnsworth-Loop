@@ -98,20 +98,32 @@ git history alone — no database, no hidden state.
 
 ## Quickstart
 
-```bash
-cd your-project            # a clean git repo
-# with dynamic workflows enabled (Claude Code ≥ 2.1.154):
-/farnsworth-task tasks/task-001.md
+**The conductor** (dynamic workflows, Claude Code ≥ 2.1.154): ask
+Claude to run the `farnsworth-task` workflow —
 
-# or phase by phase, any host:
-python3 -m farnsworth preflight        # canary before you spend
-python3 -m farnsworth run tasks/task-001.md   # worktrees + briefings
-#   …spawn one coder subagent per briefing…
-python3 -m farnsworth gate task-001    # gate, anonymize, brief the judge
-#   …spawn the judge subagent…
-python3 -m farnsworth finalize task-001
-python3 -m farnsworth adopt task-001 --clean   # merge + install lessons
-python3 -m farnsworth done             # goal met? 0 done / 1 keep looping
+```js
+{ repo: '/abs/path/to/your-project', brief: 'tasks/task-001.md',
+  fleet: [ /* optional override — confirmed in the Fleet phase */ ] }
+```
+
+— and watch it in `/workflows`: Fleet → R1 Explore → R1 Gate →
+R1 Judge → Distill → R2 Rebuild → R2 Gate → R2 Judge → Verify →
+Finalize, with live per-agent token counts and pause/stop keys.
+
+**The fallback** (any host — skills + CLI, phase by phase):
+
+```bash
+cd your-project                              # a clean git repo
+python3 -m farnsworth preflight              # canary the fleet first
+python3 -m farnsworth run tasks/task-001.md  # round-1 worktrees + briefings
+#   …spawn one coder subagent per briefing (blind, parallel)…
+python3 -m farnsworth gate task-001          # deadline-gated, anonymized
+#   …spawn the judge; install its distilled lessons;
+#    repeat run/gate/judge on the round-2 brief (clean-slate rebuild,
+#    champion relabeled into the review field)…
+python3 -m farnsworth finalize task-001-r2   # validate verdict → run.json
+python3 -m farnsworth adopt task-001-r2 --clean  # merge + install lessons
+python3 -m farnsworth done                   # goal probe: 0 done / 1 loop
 ```
 
 Every phase command takes `--json` for machine-readable output. Seed a
