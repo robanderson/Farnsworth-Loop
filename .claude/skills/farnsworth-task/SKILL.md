@@ -17,7 +17,24 @@ commands run from the repo root. Honor the CLI's exit codes exactly:
 0 done, 1 no candidates, 2 infrastructure/config error (stop and report,
 do not improvise around it), 3 awaiting delegation (your cue to act).
 
-## Phase 0 — Preflight (first dispatch of a session, or after config edits)
+## Phase 0 — Confirm the fleet (dynamic, never assumed)
+
+The fleet is a per-run choice, not a fixture. Before anything spends:
+read the workers and reviewer from `farnsworth.json` (or the `--config`
+the user named) and present the field — one line per worker: id,
+dispatch mode, model or command, focus. Unless the user already
+specified the fleet in this conversation, confirm it with
+`AskUserQuestion` (keep the configured fleet / edit it / abort).
+Anthropic models run as delegate `model` entries (subscription-billed
+subagents); anything with a CLI — GLM, MiniMax, Qwen, Codex, local
+models via Ollama / LM Studio / MLX — runs as `command` entries through
+the subprocess adapter (PRD 4.1), and such fleets execute end-to-end in
+plain `farnsworth run` rather than this skill's phased flow. One
+dispatch mode per fleet. Write any agreed changes to the config (with
+the user's confirmation — it is a protected contract file) before
+proceeding.
+
+## Phase 0.5 — Preflight (first dispatch of a session, or after config edits)
 
 ```bash
 python3 -m farnsworth preflight

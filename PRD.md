@@ -801,10 +801,19 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
    from Section 2.2, scripted), blind verdict-2 with the
    champion-survival negative result recorded, adversarial Verify, and
    finalize/adopt routed through whichever round's task owns the
-   winner. Plus `--json` conductor mode across the phase commands and
+   winner. Plus `--json` conductor mode across the phase commands,
    gate hardening from the word-garden-6 live run (per-command
    deadlines, stdin closed, commit-check-first, parallel worktree
-   gating with streamed progress). Open: M7's CLI mechanization of the
+   gating with streamed progress), and DYNAMIC FLEET SELECTION: the
+   workflow's Fleet phase resolves the field at launch (`args.fleet`
+   writes a run-scoped config; `args.config` names one; the repo
+   default is surfaced, never silent) and the skill's Phase 0 confirms
+   the fleet with the human before any dispatch — the recorded
+   2H/2S/1O mix is a default and an experiment, not a fixture. Open:
+   workflow conduction of subprocess/local fleets (today the Fleet
+   phase routes them to the CLI's end-to-end `run`), heterogeneous
+   delegate+command fields in a single round (the config enforces one
+   dispatch mode per fleet), M7's CLI mechanization of the
    verdict-1 schema and champion relabeling (replacing the scripted
    manual steps), gate-as-evidence for no-candidate explore rounds,
    per-agent token telemetry from `/workflows` into `run.json`,

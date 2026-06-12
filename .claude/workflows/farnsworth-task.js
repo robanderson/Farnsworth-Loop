@@ -12,9 +12,24 @@
 // installed between rounds, and the champion is relabeled into the
 // round-2 review field by the conductor's agents (PRD 2.2, M7 note).
 //
+// THE FLEET IS DYNAMIC, DECIDED AT LAUNCH — never assume the config's
+// default field. The runtime takes no mid-run input, so the conductor
+// session must confirm the fleet with the human BEFORE launching, then
+// pass it in args:
+//   - args.fleet:  a workers array (delegate `model` entries for Claude
+//     models; `command` entries for the third-party/local adapter — GLM,
+//     MiniMax, Qwen, Codex, Ollama / LM Studio / MLX). The Fleet phase
+//     writes it to a run-scoped config, merged with the repo config's
+//     reviewer/gate/goal. One dispatch mode per fleet (PRD 4.1b).
+//   - args.config: path to an existing alternate fleet config.
+//   - neither: the repo's farnsworth.json, surfaced in the Fleet phase
+//     so the choice is visible in /workflows, not silent.
+//
 // Launch with args, e.g.:
 //   { repo: '/home/user/word-garden-6', brief: 'tasks/task-001.md',
-//     farnsworthPath: '/home/user/Farnsworth-Loop' }
+//     farnsworthPath: '/home/user/Farnsworth-Loop',
+//     fleet: [{ id: 'w1', model: 'claude-haiku-4-5' },
+//             { id: 'w2', model: 'claude-sonnet-4-6' }] }
 // Monitor in /workflows (p pause, x stop, s save). Syntax per
 // code.claude.com/docs/en/workflows (June 2026).
 
@@ -25,6 +40,7 @@ export const meta = {
     '-> distill lessons -> clean-slate informed rebuild judged blind ' +
     'against the round-1 champion -> adversarial verify -> finalize',
   phases: [
+    { title: 'Fleet' },
     { title: 'R1 Prepare' },
     { title: 'R1 Explore' },
     { title: 'R1 Gate' },
@@ -47,6 +63,12 @@ const r2TaskId = `${taskId}-r2`;
 // The champion enters round 2's review field under a fixed spare label;
 // the verdict-2 judge sees only one more candidate among candidates.
 const CHAMPION_LABEL = 'Z';
+// Run-scoped fleet: args.fleet writes a config; args.config names one;
+// otherwise the repo default applies (and is surfaced, never silent).
+const fleetConfig = args.fleet
+  ? `.farnsworth/fleet-${taskId}.json`
+  : args.config || null;
+const cfg = fleetConfig ? ` --config ${fleetConfig}` : '';
 
 function tier(modelId) {
   if (modelId.includes('haiku')) return 'haiku';
@@ -92,7 +114,7 @@ const gateSchema = {
 function prepare(briefPath, id) {
   return agent(
     `cd ${repo} && run \`${pp}python3 -m farnsworth run ${briefPath} ` +
-      '--json`. Exit code 3 is SUCCESS (a phase boundary: coder agents ' +
+      `--json${cfg}\`. Exit code 3 is SUCCESS (a phase boundary: coder agents ` +
       'are next). If it exits 2 with a collision error, run ' +
       `\`${pp}python3 -m farnsworth clean ${id}\` once and retry. ` +
       'Relay the JSON it printed VERBATIM.',
@@ -123,12 +145,73 @@ function dispatchCoders(ledger, id, roundNote) {
 
 function runGate(id) {
   return agent(
-    `cd ${repo} && run \`${pp}python3 -m farnsworth gate ${id} --json\` ` +
+    `cd ${repo} && run \`${pp}python3 -m farnsworth gate ${id} --json${cfg}\` ` +
       '(per-worker progress streams on stderr; one JSON object lands on ' +
       'stdout). Exit 3 means candidates are ready; exit 1 means none ' +
       'passed; exit 2 is an error. Report the exit code and relay the ' +
       'JSON VERBATIM.',
     { model: 'haiku', schema: gateSchema }
+  );
+}
+
+// ---------------- FLEET (dynamic, resolved before any token spends) ----
+phase('Fleet');
+const fleetReport = await agent(
+  `cd ${repo}. ` +
+    (args.fleet
+      ? `Write ${fleetConfig}: take the repo's farnsworth.json, replace ` +
+        `its "workers" with exactly ${JSON.stringify(args.fleet)} ` +
+        '(keep reviewer, gate, and goal as they are; every worker needs ' +
+        'an id, and either "model" — delegate dispatch — or "command" ' +
+        'with a {prompt} token — the third-party/local adapter; one ' +
+        'dispatch mode for the whole fleet). '
+      : `Read ${fleetConfig || 'farnsworth.json'}. `) +
+    `Then run \`${pp}python3 -m farnsworth preflight${cfg}\`. Report the ` +
+    'resolved fleet (one entry per worker: id, dispatch mode, ' +
+    'model-or-command, focus) and the preflight outcome. A gate-at-base ' +
+    'failure in a greenfield repo (the package under test does not ' +
+    'exist yet) is a documented false positive: note it, set fatal ' +
+    'false. Any config, git, or canary failure is fatal.',
+  {
+    model: 'haiku',
+    schema: {
+      type: 'object',
+      properties: {
+        workers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              dispatch: { type: 'string', enum: ['delegate', 'subprocess'] },
+              spec: { type: 'string' },
+              focus: { type: ['string', 'null'] },
+            },
+            required: ['id', 'dispatch', 'spec'],
+          },
+        },
+        preflight: { type: 'string' },
+        fatal: { type: 'boolean' },
+      },
+      required: ['workers', 'preflight', 'fatal'],
+    },
+  }
+);
+if (fleetReport.fatal) {
+  throw new Error(
+    `fleet preflight failed: ${fleetReport.preflight} — fix the fleet ` +
+      'config before dispatching a tournament'
+  );
+}
+if (fleetReport.workers.some((w) => w.dispatch === 'subprocess')) {
+  // A `command` fleet is driven end-to-end by `farnsworth run` itself
+  // (the CLI spawns, gates, and reviews its own subprocesses); this
+  // phased script is the conductor for delegate fleets. Workflow
+  // conduction of subprocess/local fleets is queued in M8.
+  throw new Error(
+    'this fleet uses the subprocess adapter (third-party/local CLIs): ' +
+      `run it end-to-end with \`${pp}python3 -m farnsworth run ${brief}` +
+      `${cfg}\` per round instead of this workflow`
   );
 }
 

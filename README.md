@@ -32,10 +32,9 @@ inspectable, diffable, versioned in git next to the code they describe.
          tasks/task-042.md  +  .code-tips.md (the project's memory)
                                 │
   ROUND 1 — EXPLORE             ▼
-        ┌───────┬───────────┬───┴───────┬───────────┐   blind, parallel,
-      coder   coder       coder       coder       coder  focus-diversified
-     (haiku) (haiku)    (sonnet)    (sonnet)     (opus)
-        └───────┴───────────┴───┬───────┴───────────┘
+        ┌───────┬───────────┬───┴───────┬─────── ─ ─ ┐   N blind, parallel,
+      coder   coder       coder       coder        coder  focus-diversified
+        └───────┴───────────┴───┬───────┴─────── ─ ─ ┘   agents — your pick
                                 ▼
               GATE-1   mechanical evidence — tests, build, hygiene,
                        commits-as-artifact; results travel WITH each
@@ -119,7 +118,37 @@ Every phase command takes `--json` for machine-readable output. Seed a
 new project's `.code-tips.md` from [`seed-tips.md`](seed-tips.md) — the
 cross-project lessons distilled from every recorded run.
 
-## Receipts
+## Pick your fleet
+
+The field is **declared per run, never hardcoded**: `farnsworth.json`
+names the workers, and every dispatch starts by confirming the fleet
+you actually want — the conductor asks before any tokens are spent.
+The protocol doesn't care who codes; anonymized review means every
+entrant wins on merit alone.
+
+```jsonc
+// Anthropic fleet — delegate dispatch (subscription-billed subagents)
+"workers": [
+  {"id": "w1", "model": "claude-haiku-4-5",  "focus": "test rigor"},
+  {"id": "w2", "model": "claude-sonnet-4-6", "focus": "simplicity"},
+  {"id": "w3", "model": "claude-opus-4-8",   "focus": "spec faithfulness"}
+]
+
+// Third-party / local fleet — the command adapter: anything with a CLI
+"workers": [
+  {"id": "w1", "command": ["qwen-code", "-p", "{prompt}"]},          // Qwen
+  {"id": "w2", "command": ["codex", "exec", "{prompt}"]},            // Codex
+  {"id": "w3", "command": ["glm-cli", "run", "{prompt}"]},           // GLM
+  {"id": "w4", "command": ["ollama", "run", "qwen3-coder", "{prompt}"]} // local:
+]                                            // Ollama / LM Studio / MLX…
+```
+
+The 2× Haiku / 2× Sonnet / 1× Opus mix you'll see in the recorded runs
+is a *default and an experiment* — per-model win rates accumulate in
+the run logs to answer whether cheap workers plus a strong judge beat
+expensive workers — not a fixture of the design. A fleet runs one
+dispatch mode per round today; heterogeneous Claude+local fields in a
+single round are on the roadmap (PRD M8).
 
 Seven recorded runs, every artifact committed
 ([`examples/`](examples/)):
