@@ -266,12 +266,42 @@ def run(brief_path, config_path=None, cwd=None):
         for worker_id, future in futures.items():
             worker_results[worker_id] = future.result()
 
-    # (e) Identify candidates (workers whose gate passed).
+    # (e) Identify candidates (workers whose gate passed AND committed).
+    #
+    # PRD 4.3: commits in the worktree are the phase artifact. The gate runs
+    # in the worktree, where uncommitted files execute fine — but the
+    # candidate diff is base..HEAD, so a no-commit worker would enter review
+    # as an empty diff the briefing vouches for (observed live: word-garden-4
+    # task-002). Enforce the artifact rule mechanically here, and archive the
+    # uncommitted work so a later `clean --force` cannot destroy the only
+    # copy of what the worker actually did.
     candidates = []
     failed_workers = []
     for i, worktree_spec in enumerate(worktree_specs):
         worker_id = worktree_spec["worker_id"]
         result = worker_results[worker_id]
+        if (
+            result["gate_passed"]
+            and gitutil.head_commit(worktree_spec["worktree_abs"]) == base_commit
+        ):
+            uncommitted = gitutil.snapshot_uncommitted_diff(
+                worktree_spec["worktree_abs"]
+            )
+            autopsy = "commits: no commits on branch"
+            if uncommitted.strip():
+                with open(
+                    os.path.join(
+                        artifact_dir, "{0}-uncommitted.diff".format(worker_id)
+                    ),
+                    "w",
+                    encoding="utf-8",
+                ) as fh:
+                    fh.write(uncommitted)
+                autopsy += " (uncommitted work archived)"
+            result["gate_passed"] = False
+            result["gate_results"].append(
+                {"name": "commits", "exit_code": 1, "autopsy": autopsy}
+            )
         if result["gate_passed"]:
             candidates.append(
                 {
@@ -288,21 +318,43 @@ def run(brief_path, config_path=None, cwd=None):
                 }
             )
 
-    # (f) Anonymize candidates: shuffle and assign labels A, B, C, ...
+    # (f) Anonymize candidates: shuffle, drop empty diffs, assign labels.
     random.shuffle(candidates)
     label_to_worker_id = {}
     label_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    for i, candidate in enumerate(candidates):
-        label = label_chars[i]
+    labeled = []
+    for candidate in candidates:
+        # Belt-and-braces companion to the commit check in (e): a candidate
+        # whose diff against base is empty (e.g. only an empty commit) has
+        # nothing to review and must not consume a label.
+        text = gitutil.diff_text(base_commit, candidate["worktree_abs"])
+        if not text.strip():
+            result = worker_results[candidate["worker_id"]]
+            result["gate_passed"] = False
+            result["gate_results"].append(
+                {
+                    "name": "candidate",
+                    "exit_code": 1,
+                    "autopsy": "candidate: empty diff against base",
+                }
+            )
+            failed_workers.append(
+                {
+                    "worker_id": candidate["worker_id"],
+                    "gate_results": result["gate_results"],
+                }
+            )
+            continue
+        label = label_chars[len(labeled)]
         label_to_worker_id[label] = candidate["worker_id"]
         candidate["label"] = label
 
-        # Write the diff for this candidate.
         diff_path = os.path.join(artifact_dir, "candidates", "{0}.diff".format(label))
         os.makedirs(os.path.dirname(diff_path), exist_ok=True)
-        gitutil.write_diff(
-            base_commit, candidate["worktree_abs"], diff_path, repo_root
-        )
+        with open(diff_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        labeled.append(candidate)
+    candidates = labeled
 
     # (g) Build run.json workers[] list for all workers (including non-candidates).
     run_workers = []

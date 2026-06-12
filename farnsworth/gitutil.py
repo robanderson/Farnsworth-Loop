@@ -7,6 +7,7 @@ depend on any third-party library (stdlib only, by contract).
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 
@@ -45,6 +46,30 @@ def repo_toplevel(cwd):
     """Return the absolute path to the working tree root."""
     proc = run_git(["rev-parse", "--show-toplevel"], cwd)
     return proc.stdout.strip()
+
+
+def main_repo_toplevel(cwd):
+    """Return the toplevel of the MAIN repository, even from a linked worktree.
+
+    ``repo_toplevel`` resolves to the nearest working tree, which inside a
+    linked worktree is the worktree itself — housekeeping that runs there
+    would mistake the worktree for the main repo. The common git dir
+    (``<main>/.git``) is shared by all worktrees, so its parent is the main
+    working tree.
+    """
+    top = repo_toplevel(cwd)
+    proc = run_git(["rev-parse", "--git-common-dir"], cwd)
+    common = proc.stdout.strip()
+    if not os.path.isabs(common):
+        common = os.path.join(str(cwd), common)
+    main = os.path.dirname(os.path.abspath(common))
+    # When cwd is already in the main worktree, keep git's own toplevel
+    # spelling: --git-common-dir may canonicalize symlinks (macOS /var ->
+    # /private/var) where --show-toplevel does not, and downstream code
+    # compares these paths against git worktree list output.
+    if os.path.realpath(main) == os.path.realpath(top):
+        return top
+    return main
 
 
 def head_commit(cwd):
@@ -115,14 +140,33 @@ def delete_branch(branch, cwd):
     run_git(["branch", "-D", branch], cwd)
 
 
+def diff_text(base_commit, worktree_abs):
+    """Return the diff from base_commit to worktree-HEAD as a string."""
+    proc = run_git(
+        ["diff", "{0}..HEAD".format(base_commit)],
+        worktree_abs,
+    )
+    return proc.stdout
+
+
 def write_diff(base_commit, worktree_abs, output_path, repo_root):
     """Write the diff from base_commit to worktree-HEAD into output_path.
 
     The diff is written relative to the repo root.
     """
-    proc = run_git(
-        ["diff", "{0}..HEAD".format(base_commit)],
-        worktree_abs,
-    )
     with open(output_path, "w", encoding="utf-8") as fh:
-        fh.write(proc.stdout)
+        fh.write(diff_text(base_commit, worktree_abs))
+
+
+def snapshot_uncommitted_diff(worktree_abs):
+    """Return uncommitted work (staged, unstaged, and untracked) as a diff.
+
+    Stages everything, diffs the index against HEAD, then unstages. Used to
+    archive a worker's leftovers when its branch carries no commits — the
+    candidate diff would be empty and ``clean --force`` would otherwise
+    destroy the only copy of whatever the worker actually did.
+    """
+    run_git(["add", "-A"], worktree_abs)
+    proc = run_git(["diff", "--cached"], worktree_abs)
+    run_git(["reset", "-q"], worktree_abs)
+    return proc.stdout

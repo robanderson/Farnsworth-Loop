@@ -36,7 +36,11 @@ def clean(task_id, cwd=None, force=False):
     cwd = cwd or os.getcwd()
     if not gitutil.is_git_repo(cwd):
         raise gitutil.GitError("not a git repository: {0}".format(cwd))
-    repo_root = gitutil.repo_toplevel(cwd)
+    # Resolve the MAIN repository: from inside a linked worktree,
+    # repo_toplevel() returns the worktree itself, which clean would then
+    # protect as "the main worktree" while still deleting its branch
+    # (observed live: word-garden-4 task-002 sweep).
+    repo_root = gitutil.main_repo_toplevel(cwd)
 
     prefix = task_id + "-"
     report = {

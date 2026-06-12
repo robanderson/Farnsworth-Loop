@@ -951,5 +951,93 @@ class TestFocusDirectives(LoopTestBase):
         self.assertNotIn("Field Diversity", briefing)
 
 
+# A worker that does the work but never commits: the gate (which runs in the
+# worktree) sees the files, while the candidate diff (base..HEAD) is empty.
+# Observed live in word-garden-4 task-002.
+FAKE_NOCOMMIT_WORKER_PY = (
+    "import pathlib;"
+    "pathlib.Path('worker_output.txt').write_text('uncommitted work');"
+    "print('FAKE_NOCOMMIT_WORKER_RAN')"
+)
+
+# A worker that commits nothing of substance: HEAD moves but the diff is empty.
+FAKE_EMPTYCOMMIT_WORKER_PY = (
+    "import subprocess;"
+    "subprocess.run(['git','commit','--allow-empty','-m','empty']);"
+    "print('FAKE_EMPTYCOMMIT_WORKER_RAN')"
+)
+
+PASSING_GATE = [
+    {"name": "ok", "command": ["python3", "-c", "raise SystemExit(0)"]}
+]
+
+
+class TestNoCommitWorker(LoopTestBase):
+    def test_gate_passing_worker_without_commits_is_not_a_candidate(self):
+        brief = self._write_brief(name="task-042.md")
+        cfg_path = self._config_file_dict(
+            {
+                "workers": [
+                    {
+                        "id": "w1",
+                        "command": ["python3", "-c", FAKE_NOCOMMIT_WORKER_PY],
+                    }
+                ],
+                "gate": PASSING_GATE,
+            }
+        )
+        self._track_worktree("task-042-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        worker = run_log["workers"][0]
+        # The artifact rule is enforced: no commits means no candidate, even
+        # though every configured gate command passed.
+        self.assertFalse(worker["gate"]["passed"])
+        self.assertIsNone(worker["candidate_label"])
+        autopsies = [r["autopsy"] for r in worker["gate"]["results"]]
+        self.assertTrue(
+            any(a.startswith("commits: no commits on branch") for a in autopsies),
+            autopsies,
+        )
+        self.assertIsNone(run_log["review"])
+        # The uncommitted work is archived for the forensic record.
+        archived = os.path.join(
+            self.repo, ".farnsworth", "task-042", "w1-uncommitted.diff"
+        )
+        with open(archived, "r", encoding="utf-8") as fh:
+            self.assertIn("worker_output.txt", fh.read())
+
+    def test_empty_diff_candidate_is_dropped_before_labeling(self):
+        brief = self._write_brief(name="task-042.md")
+        cfg_path = self._config_file_dict(
+            {
+                "workers": [
+                    {
+                        "id": "w1",
+                        "command": ["python3", "-c", FAKE_EMPTYCOMMIT_WORKER_PY],
+                    }
+                ],
+                "gate": PASSING_GATE,
+            }
+        )
+        self._track_worktree("task-042-w1")
+
+        run_log = run(brief, config_path=cfg_path, cwd=self.repo)
+
+        worker = run_log["workers"][0]
+        self.assertFalse(worker["gate"]["passed"])
+        self.assertIsNone(worker["candidate_label"])
+        autopsies = [r["autopsy"] for r in worker["gate"]["results"]]
+        self.assertIn("candidate: empty diff against base", autopsies)
+        self.assertIsNone(run_log["review"])
+        # No candidate diff file was written for the vacuous candidate.
+        candidates_dir = os.path.join(
+            self.repo, ".farnsworth", "task-042", "candidates"
+        )
+        if os.path.isdir(candidates_dir):
+            self.assertEqual(os.listdir(candidates_dir), [])
+
+
 if __name__ == "__main__":
     unittest.main()
