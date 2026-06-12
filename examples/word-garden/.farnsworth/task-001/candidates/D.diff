@@ -1,0 +1,738 @@
+diff --git a/tests/__init__.py b/tests/__init__.py
+new file mode 100644
+index 0000000..fcbad23
+--- /dev/null
++++ b/tests/__init__.py
+@@ -0,0 +1 @@
++"""Test suite for Word Garden."""
+diff --git a/tests/test_game.py b/tests/test_game.py
+new file mode 100644
+index 0000000..df76e3b
+--- /dev/null
++++ b/tests/test_game.py
+@@ -0,0 +1,326 @@
++"""Tests for word_garden.game module."""
++
++import unittest
++from word_garden.game import (
++    GameState,
++    new_game,
++    validate_guess,
++    apply_guess,
++    display_word,
++    is_won,
++    is_lost,
++)
++
++
++class TestNewGame(unittest.TestCase):
++    """Tests for new_game() function."""
++
++    def test_new_game_creates_valid_state(self):
++        """Test that new_game creates a valid initial game state."""
++        state = new_game()
++        self.assertIsNotNone(state.secret_word)
++        self.assertEqual(state.guessed_letters, set())
++        self.assertEqual(state.weed_count, 0)
++        self.assertEqual(state.remaining_water, state.max_water)
++        self.assertFalse(state.game_over)
++        self.assertFalse(state.won)
++
++    def test_new_game_normal_difficulty(self):
++        """Test new_game with normal difficulty."""
++        state = new_game(difficulty="normal")
++        self.assertEqual(state.remaining_water, 6)
++        self.assertEqual(state.max_water, 6)
++        # Word length should be 5-8 for normal
++        self.assertGreaterEqual(len(state.secret_word), 5)
++        self.assertLessEqual(len(state.secret_word), 8)
++
++    def test_new_game_easy_difficulty(self):
++        """Test new_game with easy difficulty."""
++        state = new_game(difficulty="easy")
++        self.assertEqual(state.remaining_water, 8)
++        self.assertEqual(state.max_water, 8)
++        # Word length should be 4-6 for easy
++        self.assertGreaterEqual(len(state.secret_word), 4)
++        self.assertLessEqual(len(state.secret_word), 6)
++
++    def test_new_game_hard_difficulty(self):
++        """Test new_game with hard difficulty."""
++        state = new_game(difficulty="hard")
++        self.assertEqual(state.remaining_water, 4)
++        self.assertEqual(state.max_water, 4)
++        # Word length should be 7+ for hard
++        self.assertGreaterEqual(len(state.secret_word), 7)
++
++
++class TestValidateGuess(unittest.TestCase):
++    """Tests for validate_guess() function."""
++
++    def test_valid_single_letter_lowercase(self):
++        """Test that lowercase single letter is accepted and uppercased."""
++        letter, message = validate_guess("a")
++        self.assertEqual(letter, "A")
++        self.assertEqual(message, "")
++
++    def test_valid_single_letter_uppercase(self):
++        """Test that uppercase single letter is accepted."""
++        letter, message = validate_guess("Z")
++        self.assertEqual(letter, "Z")
++        self.assertEqual(message, "")
++
++    def test_valid_with_whitespace(self):
++        """Test that whitespace is trimmed."""
++        letter, message = validate_guess("  b  ")
++        self.assertEqual(letter, "B")
++        self.assertEqual(message, "")
++
++    def test_empty_input(self):
++        """Test that empty input is rejected."""
++        letter, message = validate_guess("")
++        self.assertIsNone(letter)
++        self.assertEqual(message, "Please enter a single letter.")
++
++    def test_whitespace_only_input(self):
++        """Test that whitespace-only input is rejected."""
++        letter, message = validate_guess("   ")
++        self.assertIsNone(letter)
++        self.assertEqual(message, "Please enter a single letter.")
++
++    def test_multiple_characters(self):
++        """Test that multiple characters are rejected."""
++        letter, message = validate_guess("abc")
++        self.assertIsNone(letter)
++        self.assertEqual(message, "Please enter a single letter.")
++
++    def test_number_input(self):
++        """Test that numbers are rejected."""
++        letter, message = validate_guess("7")
++        self.assertIsNone(letter)
++        self.assertEqual(message, "That is not a letter.")
++
++    def test_symbol_input(self):
++        """Test that symbols are rejected."""
++        letter, message = validate_guess("!")
++        self.assertIsNone(letter)
++        self.assertEqual(message, "That is not a letter.")
++
++
++class TestDisplayWord(unittest.TestCase):
++    """Tests for display_word() function."""
++
++    def test_display_word_no_guesses(self):
++        """Test display_word with no guesses yet."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        display = display_word(state)
++        self.assertEqual(display, "_ _ _ _ _ _")
++
++    def test_display_word_partial_guesses(self):
++        """Test display_word with some letters guessed."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "E"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        display = display_word(state)
++        self.assertEqual(display, "G A _ _ E _")
++
++    def test_display_word_all_guessed(self):
++        """Test display_word when all letters are guessed."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "R", "D", "E", "N"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        display = display_word(state)
++        self.assertEqual(display, "G A R D E N")
++
++    def test_display_word_extra_guesses(self):
++        """Test display_word when extra letters are guessed."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "E", "Z", "X"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        display = display_word(state)
++        self.assertEqual(display, "G A _ _ E _")
++
++
++class TestApplyGuess(unittest.TestCase):
++    """Tests for apply_guess() function."""
++
++    def test_correct_guess_reveals_letters(self):
++        """Test that correct guess reveals matching letters."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        new_state = apply_guess(state, "A")
++        self.assertIn("A", new_state.guessed_letters)
++        self.assertEqual(new_state.remaining_water, 6)
++        self.assertEqual(new_state.weed_count, 0)
++        self.assertEqual(new_state.status_message, "Good guess! The garden grows.")
++
++    def test_incorrect_guess_costs_water(self):
++        """Test that incorrect guess reduces water by exactly 1."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        new_state = apply_guess(state, "Z")
++        self.assertIn("Z", new_state.guessed_letters)
++        self.assertEqual(new_state.remaining_water, 5)
++        self.assertEqual(new_state.weed_count, 1)
++        self.assertEqual(new_state.status_message, "No match. A weed appears.")
++
++    def test_repeated_guess_no_change(self):
++        """Test that repeated guess doesn't change water or weeds."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"Z"},
++            remaining_water=5,
++            weed_count=1,
++            max_water=6,
++        )
++        new_state = apply_guess(state, "Z")
++        self.assertEqual(new_state.remaining_water, 5)
++        self.assertEqual(new_state.weed_count, 1)
++        self.assertEqual(new_state.guessed_letters, {"Z"})
++        self.assertIn("already guessed", new_state.status_message)
++
++    def test_repeated_guess_message(self):
++        """Test that repeated guess shows appropriate message."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"A"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        new_state = apply_guess(state, "A")
++        self.assertIn("already guessed A", new_state.status_message)
++
++    def test_guess_after_game_over(self):
++        """Test that guessing after game is over is a no-op."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "R", "D", "E", "N"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++            game_over=True,
++            won=True,
++        )
++        new_state = apply_guess(state, "Z")
++        self.assertEqual(new_state.remaining_water, 6)
++        self.assertEqual(new_state.weed_count, 0)
++        self.assertEqual(new_state.guessed_letters, {"G", "A", "R", "D", "E", "N"})
++
++    def test_win_condition(self):
++        """Test that game detects win when word is complete."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "R", "D", "E"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        new_state = apply_guess(state, "N")
++        self.assertTrue(new_state.game_over)
++        self.assertTrue(new_state.won)
++
++    def test_loss_condition(self):
++        """Test that game detects loss when water reaches 0."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"Z", "X", "Q", "W", "B"},
++            remaining_water=1,
++            weed_count=5,
++            max_water=6,
++        )
++        new_state = apply_guess(state, "V")
++        self.assertTrue(new_state.game_over)
++        self.assertFalse(new_state.won)
++
++
++class TestIsWon(unittest.TestCase):
++    """Tests for is_won() function."""
++
++    def test_is_won_false_initially(self):
++        """Test that game is not won initially."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        self.assertFalse(is_won(state))
++
++    def test_is_won_partial_guesses(self):
++        """Test that game is not won with partial guesses."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "R"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        self.assertFalse(is_won(state))
++
++    def test_is_won_all_letters(self):
++        """Test that game is won when all letters are guessed."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters={"G", "A", "R", "D", "E", "N"},
++            remaining_water=6,
++            weed_count=0,
++            max_water=6,
++        )
++        self.assertTrue(is_won(state))
++
++
++class TestIsLost(unittest.TestCase):
++    """Tests for is_lost() function."""
++
++    def test_is_lost_false_with_water(self):
++        """Test that game is not lost with water remaining."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=1,
++            weed_count=5,
++            max_water=6,
++        )
++        self.assertFalse(is_lost(state))
++
++    def test_is_lost_at_zero(self):
++        """Test that game is lost when water reaches 0."""
++        state = GameState(
++            secret_word="GARDEN",
++            guessed_letters=set(),
++            remaining_water=0,
++            weed_count=6,
++            max_water=6,
++        )
++        self.assertTrue(is_lost(state))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_words.py b/tests/test_words.py
+new file mode 100644
+index 0000000..392b49b
+--- /dev/null
++++ b/tests/test_words.py
+@@ -0,0 +1,111 @@
++"""Tests for word_garden.words module."""
++
++import unittest
++import random
++from word_garden.words import WORDS, select_word, water_for
++
++
++class TestWords(unittest.TestCase):
++    """Tests for words module."""
++
++    def test_words_list_exists(self):
++        """Test that WORDS list is defined and has 10 items."""
++        self.assertEqual(len(WORDS), 10)
++        self.assertIsInstance(WORDS, list)
++
++    def test_words_are_uppercase(self):
++        """Test that all words in WORDS are uppercase."""
++        for word in WORDS:
++            self.assertEqual(word, word.upper())
++
++    def test_words_are_strings(self):
++        """Test that all words are strings."""
++        for word in WORDS:
++            self.assertIsInstance(word, str)
++
++    def test_words_no_duplicates(self):
++        """Test that there are no duplicate words."""
++        self.assertEqual(len(WORDS), len(set(WORDS)))
++
++
++class TestWaterFor(unittest.TestCase):
++    """Tests for water_for() function."""
++
++    def test_water_for_easy(self):
++        """Test water_for returns 8 for easy."""
++        self.assertEqual(water_for("easy"), 8)
++
++    def test_water_for_normal(self):
++        """Test water_for returns 6 for normal."""
++        self.assertEqual(water_for("normal"), 6)
++
++    def test_water_for_hard(self):
++        """Test water_for returns 4 for hard."""
++        self.assertEqual(water_for("hard"), 4)
++
++    def test_water_for_invalid_difficulty(self):
++        """Test that unknown difficulty raises ValueError."""
++        with self.assertRaises(ValueError):
++            water_for("impossible")
++
++
++class TestSelectWord(unittest.TestCase):
++    """Tests for select_word() function."""
++
++    def test_select_word_returns_string(self):
++        """Test that select_word returns a string."""
++        word = select_word()
++        self.assertIsInstance(word, str)
++
++    def test_select_word_returns_from_word_list(self):
++        """Test that select_word returns a word from WORDS."""
++        word = select_word()
++        self.assertIn(word, WORDS)
++
++    def test_select_word_easy_length(self):
++        """Test that easy difficulty returns words of 4-6 letters."""
++        for _ in range(20):  # Multiple attempts to ensure pattern holds
++            word = select_word(difficulty="easy")
++            self.assertGreaterEqual(len(word), 4)
++            self.assertLessEqual(len(word), 6)
++
++    def test_select_word_normal_length(self):
++        """Test that normal difficulty returns words of 5-8 letters."""
++        for _ in range(20):
++            word = select_word(difficulty="normal")
++            self.assertGreaterEqual(len(word), 5)
++            self.assertLessEqual(len(word), 8)
++
++    def test_select_word_hard_length(self):
++        """Test that hard difficulty returns words of 7+ letters."""
++        for _ in range(20):
++            word = select_word(difficulty="hard")
++            self.assertGreaterEqual(len(word), 7)
++
++    def test_select_word_invalid_difficulty(self):
++        """Test that unknown difficulty raises ValueError."""
++        with self.assertRaises(ValueError):
++            select_word(difficulty="nightmare")
++
++    def test_select_word_with_rng(self):
++        """Test that select_word accepts and uses injected RNG."""
++        rng1 = random.Random(42)
++        rng2 = random.Random(42)
++        word1 = select_word(difficulty="normal", rng=rng1)
++        word2 = select_word(difficulty="normal", rng=rng2)
++        # Same seed should produce same word
++        self.assertEqual(word1, word2)
++
++    def test_select_word_deterministic_with_same_seed(self):
++        """Test that different seeds produce potentially different words."""
++        words_set = set()
++        for seed in range(100):
++            rng = random.Random(seed)
++            word = select_word(difficulty="normal", rng=rng)
++            words_set.add(word)
++        # Should get some variety across different seeds
++        self.assertGreater(len(words_set), 1)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/word_garden/__init__.py b/word_garden/__init__.py
+new file mode 100644
+index 0000000..3cd7bdb
+--- /dev/null
++++ b/word_garden/__init__.py
+@@ -0,0 +1,3 @@
++"""Word Garden game engine."""
++
++__version__ = "0.1.0"
+diff --git a/word_garden/game.py b/word_garden/game.py
+new file mode 100644
+index 0000000..4858cde
+--- /dev/null
++++ b/word_garden/game.py
+@@ -0,0 +1,189 @@
++"""Core game logic for Word Garden."""
++
++from dataclasses import dataclass, field
++from . import words
++
++
++@dataclass
++class GameState:
++    """Represents the state of a Word Garden game."""
++
++    secret_word: str
++    guessed_letters: set[str] = field(default_factory=set)
++    remaining_water: int = 0
++    weed_count: int = 0
++    max_water: int = 0
++    status_message: str = ""
++    game_over: bool = False
++    won: bool = False
++
++
++def new_game(difficulty="normal", rng=None) -> GameState:
++    """Create a new game with a random word.
++
++    Args:
++        difficulty: "easy", "normal", or "hard"
++        rng: Optional random.Random instance for deterministic testing
++
++    Returns:
++        A new GameState ready to play
++    """
++    secret_word = words.select_word(difficulty, rng)
++    water = words.water_for(difficulty)
++
++    return GameState(
++        secret_word=secret_word,
++        guessed_letters=set(),
++        remaining_water=water,
++        weed_count=0,
++        max_water=water,
++        status_message="",
++        game_over=False,
++        won=False,
++    )
++
++
++def validate_guess(input_text) -> tuple[str | None, str]:
++    """Validate user input as a single letter.
++
++    Args:
++        input_text: Raw input from user
++
++    Returns:
++        Tuple of (letter, message) where letter is None if invalid.
++        letter is uppercase if valid, message explains result.
++    """
++    trimmed = input_text.strip()
++
++    if not trimmed:
++        return (None, "Please enter a single letter.")
++
++    if len(trimmed) > 1:
++        return (None, "Please enter a single letter.")
++
++    if not trimmed.isalpha():
++        return (None, "That is not a letter.")
++
++    return (trimmed.upper(), "")
++
++
++def display_word(state: GameState) -> str:
++    """Return the masked word display with revealed letters.
++
++    Args:
++        state: Current game state
++
++    Returns:
++        String like "G _ R _ E _" with guessed letters revealed
++    """
++    result = []
++    for letter in state.secret_word:
++        if letter in state.guessed_letters:
++            result.append(letter)
++        else:
++            result.append("_")
++    return " ".join(result)
++
++
++def is_won(state: GameState) -> bool:
++    """Check if the game is won (all letters guessed).
++
++    Args:
++        state: Current game state
++
++    Returns:
++        True if all letters of secret_word are in guessed_letters
++    """
++    return all(letter in state.guessed_letters for letter in state.secret_word)
++
++
++def is_lost(state: GameState) -> bool:
++    """Check if the game is lost (water reached 0).
++
++    Args:
++        state: Current game state
++
++    Returns:
++        True if remaining_water is 0
++    """
++    return state.remaining_water <= 0
++
++
++def apply_guess(state: GameState, letter: str) -> GameState:
++    """Apply a validated guess to the game state.
++
++    Args:
++        state: Current game state
++        letter: Single uppercase letter (assumed already validated)
++
++    Returns:
++        New GameState with the guess applied
++    """
++    # Check if game is already over
++    if state.game_over:
++        return GameState(
++            secret_word=state.secret_word,
++            guessed_letters=state.guessed_letters,
++            remaining_water=state.remaining_water,
++            weed_count=state.weed_count,
++            max_water=state.max_water,
++            status_message="Game is already over.",
++            game_over=True,
++            won=state.won,
++        )
++
++    # Check if letter was already guessed
++    if letter in state.guessed_letters:
++        return GameState(
++            secret_word=state.secret_word,
++            guessed_letters=state.guessed_letters,
++            remaining_water=state.remaining_water,
++            weed_count=state.weed_count,
++            max_water=state.max_water,
++            status_message=f"You already guessed {letter}. Try another letter.",
++            game_over=state.game_over,
++            won=state.won,
++        )
++
++    # Add letter to guessed set
++    new_guessed = state.guessed_letters.copy()
++    new_guessed.add(letter)
++
++    # Check if guess is correct
++    if letter in state.secret_word:
++        # Correct guess
++        new_state = GameState(
++            secret_word=state.secret_word,
++            guessed_letters=new_guessed,
++            remaining_water=state.remaining_water,
++            weed_count=state.weed_count,
++            max_water=state.max_water,
++            status_message="Good guess! The garden grows.",
++            game_over=False,
++            won=False,
++        )
++    else:
++        # Incorrect guess
++        new_remaining = state.remaining_water - 1
++        new_weeds = state.weed_count + 1
++
++        new_state = GameState(
++            secret_word=state.secret_word,
++            guessed_letters=new_guessed,
++            remaining_water=new_remaining,
++            weed_count=new_weeds,
++            max_water=state.max_water,
++            status_message="No match. A weed appears.",
++            game_over=False,
++            won=False,
++        )
++
++    # Check win/loss conditions
++    if is_won(new_state):
++        new_state.game_over = True
++        new_state.won = True
++    elif is_lost(new_state):
++        new_state.game_over = True
++        new_state.won = False
++
++    return new_state
+diff --git a/word_garden/words.py b/word_garden/words.py
+new file mode 100644
+index 0000000..bb542c7
+--- /dev/null
++++ b/word_garden/words.py
+@@ -0,0 +1,72 @@
++"""Word list and selection for Word Garden."""
++
++import random
++
++WORDS = [
++    "GARDEN",
++    "FLOWER",
++    "PLANET",
++    "PYTHON",
++    "TERMINAL",
++    "MEADOW",
++    "ORCHARD",
++    "VINEYARD",
++    "SEEDLING",
++    "HARVEST",
++]
++
++
++def water_for(difficulty="normal") -> int:
++    """Return starting water for the given difficulty level.
++
++    Args:
++        difficulty: "easy", "normal", or "hard"
++
++    Returns:
++        Starting water amount
++
++    Raises:
++        ValueError: If difficulty is not recognized
++    """
++    water_map = {
++        "easy": 8,
++        "normal": 6,
++        "hard": 4,
++    }
++    if difficulty not in water_map:
++        raise ValueError(f"Unknown difficulty: {difficulty}")
++    return water_map[difficulty]
++
++
++def select_word(difficulty="normal", rng=None) -> str:
++    """Select a random word filtered by difficulty.
++
++    Args:
++        difficulty: "easy", "normal", or "hard"
++        rng: Optional random.Random instance for deterministic testing.
++             Uses module-level random if None.
++
++    Returns:
++        A word from WORDS list that matches the difficulty criteria
++
++    Raises:
++        ValueError: If difficulty is not recognized
++    """
++    if difficulty not in ("easy", "normal", "hard"):
++        raise ValueError(f"Unknown difficulty: {difficulty}")
++
++    # Difficulty filters by word length
++    length_ranges = {
++        "easy": (4, 6),      # 4-6 letters
++        "normal": (5, 8),    # 5-8 letters
++        "hard": (7, float('inf')),  # 7+ letters
++    }
++
++    min_len, max_len = length_ranges[difficulty]
++    filtered_words = [w for w in WORDS if min_len <= len(w) <= max_len]
++
++    # Use provided RNG or module-level random
++    if rng is None:
++        return random.choice(filtered_words)
++    else:
++        return rng.choice(filtered_words)

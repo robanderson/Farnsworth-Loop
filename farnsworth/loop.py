@@ -69,6 +69,15 @@ def _substitute_prompt(command, prompt):
     return [arg.replace("{prompt}", prompt) for arg in command]
 
 
+def _decode_stream(data):
+    """Best-effort text from a TimeoutExpired stream (str, bytes, or None)."""
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data
+
+
 def _one_line(text):
     """Return the last non-empty line of ``text``, stripped, or ''."""
     if not text:
@@ -117,27 +126,41 @@ def _run_worker(worker_spec, briefing, worktree_abs, artifact_dir, gate):
     worker_id = worker_spec["id"]
     command = _substitute_prompt(worker_spec["command"], briefing)
 
-    # Run the worker command.
-    worker_proc = subprocess.run(
-        command,
-        cwd=worktree_abs,
-        capture_output=True,
-        text=True,
-    )
+    # Run the worker command. A hung worker must not hang the run: on
+    # timeout the child is killed, the exit code is recorded as -1, and
+    # whatever the worker committed before stalling still faces the gate.
+    timeout = worker_spec.get("timeout")
+    try:
+        worker_proc = subprocess.run(
+            command,
+            cwd=worktree_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        exit_code = worker_proc.returncode
+        stdout_text = worker_proc.stdout or ""
+        stderr_text = worker_proc.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        exit_code = -1
+        stdout_text = _decode_stream(exc.stdout)
+        stderr_text = _decode_stream(exc.stderr) + (
+            "\nfarnsworth: worker killed after {0}s timeout\n".format(timeout)
+        )
 
     # Write stdout/stderr.
     stdout_name = "{0}.stdout".format(worker_id)
     stderr_name = "{0}.stderr".format(worker_id)
     with open(os.path.join(artifact_dir, stdout_name), "w", encoding="utf-8") as fh:
-        fh.write(worker_proc.stdout or "")
+        fh.write(stdout_text)
     with open(os.path.join(artifact_dir, stderr_name), "w", encoding="utf-8") as fh:
-        fh.write(worker_proc.stderr or "")
+        fh.write(stderr_text)
 
     # Run the mechanical gate.
     gate_passed, gate_results = _run_gate(gate, worktree_abs)
 
     return {
-        "exit_code": worker_proc.returncode,
+        "exit_code": exit_code,
         "gate_passed": gate_passed,
         "gate_results": gate_results,
         "stdout_name": stdout_name,
@@ -305,14 +328,25 @@ def run(brief_path, config_path=None, cwd=None):
             brief_path, repo_root, artifact_dir, candidates, failed_workers
         )
 
-        # Run the reviewer.
+        # Run the reviewer. A hung reviewer is an infrastructure failure:
+        # the verdict is the phase's artifact and it cannot be partial.
         reviewer_command = _substitute_prompt(config.reviewer["command"], review_briefing)
-        reviewer_proc = subprocess.run(
-            reviewer_command,
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-        )
+        reviewer_timeout = config.reviewer.get("timeout")
+        try:
+            reviewer_proc = subprocess.run(
+                reviewer_command,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=reviewer_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise LoopError(
+                "reviewer timed out after {0}s; candidate worktrees were kept. "
+                "Re-run the review or 'farnsworth clean {1}' and re-dispatch".format(
+                    reviewer_timeout, task_id
+                )
+            )
         review_exit_code = reviewer_proc.returncode
 
         # Write reviewer stdout/stderr.

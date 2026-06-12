@@ -109,7 +109,37 @@ Rules:
 - The file pays rent: every line is loaded into every future briefing. A periodic consolidation pass (Section 6) prunes and merges.
 - Tips are guidance, never contract. A tip that contradicts the task spec or project PRD triggers an escalation, not a silent amendment.
 
-### 4.3 State and audit
+### 4.3 Housekeeping: hung agents and leftover debris
+
+Dispatch is fire-and-forget per worker, so the loop must assume some
+dispatches hang, die silently, or get duplicated by infrastructure retries.
+Three rules keep a run recoverable:
+
+1. **Every command gets a deadline.** Workers and the reviewer accept an
+   optional `timeout_seconds` in `farnsworth.json`. A worker that exceeds it
+   is killed and recorded with `exit_code: -1` (the kill is noted in its
+   `.stderr` artifact); whatever it committed before stalling still faces
+   the gate like any other attempt. A reviewer timeout is an infrastructure
+   error (exit 2): the verdict is the phase's artifact and cannot be partial.
+1. **The artifact is the phase boundary, not the agent.** A phase is
+   complete when its artifact exists and validates (commits in the worktree;
+   a verdict.json that parses), never because an agent reported success — or
+   went quiet. Duplicated dispatches are therefore harmless by construction:
+   the second result either matches the artifact contract or is discarded.
+1. **Debris is swept before re-dispatch.** `farnsworth clean <task-id>`
+   removes the task's leftover worktrees and branches so the same task id
+   can run again (the collision pre-checks otherwise refuse). Worktrees with
+   uncommitted changes are skipped unless `--force`; candidate diffs are
+   already archived under `.farnsworth/<task-id>/candidates/`, so nothing of
+   record is lost. Exit 0 when fully clean, 1 when something was skipped.
+
+In manual agent-dispatch mode (Section 8 auth row) the same rules apply by
+protocol rather than by code: the orchestrator keeps a ledger of dispatched
+agents with per-phase deadlines, checks liveness via transcript activity,
+stops stalled agents through the host's task controls, verifies the phase
+artifact, and re-dispatches only the phases whose artifacts are missing.
+
+### 4.4 State and audit
 
 All loop state is file-based and inspectable: task briefs, candidate diffs, gate results, review documents, verdicts, and the tips file all live in the repo (under `.farnsworth/` for per-task artifacts). No database. A human can reconstruct any decision from git history alone. The orchestrator additionally keeps a running process-findings journal in `.farnsworth/orchestrator-log.md`, written after each merge.
 
@@ -124,6 +154,7 @@ In scope:
 - `.code-tips.md` lifecycle (reviewer-written, worker-injected, provenance-stamped)
 - Divergence-triggered two-round mode
 - JSON run log per task with per-model costs (from `--output-format json`)
+- Housekeeping: per-command `timeout_seconds` and `farnsworth clean <task-id>` (Section 4.3)
 
 Explicit non-goals (MVP):
 
@@ -150,6 +181,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Measurement note from dogfooding: gate rate saturated immediately (5/5 both rounds), so it is a weak early signal on small tasks. The discriminating early metrics turned out to be field quality (spec/hygiene violations per round: 2 then 0) and reviewer-found defects in gate-passing candidates (2 per round so far) — the gate cannot see contract faithfulness. Track these alongside the headline chart.*
 
+*Second measurement note from the Word Garden example: track per-ATTEMPT cost alongside per-model win rate — in the 5-way round, Opus won with the fewest tokens of the field (~31k, 12 tool calls) while a Haiku burned ~76k/64 calls on a weaker candidate; "cheap model" and "cheap attempt" are different quantities. And under triage the reviewer's SHARE of spend rises (50% -> 68% observed) even as absolute cost falls, because review depth is fixed while the field shrinks.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -165,6 +198,9 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Weak worker tests mask defects          |*(observed: a negative-only assertion hid a dropped-autopsy bug)* Distilled testing rules in tips (assert the positive); reviewer scores test rigor explicitly            |
 |Stale dispatch context                  |*(observed: worker worktrees forked from a stale base)* Dispatch wrapper pins and verifies the base commit; workers sync to it before starting                            |
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
+|Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example                  |
+|Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
+|Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
 
 ## 9. Milestones
 
@@ -210,6 +246,37 @@ What we learned, in order of importance:
 3. **Tips raise the floor, fast.** Hygiene/spec violations went 2 → 0 in one cycle, including in the same model tier that committed them.
 4. **Reviewer spend is the scaling pressure** (~half of worker spend per task). The triage rule (Section 8) and consolidation pass (Section 6) are economic necessities, not nice-to-haves.
 5. **Weak tests are the blind spot.** A worker's bug survived its own suite because the test asserted only the negative. The distilled rule — assert the positive — is now in every future briefing.
+
+## 12. First External Project: Word Garden (examples/word-garden)
+
+The loop's first non-self subject: a small terminal word-guessing game,
+built in two iterations on 2026-06-11 (full forensic record and process
+report in [`examples/`](examples/README.md)). Run in manual agent-dispatch
+mode (Section 8, auth risk row); protocol otherwise per this PRD.
+
+| Metric | task-001 (no tips, 5 workers) | task-002 (21 tips, 3 workers triaged) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 3/3 |
+| Correctness bugs found in gate-passing field | 1 | 0 |
+| Verdict | adopt | adopt |
+| Winning model | **Opus 4.8** | **Sonnet 4.6** |
+| Worker agent tokens | ~223k | ~122k |
+| Reviewer agent tokens (share) | ~112k (50%) | ~83k (68%) |
+
+What it added to the loop's evidence base:
+
+1. **The thesis generalizes.** Third consecutive round across two projects
+   where the win moved down the cost ladder exactly when distilled tips
+   entered the briefing — and the field's defect rate fell to zero.
+2. **Tips need contract language.** Round-1 lessons phrased as "MUST"
+   were universally absorbed; the one phrased as "prefer..." was missed by
+   all three round-2 workers. The reviewer now distills imperatively.
+3. **Triage trade-off quantified.** Absolute cost down ~45%; reviewer share
+   of spend up 50% -> 68%. Consolidation and review-depth scaling are the
+   binding economic constraints, exactly as Section 8 predicted.
+4. **Per-task gate extensions work.** Cheap orchestrator-added mechanical
+   checks (piped-EOF exit, base-files-untouched) belong in the gate config
+   as first-class per-task entries — queued for M4's triage work.
 
 -----
 

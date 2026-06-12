@@ -42,6 +42,26 @@ class ConfigError(RuntimeError):
     """Raised when the config file is missing required structure."""
 
 
+def _parse_timeout(obj, label):
+    """Return a validated optional ``timeout_seconds`` from ``obj``.
+
+    None when absent; otherwise a positive number. Anything else is a
+    ConfigError.
+    """
+    timeout = obj.get("timeout_seconds")
+    if timeout is None:
+        return None
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ConfigError(
+            "{0} timeout_seconds must be a number".format(label)
+        )
+    if timeout <= 0:
+        raise ConfigError(
+            "{0} timeout_seconds must be positive".format(label)
+        )
+    return timeout
+
+
 class Config:
     """Parsed run configuration."""
 
@@ -98,7 +118,15 @@ class Config:
                 if worker_id in seen_ids:
                     raise ConfigError("duplicate worker id: {0}".format(worker_id))
                 seen_ids.add(worker_id)
-                workers.append({"id": worker_id, "command": list(command)})
+                workers.append(
+                    {
+                        "id": worker_id,
+                        "command": list(command),
+                        "timeout": _parse_timeout(
+                            entry, "worker '{0}'".format(worker_id)
+                        ),
+                    }
+                )
         elif legacy_worker is not None:
             if not isinstance(legacy_worker, dict):
                 raise ConfigError("legacy worker must be an object")
@@ -107,7 +135,13 @@ class Config:
                 raise ConfigError("worker.command must be a non-empty list")
             if not all(isinstance(arg, str) for arg in command):
                 raise ConfigError("worker.command entries must be strings")
-            workers = [{"id": "w1", "command": list(command)}]
+            workers = [
+                {
+                    "id": "w1",
+                    "command": list(command),
+                    "timeout": _parse_timeout(legacy_worker, "worker"),
+                }
+            ]
         else:
             raise ConfigError("config must contain 'workers' or 'worker'")
 
@@ -122,7 +156,10 @@ class Config:
                 raise ConfigError("reviewer.command must be a non-empty list")
             if not all(isinstance(arg, str) for arg in reviewer_command):
                 raise ConfigError("reviewer.command entries must be strings")
-            reviewer = {"command": list(reviewer_command)}
+            reviewer = {
+                "command": list(reviewer_command),
+                "timeout": _parse_timeout(reviewer_obj, "reviewer"),
+            }
 
         # Parse gate.
         gate = data.get("gate")

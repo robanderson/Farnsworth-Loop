@@ -75,6 +75,12 @@ class LoopTestBase(unittest.TestCase):
         _git(["init", "-b", "main"], path)
         _git(["config", "user.email", "test@example.com"], path)
         _git(["config", "user.name", "Test Runner"], path)
+        # Hermetic against host git config: managed environments may force
+        # commit signing globally (commit.gpgsign=true with a signing helper
+        # that rejects repos outside the session), which would fail every
+        # scratch-repo commit. Worktrees share this repo-local config, so the
+        # fake worker's commits are covered too.
+        _git(["config", "commit.gpgsign", "false"], path)
         # Ensure fake-worker commits succeed inside the worktree too: set a
         # global-ish identity via the repo's own config is enough because
         # worktrees share the repo config.
@@ -101,6 +107,15 @@ class LoopTestBase(unittest.TestCase):
         }
         if reviewer is not None:
             cfg["reviewer"] = reviewer
+        cfg_path = os.path.join(self.repo, "farnsworth.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        _git(["add", "-A"], self.repo)
+        _git(["commit", "-m", "add config"], self.repo)
+        return cfg_path
+
+    def _config_file_dict(self, cfg):
+        """Write an arbitrary config dict as farnsworth.json and commit it."""
         cfg_path = os.path.join(self.repo, "farnsworth.json")
         with open(cfg_path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh)

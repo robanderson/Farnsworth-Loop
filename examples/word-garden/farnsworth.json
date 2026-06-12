@@ -1,0 +1,122 @@
+{
+  "workers": [
+    {
+      "id": "w1",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--bare",
+        "--model",
+        "claude-haiku-4-5",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w2",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--bare",
+        "--model",
+        "claude-haiku-4-5",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w3",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--bare",
+        "--model",
+        "claude-sonnet-4-6",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w4",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--bare",
+        "--model",
+        "claude-sonnet-4-6",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "w5",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--bare",
+        "--model",
+        "claude-opus-4-8",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json"
+      ],
+      "timeout_seconds": 1800
+    }
+  ],
+  "reviewer": {
+    "command": [
+      "claude",
+      "-p",
+      "{prompt}",
+      "--bare",
+      "--model",
+      "claude-opus-4-8",
+      "--permission-mode",
+      "acceptEdits",
+      "--output-format",
+      "json"
+    ],
+    "timeout_seconds": 2700
+  },
+  "gate": [
+    {
+      "name": "tests",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests"
+      ]
+    },
+    {
+      "name": "compile",
+      "command": [
+        "python3",
+        "-m",
+        "compileall",
+        "-q",
+        "word_garden"
+      ]
+    }
+  ]
+}

@@ -78,6 +78,43 @@ def add_worktree(path, branch, cwd):
     run_git(["worktree", "add", str(path), "-b", branch], cwd)
 
 
+def list_worktrees(cwd):
+    """Return the absolute paths of all worktrees of the repo at ``cwd``.
+
+    The first entry git reports is the main worktree; callers that only
+    want linked worktrees should filter it out by comparing to the repo
+    toplevel.
+    """
+    proc = run_git(["worktree", "list", "--porcelain"], cwd)
+    paths = []
+    for line in proc.stdout.splitlines():
+        if line.startswith("worktree "):
+            paths.append(line[len("worktree "):])
+    return paths
+
+
+def remove_worktree(path, cwd, force=False):
+    """Remove the worktree at ``path``. ``force`` discards local changes."""
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    run_git(args, cwd)
+
+
+def list_branches(pattern, cwd):
+    """Return local branch names matching the glob ``pattern``."""
+    proc = run_git(
+        ["branch", "--list", "--format=%(refname:short)", pattern], cwd
+    )
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def delete_branch(branch, cwd):
+    """Delete the local branch ``branch`` even if unmerged."""
+    run_git(["branch", "-D", branch], cwd)
+
+
 def write_diff(base_commit, worktree_abs, output_path, repo_root):
     """Write the diff from base_commit to worktree-HEAD into output_path.
 

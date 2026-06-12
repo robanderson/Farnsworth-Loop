@@ -1,0 +1,20 @@
+{
+  "mapping": {
+    "A": "w2",
+    "B": "w1",
+    "C": "w3"
+  },
+  "models": {
+    "A": "sonnet-4.6",
+    "B": "haiku-4.5",
+    "C": "opus-4.8"
+  },
+  "agent_tokens": {
+    "A": 39119,
+    "B": 47209,
+    "C": 36203
+  },
+  "reviewer_tokens": 83269,
+  "unsealed": "post-verdict",
+  "note": "manual agent dispatch, triaged 3-worker fleet; see orchestrator-notes.md"
+}
