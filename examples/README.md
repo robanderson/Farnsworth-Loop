@@ -5,6 +5,25 @@ source, task briefs, anonymized candidate diffs, reviews, verdicts, run
 logs, the distilled `.code-tips.md`, and an orchestrator process log. Every
 decision in each example is reconstructible from the files alone.
 
+The TUI word game is a demonstration subject only — the loop itself is
+task- and domain-agnostic (PRD Section 2.3): a task is any brief with
+acceptance criteria and a mechanical gate, whether that's one-shotting a
+whole program, a milestone slice, or a bug fix on an existing codebase
+(a Gitea/Forgejo fork, a new MCP server) whose own build/test commands
+become the gate. The three recorded runs all used MILESTONE-SLICE grains
+(task-001 = engine, task-002 = UI on top — sequential floors of one
+build), and all three were also run as FIXED two-task pipelines — the
+task list was authored before the first dispatch, which PRD Section 2.4
+now forbids. The queued next design, word-garden-4, corrects both at
+once: it is GOAL-DRIVEN (the goal brief is SPEC section 20's acceptance
+criteria; `farnsworth done` decides after every merge whether to keep
+cycling — 2 iterations or 200, emergent, never a pre-planned list) and
+uses the RE-SHOT grain where useful: one-shot the entire game, distill
+the field's mistakes, one-shot it again with only the lessons carried
+forward — attempt 2 replaces attempt 1, and the progression note reports
+the attempt-to-attempt delta, the loop's learning measurement on an
+identical problem.
+
 Each task also carries a thirty-second `summary.md` table
 (`.farnsworth/task-NNN/summary.md`, the output of
 `farnsworth report <task-id>`): one row per worker with its focus, gate
@@ -13,6 +32,16 @@ all recorded runs when the summary-table feature landed (2026-06-12);
 the Focus column reads `-` for runs 1–2 because focus-diversified
 dispatch (PRD Section 2.1) did not exist yet. Run 3 was the first live
 tournament for both features.
+
+Since 2026-06-12 each merging verdict's summary also ends with a
+**progression note** (PRD Section 4.4): the reviewer's explanation of how
+the adopted code advances the previously adopted baseline — what it built
+on, what is new, what got better, and which distilled lessons it visibly
+absorbed. The verdict reasoning says why the winner beat the round's
+field; the progression note says how the project moved between tasks
+(e.g. how word-garden-3's accepted task-002 build improves on its
+task-001 engine). Present for word-garden-3's two tasks (recorded
+retroactively in their `run.json`); earlier runs predate the feature.
 
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|

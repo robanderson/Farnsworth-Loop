@@ -26,10 +26,22 @@ This PRD specifies a minimal reference implementation using the Anthropic ecosys
 ## 2. Core Loop
 
 ```
-TASK -> DISPATCH (parallel, blind) -> GATE (mechanical) -> REVIEW (anonymized)
-     -> VERDICT (adopt | synthesize | escalate) -> DISTILL (update .code-tips.md)
-     -> MERGE -> next TASK
+GOAL (objective brief + done checks)
+  |
+  v
+derive next TASK from the gap between merged state and goal
+  -> DISPATCH (parallel, blind) -> GATE (mechanical) -> REVIEW (anonymized)
+  -> VERDICT (adopt | synthesize | escalate) -> DISTILL (update .code-tips.md)
+  -> MERGE -> done check ----no----> derive next TASK (cycle continues)
+                  |
+                 yes
+                  v
+                STOP (goal complete)
 ```
+
+It is a LOOP: iterations repeat until the primary goal is complete —
+2 cycles for a small brief, 200 for a hard one (Section 2.4 defines the
+continuation and termination contract).
 
 One iteration in detail:
 
@@ -77,6 +89,89 @@ Rules:
 ### 2.2 Two-Round Mode (divergence-triggered)
 
 After the gate, the orchestrator measures divergence across candidates (approach, decomposition, files touched). If candidates substantially agree, proceed to review normally. If they scatter, the task was ambiguous: run the review and distillation, then re-dispatch the same task as a fresh blind round where workers receive the updated `.code-tips.md` but NOT the round 1 diffs. Distillation is the anti-anchoring filter: lessons travel, diffs do not. Two rounds maximum per task; a second scatter is an automatic escalation.
+
+### 2.3 Task Grain and Domain: the Loop Is Task-Agnostic
+
+A task is exactly three things: a brief (opaque text), acceptance
+criteria inside it, and a mechanical gate (configurable commands). The
+loop's machinery — dispatch, worktrees, gate, anonymized review, verdict,
+distillation — never inspects the task's content. Two consequences, both
+load-bearing:
+
+**Grain is the orchestrator's choice, not the protocol's.** Valid tasks
+include: one-shot an entire program from a spec; a milestone slice of a
+larger build; a bug fix; a refactor; a feature on a codebase the loop has
+never seen. The Word Garden examples (Sections 12–14) happened to use
+milestone slices (engine, then UI) — a choice made by those examples'
+briefs, not a property of the loop. The most instructive grain for
+MEASURING the loop is the **re-shot**: dispatch the whole problem as
+task-001, distill the field's mistakes, then dispatch the same whole
+problem again as task-002 — fresh blind workers, updated tips, no
+attempt-1 diffs (the Section 2.2 rule, promoted from a
+divergence-triggered exception to an explicit design choice). Attempt 2
+REPLACES attempt 1; the attempt-1 → attempt-2 delta on an identical
+problem is the cleanest direct measurement of "the project got smarter"
+the loop can produce. No recorded run has used the re-shot grain yet; it
+is the queued design for the next example.
+
+**Domain is the gate config's business, not the loop's.** Nothing in the
+protocol assumes Python, greenfield code, or a toy: point the loop at an
+existing repository — a Gitea/Forgejo fork, a new MCP server, a
+production service — and the gate becomes that project's own
+build/test/lint commands in `farnsworth.json`, the tips file accumulates
+that project's contracts, and briefs carry issues or change requests
+instead of spec sections. The CLI's only domain-flavored piece is the
+FALLBACK gate used when no `farnsworth.json` exists (`python3 -m unittest
+discover`), which any real project overrides. Greenfield demo, brownfield
+patch to a large Go codebase: same loop, different `farnsworth.json`.
+
+### 2.4 Loop Continuation: Cycling Until the Goal Is Done
+
+The unit of progress is an iteration; the unit of COMPLETION is the goal.
+The goal is declared up front — an objective brief (what done means, in
+acceptance-criteria form) plus mechanical done checks in `farnsworth.json`:
+
+```json
+"goal": {
+  "brief": "GOAL.md",
+  "done": [
+    {"name": "acceptance", "command": ["python3", "-m", "unittest", "discover", "-s", "tests"]},
+    {"name": "plays",      "command": ["sh", "-c", "printf '' | python3 -m word_garden"]}
+  ]
+}
+```
+
+`farnsworth done` runs the checks against the merged state: exit 0 means
+the goal is complete, exit 1 means keep looping, exit 2 means no goal is
+configured (which is itself the bug — a loop without a termination
+contract either stops early or never).
+
+Rules:
+
+- **One next task per cycle, derived from the gap.** After every merge
+  the orchestrator re-reads the goal against the merged state and writes
+  the NEXT task brief only. It MUST NOT pre-author the full task list at
+  the start: a pre-planned pipeline ("task-001 engine, task-002 UI, then
+  stop") is a waterfall wearing a loop's clothes — it cannot react to
+  verdicts, distilled lessons, or escalations, and it hardcodes the
+  iteration count that should be emergent. *(Observed in the wild: a
+  run-4 orchestrator session planned exactly that two-task pipeline
+  before the first dispatch and treated finishing the list as finishing
+  the job.)*
+- **Iteration count is emergent.** The brief's complexity decides whether
+  the loop cycles 2 times or 200. Nothing in the protocol fixes it.
+- **Done has two halves.** Mechanical: `farnsworth done` passes. Semantic:
+  the reviewer attests, in its final review, that the goal brief's
+  acceptance criteria are met by the merged state (the same
+  gate-vs-review division as Section 2's steps — the done checks filter
+  mechanics, the reviewer filters meaning). Both halves are required to
+  stop with outcome DONE.
+- **Exactly four exits.** DONE (both halves pass); ESCALATED (a change
+  request blocks all remaining work pending a human); STOPPED (a
+  human-set budget or iteration cap ran out); STALLED (no measurable
+  progress toward the done checks for 3 consecutive iterations — an
+  automatic escalation, never silent spinning). Every exit is recorded in
+  the orchestrator log with the iteration count.
 
 ## 3. Roles and Models
 
@@ -176,6 +271,8 @@ All loop state is file-based and inspectable: task briefs, candidate diffs, gate
 
 Every run additionally produces a short what-happened table — one row per worker (id, focus, exit, gate, candidate label, ADOPTED marker) plus the verdict and reasoning — written to `.farnsworth/<task-id>/summary.md`, printed at the end of `farnsworth run`, and reprintable any time with `farnsworth report <task-id>`. The table is the thirty-second read; `run.json` remains the contract of record.
 
+Whenever a verdict merges code, the summary also carries a reviewer-authored **progression note** (`review.progression` in `run.json`): how the merged code advances the previously adopted baseline — what it built on, what is new, what got better relative to the prior merged state, and which distilled lessons it visibly absorbed. The verdict reasoning explains why the winner beat the *field*; the progression note explains how the *project* moved. Without it, a reader of task-N's summary learns who won round N but not what round N added to rounds 1..N-1 — the exact question an outside user asks first. The reviewer writes it post-verdict (it has the cross-candidate and cross-task view); the orchestrator records it in `run.json` so `farnsworth report` reproduces it from the log alone. Under a re-shot task (Section 2.3) the baseline is the previous *attempt*, and the progression note becomes the loop's learning measurement itself: how attempt 2 improved on attempt 1.
+
 ## 5. MVP Scope
 
 In scope:
@@ -188,13 +285,14 @@ In scope:
 - Divergence-triggered two-round mode
 - Per-worker focus directives with unattributed disclosure to the reviewer (Section 2.1)
 - JSON run log per task with per-model costs (from `--output-format json`)
-- Run summary table: `.farnsworth/<task-id>/summary.md` + `farnsworth report <task-id>` (Section 4.4)
+- Run summary table: `.farnsworth/<task-id>/summary.md` + `farnsworth report <task-id>`, including the reviewer's progression note on merging verdicts (Section 4.4)
 - Housekeeping: per-command `timeout_seconds` and `farnsworth clean <task-id>` (Section 4.3)
+- Loop termination contract: `goal` config + `farnsworth done` (Section 2.4)
 
 Explicit non-goals (MVP):
 
 - No UI before the markdown loop works end to end. The TUI memory-map aesthetic is a later milestone, not MVP.
-- No task queue, scheduler, or daemon. One task per invocation.
+- No scheduler or daemon. The CLI runs one task per invocation; CYCLING is the orchestrator's job (Section 2.4), with `farnsworth done` as its termination probe. A `farnsworth loop` command that automates the cycle is post-MVP.
 - No cross-provider workers (GLM, MiniMax, Codex, local models). The dispatch interface must not preclude them, but MVP is Anthropic-only by design.
 - No autonomous PRD/contract mutation. Escalations surface to a human.
 - No fine-tuning, no embeddings, no vector store. The context layer is the only memory.
@@ -244,6 +342,7 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry; Word Garden 3 — duplicates in every background phase, all absorbed)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
 |Reviewer environment leaks worker identity |*(observed: Word Garden 3)* A naive clone for the reviewer carries worker-named branches (`task-001-w1`…), de-anonymizing candidates by id. Construct the review environment: base tree + labeled diffs + gate notes ONLY — no refs, no worktrees, no mapping files                                  |
 |Workers "improve" a required signature     |*(observed: Word Garden 3 — an extra `new_game_fn` param forfeited an otherwise-winning candidate)* Briefs and tips state required signatures are exact and CLOSED contracts; proposed improvements go to escalation or a follow-up task, never silently into the diff                          |
+|Pre-planned task pipeline masquerades as the loop|*(observed: a run-4 orchestrator pre-authored "task-001 engine, task-002 UI" before the first dispatch and treated finishing the list as finishing the job)* Section 2.4: one next task per cycle, derived from the goal gap post-merge; `farnsworth done` decides continuation, never a checklist|
 
 ## 9. Milestones
 
@@ -269,6 +368,7 @@ Later agents and reviewers score the implementation against this checklist:
 - [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
 - [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; six data points banked)*
 - [x] Every run yields a `summary.md` table a human can read in thirty seconds; `farnsworth report <task-id>` reprints it from `run.json` alone.
+- [x] Every merging verdict's summary carries a progression note explaining how the adopted code advances the previously adopted baseline, not just why it beat the field. *(introduced 2026-06-12 after Word Garden 3; present for both of that run's tasks)*
 - [x] Focus directives never reach the reviewer attributed to a candidate or worker id; each worker sees only its own focus.
 
 ## 11. Dogfooding Findings (tasks 001–002)
