@@ -89,7 +89,9 @@ def _json_flag(subparser):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="farnsworth",
-        description="Farnsworth Loop -- single-task agent loop (M1 skeleton).",
+        description="Farnsworth Loop -- the mechanical trust layer: "
+        "worktrees, gates, anonymized review, artifacts (conductors "
+        "drive these phases; humans use them for replay and audit).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

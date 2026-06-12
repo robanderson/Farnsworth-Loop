@@ -2,10 +2,17 @@
 
 > *"Good news, everyone!"*
 
-**Five AI coders attempt your task in parallel, blind. An AI judge
-reviews their diffs anonymized — no names, no models, no order. The
-winner merges. The losers' mistakes become lessons in every future
-briefing. The models never get smarter; your project does.**
+**The Farnsworth Loop is the Ralph loop made self-evaluating.** Keep
+Ralph's shape — a dumb driver, fresh contexts every pass, all memory
+on disk in git, run unattended — and substitute intelligence at the
+three places Ralph has none: each iteration's single attempt becomes a
+two-round, best-of-N blind tournament where round one's distilled
+lessons and champion (never its code) advance into round two; Ralph's
+human guardrail-tuner becomes the judge's automated distillation into
+the tips file; and Ralph's infinite `while :` becomes a termination
+contract — every cycle is scored against the rubric and the test
+suite, and completion is decided against the *original goal*,
+mechanically and by attestation.
 
 ---
 
@@ -14,11 +21,11 @@ briefing. The models never get smarter; your project does.**
 Agent loops differ on exactly one axis: **what flows back through the
 feedback path.**
 
-| Loop | Feedback | What it is |
-|---|---|---|
-| **Ralph** | nothing | same prompt, fresh context, persistence as strategy |
-| **Karpathy** | a number | keep or discard against a metric — a thermostat |
-| **Farnsworth** | *lessons* | a review phase distills every attempt — winners **and** losers — into tips injected into every future briefing |
+| Loop | Feedback | Ignition | Knows when it's done |
+|---|---|---|---|
+| **Ralph** | nothing — same prompt, fresh context, persistence as strategy | one command, unattended | never: `while :` ends at Ctrl-C or an empty wallet |
+| **Karpathy** | a number — keep what beats the metric, revert the rest | one command, unattended | never: hill-climbs until you stop paying |
+| **Farnsworth** | *lessons* — every attempt, winners **and** losers, distilled into every future briefing | one command, unattended | **yes** — done checks + attestation against the original goal |
 
 Most software work has no cheap metric to thermostat against, and
 persistence alone just repeats yesterday's mistakes with today's
@@ -101,44 +108,67 @@ Agents never grade their own work; code never asks an agent to do what
 a subprocess does for free; and every decision is reconstructible from
 git history alone — no database, no hidden state.
 
-## Quickstart
+## The premise engine (why "Farnsworth")
 
-**The conductor** (dynamic workflows, Claude Code ≥ 2.1.154): ask
-Claude to run the `farnsworth-loop` workflow —
+Professor Hubert J. Farnsworth's role in Futurama is to **create the
+premise**: he announces *"Good news, everyone!"* — news that is
+frequently terrible — and the crew gets dispatched to suffer the
+consequences. The loop adopts its namesake faithfully:
+
+- **Every cycle opens with a premise.** The orchestrator reads the gap
+  between the merged state and the goal and announces the next mission
+  — the smallest gateable slice of what's missing. The task brief *is*
+  the premise.
+- **The crew implements it, blind.** Workers are sent into isolated
+  worktrees on what may well be a lethal mission; their failures are
+  not wasted, they're distilled.
+- **The episode gets judged.** A premise can be absurd, dangerous, or
+  wrong — the Professor is brilliant but careless — so nothing trusts
+  it blindly: the judge can escalate a broken premise, the verifier
+  attacks the verdict, and the attestor can refuse to call the goal
+  met. The end of every cycle asks the only question that matters:
+  *did the premise advance the goal?*
+- And per house convention, every distilled lesson lands in git as
+  `Good news, everyone! <what we learned>` — delivered exactly the way
+  the Professor would, whether or not the news is good.
+
+## Ignition
+
+One action, then it runs wild until the job is attested done — that is
+the contract. With dynamic workflows enabled (Claude Code ≥ 2.1.154),
+ask Claude to run the `farnsworth-loop` workflow:
 
 ```js
 { repo: '/abs/path/to/your-project',
   fleet: [ /* optional override — confirmed in the Fleet phase */ ] }
 ```
 
-— and it cycles: probe the goal → derive the smallest next task →
-nested `farnsworth-task` tournament (Fleet → R1 Explore → R1 Gate →
-R1 Judge → Distill → R2 Rebuild → R2 Gate → R2 Judge → Verify →
-Finalize) → merge → attest → **go again**, until DONE / ESCALATED /
-STOPPED / STALLED. Run `farnsworth-task` with
+It cycles: **premise** (derive the smallest next task) → nested
+`farnsworth-task` tournament (Fleet → R1 Explore → R1 Gate → R1 Judge
+→ Distill → R2 Rebuild → R2 Gate → R2 Judge → Verify → Finalize) →
+merge → probe + attest against the goal → **go again**, exiting only
+at DONE / ESCALATED / STOPPED / STALLED. Run `farnsworth-task` with
 `{ repo, brief: 'tasks/task-001.md' }` for a single turn of the crank.
-Watch either in `/workflows`: live per-agent token counts,
-pause/stop keys.
+Watch either in `/workflows`: live per-agent token counts, pause/stop
+keys. (A Ralph-grade `python3 -m farnsworth loop` one-liner for
+subprocess and local fleets is the next build — see Now and next.)
 
-**The fallback** (any host — skills + CLI, phase by phase):
+Seed a new project's `.code-tips.md` from
+[`seed-tips.md`](seed-tips.md) — the cross-project lessons distilled
+from every recorded run — and declare a `goal` with done checks in
+`farnsworth.json`: a loop without a termination contract either stops
+early or never.
 
-```bash
-cd your-project                              # a clean git repo
-python3 -m farnsworth preflight              # canary the fleet first
-python3 -m farnsworth run tasks/task-001.md  # round-1 worktrees + briefings
-#   …spawn one coder subagent per briefing (blind, parallel)…
-python3 -m farnsworth gate task-001          # deadline-gated, anonymized
-#   …spawn the judge; install its distilled lessons;
-#    repeat run/gate/judge on the round-2 brief (clean-slate rebuild,
-#    champion relabeled into the review field)…
-python3 -m farnsworth finalize task-001-r2   # validate verdict → run.json
-python3 -m farnsworth adopt task-001-r2 --clean  # merge + install lessons
-python3 -m farnsworth done                   # goal probe: 0 done / 1 loop
-```
+### Under the hood: the forensic interface
 
-Every phase command takes `--json` for machine-readable output. Seed a
-new project's `.code-tips.md` from [`seed-tips.md`](seed-tips.md) — the
-cross-project lessons distilled from every recorded run.
+The conductors drive a Python CLI that owns every mechanical phase —
+`preflight`, `run`, `gate`, `finalize`, `adopt`, `done`, `report`,
+`metrics`, `clean` — each emitting `--json` records and exit codes the
+scripts consume. You never need to drive it by hand to *use* the loop;
+you reach for it to **replay, audit, or debug** a round, because every
+phase boundary is a file in git: briefings, anonymized diffs, gate
+autopsies, verdicts, attestations. No database, no hidden state — any
+decision reconstructible from history alone.
 
 ## Pick your fleet
 
@@ -219,6 +249,10 @@ What's proven in recorded runs versus what's on the bench
       MiniMax, Qwen, Codex, and local models via Ollama / LM Studio /
       MLX through the command adapter — the adapter works; the first
       live non-Anthropic fleet hasn't run yet
+- [ ] **`python3 -m farnsworth loop` — the Ralph-grade CLI ignition:**
+      one terminal command cycling premise → tournament → merge →
+      attest, unattended, for subprocess/local fleets (M7's CLI
+      mechanization of the two-round spine, plus the loop driver)
 - [ ] **Heterogeneous fields:** Claude + third-party + local agents
       competing in the *same* anonymized round (config currently
       enforces one dispatch mode per fleet)
