@@ -204,7 +204,9 @@ def main(argv=None):
                     "Prepared {0} for delegate dispatch (subscription-billed "
                     "subagents).".format(ledger["task_id"])
                 )
-                print("Spawn one subagent per worker, then run "
+                print("Spawn one farnsworth-coder subagent per worker (in "
+                      "parallel; the /farnsworth-task workflow scripts "
+                      "this), then run "
                       "'farnsworth gate {0}':".format(ledger["task_id"]))
                 print("")
                 for worker in ledger["workers"]:
@@ -253,8 +255,9 @@ def main(argv=None):
             print("No candidates passed the gate; nothing to review.")
             return 1
         print(
-            "Candidates ready. Spawn the reviewer subagent (model={0}) "
-            "pinned to the review environment {1}, prompted with {2}, then "
+            "Candidates ready. Spawn the farnsworth-judge subagent "
+            "(model={0}) pinned to the review environment {1}, prompted "
+            "with {2}, then "
             "run 'farnsworth finalize {3}'.".format(
                 ledger["reviewer_model"],
                 ledger["review_env"],
@@ -319,7 +322,8 @@ def main(argv=None):
             briefing_path = write_attestation_briefing(config.goal, repo_root)
             print("GOAL COMPLETE (mechanical half): all done checks pass.")
             print(
-                "Dispatch the reviewer with {0} for the semantic half; "
+                "Dispatch the farnsworth-attestor subagent with {0} for "
+                "the semantic half; "
                 "exit DONE requires both (PRD Section 2.4).".format(
                     os.path.relpath(briefing_path, repo_root)
                 )

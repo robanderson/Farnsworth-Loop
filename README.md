@@ -26,6 +26,13 @@ python3 -m farnsworth done       # goal probe: exit 0 done / 1 keep looping
 python3 -m farnsworth metrics    # cross-run health table from all run.json
 ```
 
+From a Claude Code session the whole sequence ships as a packaged
+workflow (Section 4.1c): `/farnsworth-task tasks/task-001.md` runs one
+tournament round end-to-end — the orchestrating session spawns the
+`farnsworth-coder` and `farnsworth-judge` subagents at the two exit-3
+boundaries itself — and `/farnsworth-loop` cycles tasks until the goal
+is done, dispatching the `farnsworth-attestor` for the semantic half.
+
 (Subprocess `command` fleets — the third-party adapter, Section 4.1 —
 collapse the first three steps into one: `farnsworth run` dispatches,
 gates, and reviews end-to-end.)
@@ -509,6 +516,54 @@ delegate mode has no per-worker `total_cost_usd` stream, so cost rows in
 the summary come only from subprocess runs; the orchestrator notes
 delegate-round costs in the process log instead.
 
+### 4.1c The packaged Claude workflow: agents and skills
+
+Delegate dispatch left one gap: the orchestration protocol itself — who
+spawns which subagent, with what prompt, under which blindness and
+liveness rules — traveled as prose in this PRD and improvised
+orchestrator sessions. A protocol traveling inside an orchestrator
+prompt is a protocol that drifts (the same argument that moved the
+review protocol into the CLI-written `review-briefing.md`). The
+workflow is therefore packaged as repo-versioned Claude Code assets:
+
+```text
+.claude/agents/farnsworth-coder.md     the worker role: worktree-pinned,
+                                       commit-as-artifact, no delegation
+                                       (no Agent tool), blind, protected
+                                       files restated
+.claude/agents/farnsworth-judge.md     the reviewer role: review-env-
+                                       pinned, blind sketch first,
+                                       empirical probes, select-or-author
+                                       verdict, distillation contract
+.claude/agents/farnsworth-attestor.md  the semantic done-half: verify
+                                       criteria empirically, attest or
+                                       refuse, never fix
+.claude/skills/farnsworth-task/        one tournament round: preflight ->
+                                       run -> parallel coder dispatch ->
+                                       gate -> judge dispatch -> finalize
+                                       -> report -> verdict handling
+.claude/skills/farnsworth-loop/        the goal cycle: done probe ->
+                                       smallest-slice task derivation ->
+                                       /farnsworth-task -> journal ->
+                                       attestation -> the four exits
+```
+
+Division of labor is unchanged: every mechanical phase stays in the CLI;
+the skills script only the two points where agents do the work, plus
+verdict handling. The agent definitions are defence in depth, not a
+replacement for the CLI-written briefings — the coder's rules restate
+the `WORKER_PREAMBLE` the briefing already carries, the judge's restate
+the `REVIEWER_PREAMBLE`, and the gate still enforces the commit/hygiene
+contract mechanically whatever any prompt said. Model routing maps the
+ledger's model ids onto the host's subagent model override
+(`claude-haiku-*` → haiku, `claude-sonnet-*` → sonnet, `claude-opus-*`
+→ opus, `claude-fable-*` → fable). The coder deliberately has no Agent
+tool (the wine-stock nested-delegation incident, Section 17, enforced
+structurally this time), and the skill keeps the orchestrator out of
+the de-anonymization path: it knows the ledger mapping, so it never
+inspects candidate diffs pre-verdict and never relays
+worker/model/focus identity to the judge.
+
 ### 4.2 The knowledge artifact: `.code-tips.md`
 
 Format:
@@ -583,6 +638,7 @@ In scope:
 
 - Single-task loop, CLI-invoked: `farnsworth run task-brief.md`
 - Delegate dispatch for Anthropic-model fleets (Section 4.1b) — the default and the only sanctioned mode for Anthropic models since the June 2026 `claude -p` subscription caps: `run` -> `gate` -> `finalize` phases around host-session subagents, subscription-billed; the CLI's built-in default fleet is delegate
+- The packaged Claude workflow (Section 4.1c): `.claude/agents/` role definitions (coder, judge, attestor) and `.claude/skills/` orchestration (`/farnsworth-task`, `/farnsworth-loop`), so the delegate-dispatch protocol ships as versioned code instead of orchestrator-prompt prose
 - Parallel blind dispatch to the 5-worker fleet via worktrees
 - Mechanical gate (configurable build/test/lint commands)
 - Anonymized review with three-outcome verdict
