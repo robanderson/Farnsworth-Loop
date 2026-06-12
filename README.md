@@ -26,46 +26,51 @@ tokens. The Farnsworth Loop closes the loop with **semantic feedback**:
 failures are not wasted tokens, they are gotchas passed forward —
 inspectable, diffable, versioned in git next to the code they describe.
 
-## One task, end to end: explore, distill, rebuild
+## The loop, end to end
+
+It is a loop twice over: rounds repeat **inside** a task until
+something is adoptable, and tasks repeat until the goal is done — two
+cycles for a small brief, two hundred for a hard one. Each pass is
+deliberately small: explore, learn, rebuild with the knowledge (never
+the code), select, inspect against the goal, and **go around again**
+with the next instruction added.
 
 ```
-         tasks/task-042.md  +  .code-tips.md (the project's memory)
-                                │
-  ROUND 1 — EXPLORE             ▼
-        ┌───────┬───────────┬───┴───────┬─────── ─ ─ ┐   N blind, parallel,
-      coder   coder       coder       coder        coder  focus-diversified
-        └───────┴───────────┴───┬───────┴─────── ─ ─ ┘   agents — your pick
-                                ▼
-              GATE-1   mechanical evidence — tests, build, hygiene,
-                       commits-as-artifact; results travel WITH each
-                       candidate, they don't filter the field
-                                ▼
-               JUDGE   anonymized diffs A/B/C/D, randomized order,
-                       blind sketch first; probe the passers,
-                       idea-mine the failers
-                                ▼
-           VERDICT-1   crown a CHAMPION (or none) · escalate
-                                ▼
-             DISTILL   lessons → .code-tips.md; mechanizable lessons
-                       ratchet into gate-2 — code is thrown away,
-                       lessons travel
-                                │
-  ROUND 2 — INFORMED REBUILD    ▼
-                       fresh blind coders, clean slate:
-                       brief + distilled lessons — never round-1 code
-                                ▼
-              GATE-2   strict, including the round-1 ratchets
-                                ▼
-               JUDGE   round-2 field + the champion, relabeled
-                       together — "did learning beat blind
-                       exploration?" is decided blind
-                                ▼
-              VERIFY   fresh eyes attack the verdict's claims
-                                ▼
-           VERDICT-2   adopt · synthesize · escalate  →  MERGE
-                                ▼
-             DISTILL → derive the next task from the goal gap,
-                       until `farnsworth done` says DONE
+            GOAL — the termination contract: what done means
+              │
+              ▼
+   ┌──────▶ DERIVE the next task — the smallest gateable
+   │         slice of what's still missing
+   │          │
+   │          ▼
+   │      EXPLORE    N blind parallel coders, focus-diversified —
+   │          │      your fleet: Claude tiers, GLM, Qwen, local…
+   │          ▼
+   │      GATE-1 ─▶ JUDGE (anonymized A/B/C/D, blind sketch first)
+   │          │      ─▶ VERDICT-1: crown a CHAMPION
+   │          ▼
+   │      DISTILL    lessons → .code-tips.md — the code is thrown
+   │          │      away; the lessons enter every future briefing
+   │          ▼
+   │      REBUILD    fresh blind coders, clean slate: the brief +
+   │          │      the lessons, never round-1 code
+   │          ▼
+   │      GATE-2 ─▶ JUDGE (champion relabeled in, judged blind)
+   │          │      ─▶ VERIFY (fresh eyes attack the verdict)
+   │          │
+   │      nothing adoptable? ──▶ distill again, rebuild again
+   │          │                  (each extra round must show
+   │          ▼                   progress, or the task escalates)
+   │      MERGE the winner
+   │          │
+   │          ▼
+   │      INSPECT against the goal — `farnsworth done` + attestation
+   │          │
+   └── not done: bank the lessons, name the gap,
+              │  derive the next slice — GO AGAIN
+              ▼
+        DONE — both halves attested · or ESCALATED / STOPPED / STALLED,
+        always recorded, never silent
 ```
 
 Anonymity is load-bearing twice over: the judge never learns which
@@ -99,16 +104,21 @@ git history alone — no database, no hidden state.
 ## Quickstart
 
 **The conductor** (dynamic workflows, Claude Code ≥ 2.1.154): ask
-Claude to run the `farnsworth-task` workflow —
+Claude to run the `farnsworth-loop` workflow —
 
 ```js
-{ repo: '/abs/path/to/your-project', brief: 'tasks/task-001.md',
+{ repo: '/abs/path/to/your-project',
   fleet: [ /* optional override — confirmed in the Fleet phase */ ] }
 ```
 
-— and watch it in `/workflows`: Fleet → R1 Explore → R1 Gate →
+— and it cycles: probe the goal → derive the smallest next task →
+nested `farnsworth-task` tournament (Fleet → R1 Explore → R1 Gate →
 R1 Judge → Distill → R2 Rebuild → R2 Gate → R2 Judge → Verify →
-Finalize, with live per-agent token counts and pause/stop keys.
+Finalize) → merge → attest → **go again**, until DONE / ESCALATED /
+STOPPED / STALLED. Run `farnsworth-task` with
+`{ repo, brief: 'tasks/task-001.md' }` for a single turn of the crank.
+Watch either in `/workflows`: live per-agent token counts,
+pause/stop keys.
 
 **The fallback** (any host — skills + CLI, phase by phase):
 

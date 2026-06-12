@@ -806,7 +806,13 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
    from Section 2.2, scripted), blind verdict-2 with the
    champion-survival negative result recorded, adversarial Verify, and
    finalize/adopt routed through whichever round's task owns the
-   winner. Plus `--json` conductor mode across the phase commands,
+   winner — and `.claude/workflows/farnsworth-loop.js` closing the
+   OUTER loop (the part that makes it a loop at all): probe `done` →
+   attest when mechanics pass → derive the smallest next slice (the
+   attested gap is the next instruction) → nested `farnsworth-task`
+   tournament (one level of workflow nesting, the documented maximum)
+   → merge → back to the probe, with stall accounting and the four
+   recorded exits. Plus `--json` conductor mode across the phase commands,
    gate hardening from the word-garden-6 live run (per-command
    deadlines, stdin closed, commit-check-first, parallel worktree
    gating with streamed progress), and DYNAMIC FLEET SELECTION: the
