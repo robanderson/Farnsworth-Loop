@@ -1,0 +1,23 @@
+{
+  "A": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "eof_smoke": "exit 0",
+    "engine_untouched": true,
+    "passed": true
+  },
+  "B": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "eof_smoke": "exit 0",
+    "engine_untouched": true,
+    "passed": true
+  },
+  "C": {
+    "tests": "exit 0",
+    "compile": "exit 0",
+    "eof_smoke": "exit 0",
+    "engine_untouched": true,
+    "passed": true
+  }
+}

@@ -8,6 +8,7 @@ decision in each example is reconstructible from the files alone.
 | Example | What it is | Tasks | Verdicts |
 |---|---|---|---|
 | [`word-garden-1/`](word-garden-1/) | A friendly terminal word-guessing game (Hangman with plants) — the loop's first external project | 2 | adopt, adopt |
+| [`word-garden-2/`](word-garden-2/) | The same game, rebuilt from the same spec as a controlled REPLICATION of run 1 (fresh seed, empty tips file) | 2 | adopt, adopt |
 
 ## Word Garden — how this example was produced
 
@@ -97,6 +98,46 @@ Process findings, distilled from `.farnsworth/orchestrator-log.md`:
    `commit.gpgsign=true` globally break worker commits in scratch repos;
    seed repos and test fixtures must set `commit.gpgsign=false` locally
    (the loop's own test suite was fixed accordingly).
+
+## Word Garden 2 — the replication run (2026-06-12)
+
+Same spec, byte-identical task-001 brief, same fleet mix, same gate — re-run
+from a fresh seed with an EMPTY tips file, to see which run-1 findings
+reproduce. Full process report: [`word-garden-2/.farnsworth/orchestrator-log.md`](word-garden-2/.farnsworth/orchestrator-log.md).
+
+| | run 1 task-001 | run 2 task-001 | run 1 task-002 (tips) | run 2 task-002 (tips) |
+|---|---|---|---|---|
+| Gate | 5/5 | 5/5 | 3/3 | 3/3 |
+| Bugs in gate-passing field | 1 | 2 | 0 | 1 |
+| Winner | Opus | **Opus** ✓ | Sonnet | **Opus** ✗ |
+
+What replicated, and what didn't:
+
+1. **Replicated:** empty-tips round won by the strongest model; gate
+   filters mechanics while review catches real bugs in gate-passing code
+   (a "flags right, message wrong" terminal-guess defect in two
+   candidates); tips cut the field's defect rate (2 → 1); duplicated
+   dispatches absorbed harmlessly by the artifact-boundary rule; Haiku
+   spending the most motion for the weakest candidates.
+2. **Did NOT replicate:** the win moving down the cost ladder once tips
+   entered the briefing. Opus won both rounds. Conclusion folded into the
+   PRD: the durable, twice-reproduced effect of tips is the field's defect
+   FLOOR, not the winner's identity — track defects-per-round as the
+   primary learning signal, and treat per-model win rates as noise until
+   there are many more rounds.
+3. **New finding — memory is project-scoped, mistakes are not.** Run 2's
+   Haiku committed exactly the argparse defect (`try/except SystemExit`
+   swallowing usage exit codes) that run 1 had already distilled into
+   word-garden-1's tips — but this fresh project's memory was empty, and
+   its engine round produced no CLI tips. Proposed loop extension:
+   a small curated CROSS-PROJECT tips seed for round 1 of new projects.
+4. **Tip-phrasing finding, level 2:** run 1 learned advisory tips get
+   ignored; run 2 learned imperative tips ALSO get ignored outside their
+   stated scope (the MSG_*-reuse tip didn't say "applies to tests too";
+   2 of 3 workers string-matched literals in tests). Distillation rule now:
+   contract language AND explicit scope.
+
+Play it: identical commands to word-garden-1, from `examples/word-garden-2`.
 
 ## Reproducing with the CLI
 

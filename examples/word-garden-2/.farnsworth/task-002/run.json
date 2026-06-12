@@ -1,0 +1,122 @@
+{
+  "task_id": "task-002",
+  "started_at": "2026-06-12T01:00:00Z",
+  "finished_at": "2026-06-12T01:50:00Z",
+  "base_commit": "929ebe7fb23d76d69914ea727cdec8f3b6590290",
+  "mode": "manual-agent-dispatch",
+  "triage": "routine task -> 3-worker fleet (1 haiku, 1 sonnet, 1 opus), 21 tips in every briefing",
+  "workers": [
+    {
+      "id": "w1",
+      "branch": "task-002-w1",
+      "worktree": "../wg2t2-w1",
+      "exit_code": 0,
+      "tests": 70,
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compile",
+            "exit_code": 0,
+            "autopsy": "compile: exit 0"
+          },
+          {
+            "name": "eof_smoke",
+            "exit_code": 0,
+            "autopsy": "piped EOF: exit 0"
+          },
+          {
+            "name": "engine_untouched",
+            "exit_code": 0,
+            "autopsy": "engine files byte-identical to base"
+          }
+        ]
+      },
+      "candidate_label": "A"
+    },
+    {
+      "id": "w2",
+      "branch": "task-002-w2",
+      "worktree": "../wg2t2-w2",
+      "exit_code": 0,
+      "tests": 80,
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compile",
+            "exit_code": 0,
+            "autopsy": "compile: exit 0"
+          },
+          {
+            "name": "eof_smoke",
+            "exit_code": 0,
+            "autopsy": "piped EOF: exit 0"
+          },
+          {
+            "name": "engine_untouched",
+            "exit_code": 0,
+            "autopsy": "engine files byte-identical to base"
+          }
+        ]
+      },
+      "candidate_label": "B"
+    },
+    {
+      "id": "w3",
+      "branch": "task-002-w3",
+      "worktree": "../wg2t2-w3",
+      "exit_code": 0,
+      "tests": 61,
+      "gate": {
+        "passed": true,
+        "results": [
+          {
+            "name": "tests",
+            "exit_code": 0,
+            "autopsy": "tests: exit 0"
+          },
+          {
+            "name": "compile",
+            "exit_code": 0,
+            "autopsy": "compile: exit 0"
+          },
+          {
+            "name": "eof_smoke",
+            "exit_code": 0,
+            "autopsy": "piped EOF: exit 0"
+          },
+          {
+            "name": "engine_untouched",
+            "exit_code": 0,
+            "autopsy": "engine files byte-identical to base"
+          }
+        ]
+      },
+      "candidate_label": "C"
+    }
+  ],
+  "divergence": "low (identical file footprints); no round-2 trigger",
+  "review": {
+    "exit_code": 0,
+    "verdict": {
+      "outcome": "adopt",
+      "candidate": "C",
+      "reasoning": "All three candidates pass the mechanical gate and my empirical probes for the core game (scripted win and loss, ASCII purity over a whole game including end screens, emoji non-ASCII, invalid input not consuming water, weeds rendered as a standalone count not a fraction of water, SPEC section 9 display order, repeated-letter words, EOF and KeyboardInterrupt clean exit 0). C is the clear adopt: it is the only candidate that honors the .code-tips.md MSG_* contract (tests assert against game.MSG_CORRECT/MSG_WRONG and a shared GOODBYE constant rather than re-typed literals), exposes a public growth_stage() that is unit-tested directly (including the win-beats-loss-at-zero-water invariant), reuses the engine's is_won/is_lost predicates instead of re-deriving win/loss from water, keeps emoji glyphs as \\U escapes so the source itself is ASCII-safe, handles EOF and KeyboardInterrupt in one clean handler, and adds a captioned Plant line that is the most accessible growth-stage rendering. A has a real defect (argparse SystemExit is swallowed, so usage errors exit 0 instead of 2) and the weakest tests (its 'win' test never forces or asserts an actual win). B is solid and argparse-correct but its title glyph is static, one win test is effectively a no-op, and it ignores the MSG_* contract. Adopt C as-is; optionally backfill C with a couple of B's extra render-substring tests, but no synthesis is required."
+    }
+  },
+  "agent_tokens": {
+    "workers_total": 192912,
+    "reviewer": 106385
+  }
+}

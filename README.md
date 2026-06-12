@@ -183,6 +183,8 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 
 *Second measurement note from the Word Garden example: track per-ATTEMPT cost alongside per-model win rate — in the 5-way round, Opus won with the fewest tokens of the field (~31k, 12 tool calls) while a Haiku burned ~76k/64 calls on a weaker candidate; "cheap model" and "cheap attempt" are different quantities. And under triage the reviewer's SHARE of spend rises (50% -> 68% observed) even as absolute cost falls, because review depth is fixed while the field shrinks.*
 
+*Third measurement note, from the Word Garden 2 replication (Section 13): defects-per-round in gate-passing candidates is the loop's primary EARLY learning signal — it improved under tips in both runs (1→0, 2→1) while the winning model's identity did not reproduce (metric 2 is long-horizon, noisy at one round per cell). Reviewer share also tracks worker economy, not just field size: a triaged round with heavy worker attempts kept the reviewer at ~55%, not the 68% seen before.*
+
 ## 8. Risks and Mitigations
 
 |Risk                                    |Mitigation                                                                                                                                                               |
@@ -200,6 +202,7 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
 |Billing surprises                       |From 15 June 2026, `claude -p` on subscription plans draws from a separate monthly Agent SDK credit; budget accordingly or run workers on API keys                       |
 |Nested `claude -p` cannot authenticate in managed sandboxes|*(observed: Word Garden example)* Credentials are host-managed FDs that child processes don't inherit. Dispatch is conceptually an adapter: the same blind/anonymized protocol runs via agent-tool sub-agents (manual mode) — used for tasks 001–002 and the Word Garden example                  |
 |Host git config forces commit signing   |*(observed: Word Garden example)* Global `commit.gpgsign=true` with a session-scoped signer fails every scratch/worktree commit; seed repos with repo-local `commit.gpgsign=false` (worktrees inherit it). The test suite is hermetic against this since task-002                              |
+|Single-round wins read as a trend       |*(observed: Word Garden 2)* The cheaper-model-wins streak broke on replication while the defect-floor effect held; treat per-model win rate as long-horizon, score learning by defects-per-round (Sections 7, 13)                                            |
 |Hung, orphaned, or duplicated dispatches|*(observed: Word Garden example — a duplicate task-001 reviewer stalled for 35+ min after an infra retry)* Housekeeping rules in Section 4.3: per-command timeouts, artifact-is-the-phase-boundary idempotency, `farnsworth clean` before re-dispatch; ledger + liveness checks in manual mode|
 
 ## 9. Milestones
@@ -277,6 +280,49 @@ What it added to the loop's evidence base:
 4. **Per-task gate extensions work.** Cheap orchestrator-added mechanical
    checks (piped-EOF exit, base-files-untouched) belong in the gate config
    as first-class per-task entries — queued for M4's triage work.
+
+## 13. First Replication: Word Garden 2 (examples/word-garden-2)
+
+The first controlled replication (2026-06-12): the same Word Garden spec,
+byte-identical task-001 brief, same fleet mix and gate as Section 12's run,
+re-seeded fresh with an EMPTY tips file. Full forensics:
+[`examples/word-garden-2/`](examples/word-garden-2/); process report in its
+`.farnsworth/orchestrator-log.md`.
+
+| Metric | task-001 (no tips, 5 workers) | task-002 (21 tips, 3 workers triaged) |
+|---|---|---|
+| First-pass gate rate | 5/5 | 3/3 |
+| Correctness bugs found in gate-passing field | 2 | 1 |
+| Verdict | adopt | adopt |
+| Winning model | **Opus 4.8** | **Opus 4.8** |
+| Worker agent tokens | ~218k | ~193k |
+| Reviewer agent tokens (share) | ~118k (54%) | ~106k (55%) |
+
+What the replication confirmed, broke, and added:
+
+1. **Confirmed:** gate-vs-review division (review again found real bugs in
+   gate-passing candidates — a terminal-guess "flags right, message wrong"
+   defect in two of five); tips lowering the field's defect rate (2 → 1);
+   empty-tips rounds going to the strongest model; duplicated dispatches
+   absorbed harmlessly by the artifact-boundary rule (Section 4.3).
+2. **Broke:** the headline "win moves down the cost ladder with tips."
+   Opus won BOTH rounds here, ending a three-round streak across two
+   projects. Revision: the loop's reproducible learning signal is the
+   defect FLOOR of the field, not the winner's identity. Per-model win
+   rate (Section 7.2) is a long-horizon metric; defects-per-round in
+   gate-passing candidates is the early one. The thesis stands — the
+   project gets smarter — but its evidence is the floor, not the podium.
+3. **Added — memory is project-scoped, mistakes are not.** Run 2's Haiku
+   committed exactly the argparse defect run 1 had already distilled into
+   the OTHER project's tips file. Proposed extension (queued for M3):
+   a small curated cross-project tips seed — domain-general contracts
+   (argparse exit codes, assert-the-positive, injected I/O) injected into
+   round 1 of any new project, distinct from project-scoped tips.
+4. **Added — tips must declare scope.** Run 1: advisory tips get ignored
+   (write imperatively). Run 2: imperative tips get ignored OUTSIDE their
+   stated scope (the MSG_*-reuse tip didn't say it bound tests too; 2 of 3
+   workers string-matched literals in tests). Distillation rule is now:
+   contract language AND explicit scope ("in source and tests").
 
 -----
 

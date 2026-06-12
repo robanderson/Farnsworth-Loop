@@ -159,3 +159,25 @@ What this hardened, now in the tool and PRD (Section 4.3):
 4. Manual-mode ledger discipline: record every dispatch id at launch,
    set a per-phase deadline, check transcript liveness at deadline,
    stop-verify-redispatch only what's missing.
+
+---
+
+## Word Garden 2 — first replication run (2026-06-12)
+
+The loop's first controlled replication: `examples/word-garden-2/`, the
+same spec, byte-identical task-001 brief, fleet, and gate as word-garden-1,
+re-seeded with an empty tips file. Both verdicts ADOPT; full process report
+in `examples/word-garden-2/.farnsworth/orchestrator-log.md`.
+
+Headline: the parts of the thesis that are mechanism replicated (review
+catches real bugs the gate passes; tips cut the field's defect rate 2 -> 1;
+duplicate dispatches absorbed by the artifact-boundary rule — it happened
+again, in both rounds). The part that was narrative did not: Opus won BOTH
+rounds, breaking the three-round cheaper-model-wins streak. PRD updated
+(Section 13, Section 7 third measurement note, new risk row): the loop's
+early learning signal is defects-per-round in gate-passing candidates, not
+winner identity. Two refinements queued: a cross-project tips seed for new
+projects (run 2 re-committed a defect run 1 had already distilled in the
+other project's tips), and a distillation rule upgrade — contract language
+AND explicit scope, after an imperative tip was ignored outside the scope
+it failed to state.
