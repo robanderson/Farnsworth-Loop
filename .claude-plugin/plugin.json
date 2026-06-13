@@ -1,0 +1,10 @@
+{
+  "name": "farnsworth-loop",
+  "displayName": "Farnsworth Loop",
+  "version": "0.1.0",
+  "description": "Goal-driven tournament loop: dynamic-workflow conductor, blind parallel coders, anonymized review, distilled lessons, attested completion - invocable from any project.",
+  "repository": "https://github.com/robanderson/Farnsworth-Loop",
+  "keywords": ["agents", "orchestration", "tournament", "workflows"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

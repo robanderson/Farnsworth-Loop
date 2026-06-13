@@ -44,7 +44,8 @@ with the next instruction added.
 
 ```
             GOAL — the termination contract: what done means
-              │
+              │     (ignition confirms the fleet AND how many
+              │      self-directed improvement rounds to run)
               ▼
    ┌──────▶ DERIVE the next task — the smallest gateable
    │         slice of what's still missing
@@ -68,16 +69,32 @@ with the next instruction added.
    │      nothing adoptable? ──▶ distill again, rebuild again
    │          │                  (each extra round must show
    │          ▼                   progress, or the task escalates)
-   │      MERGE the winner
-   │          │
+   │      MERGE the winner — one merge commit per adoption: a
+   │          │              clean checkpoint to keep or revert
    │          ▼
    │      INSPECT against the goal — `farnsworth done` + attestation
    │          │
-   └── not done: bank the lessons, name the gap,
-              │  derive the next slice — GO AGAIN
-              ▼
-        DONE — both halves attested · or ESCALATED / STOPPED / STALLED,
-        always recorded, never silent
+   ├── not done: bank the lessons, name the gap,
+   │          │  derive the next slice — GO AGAIN
+   │          ▼
+   │      GOAL MET — both halves attested.
+   │      Improvement rounds remaining?
+   │          │
+   └── yes: IMPROVE — the Improvement Agent probes the finished
+              │  deliverable as a user, asks and answers "how can
+              │  this be better?", and AMENDS the goal — append-only:
+              │  every prior check stays, the contract only ratchets,
+              │  no round can hand back less than it received. New
+              │  criteria route by enforceability (mechanizable →
+              │  done checks, semantic → attestation), the changelog
+              │  banks the round — GO AGAIN against the raised bar
+              │
+              ▼  no: budget spent — or the improver attests nothing
+                 is left worth a round (skipping carries the burden
+                 of proof, so "improved until honestly done" beats
+                 "improved until the money ran out")
+        DONE — both halves attested, improvements banked · or
+        ESCALATED / STOPPED / STALLED, always recorded, never silent
 ```
 
 Anonymity is load-bearing twice over: the judge never learns which
@@ -245,6 +262,13 @@ What's proven in recorded runs versus what's on the bench
 
 **Planned**
 
+- [ ] **Improvement rounds — the bounded Ralph**
+      ([`proposals/improvement-rounds.md`](proposals/improvement-rounds.md)):
+      after the goal is attested DONE, a `farnsworth-improver` agent
+      probes the deliverable, amends the goal append-only, and re-arms
+      the loop — N self-directed rounds confirmed at ignition, budgets
+      (rounds/hours/cost), checkpoint merges, changelog from the
+      verdicts' progression notes
 - [ ] **Third-party and local coders in the parallel field:** GLM,
       MiniMax, Qwen, Codex, and local models via Ollama / LM Studio /
       MLX through the command adapter — the adapter works; the first
