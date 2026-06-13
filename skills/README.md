@@ -10,7 +10,8 @@ every project on your machine:
   workflow;
 - the **dynamic workflows** (`farnsworth-loop.js`,
   `farnsworth-task.js`) and the **tool-scoped agent roles**
-  (`farnsworth-coder`, `farnsworth-judge`, `farnsworth-attestor`) —
+  (`farnsworth-coder`, `farnsworth-judge`, `farnsworth-attestor`,
+  `farnsworth-improver`) —
   synced into user scope (`~/.claude/workflows/`, `~/.claude/agents/`)
   by the plugin's SessionStart hook, because plugins cannot bundle
   workflows directly and the workflows spawn the agents by name. Each

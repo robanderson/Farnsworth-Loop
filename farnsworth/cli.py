@@ -11,12 +11,25 @@ Usage::
     python3 -m farnsworth metrics [root ...]
     python3 -m farnsworth clean <task-id> [--force]
     python3 -m farnsworth done [--config <path>]
+    python3 -m farnsworth improve [--apply <dir>] [--rounds N] [--config <path>]
 
 ``done`` is the loop-termination probe (PRD Section 2.4): it runs the
 goal's mechanical completion checks against the merged state, records the
 result to ``.farnsworth/done-checks.json``, and exits 0 when the
 mechanical half of the goal is complete (writing the attestation briefing
 for the semantic half), 1 when the loop should keep cycling.
+
+``improve`` is the improvement-round verb (PRD Section 2.7). Bare: checks
+the round preconditions (done green, attestation ``goal_met: true``) and
+writes ``.farnsworth/improvement-briefing.md`` — exit 3 (phase boundary:
+improver agent next), exit 1 when no rounds remain (proceed to DONE),
+exit 2 on a sequencing/config error. ``--apply <improvement-NNN dir>``:
+mechanically validates the improver's proposal (goal brief amended
+append-only; proposed checks well-formed and collision-free) and merges
+the new checks into the config's ``goal.done`` — exit 0 installed, exit 1
+malformed proposal (re-spawn the improver; never hand-patch). ``--rounds``
+is the run-scoped budget confirmed at ignition (the config's
+``goal.improvement_rounds`` is the default, not a fixture).
 
 Exit codes for ``run``/``gate``/``finalize``: 0 valid verdict, 1 no
 candidates passed the gate, 2 infrastructure/config error, 3 PHASE
@@ -45,6 +58,13 @@ from .adopt import adopt as adopt_task
 from .config import Config, ConfigError, DEFAULT_CONFIG_NAME
 from .gitutil import GitError, repo_toplevel
 from .housekeeping import clean
+from .improve import (
+    ImproveError,
+    ImprovePreconditionError,
+    apply_proposal,
+    improvement_status,
+)
+from .improve import prepare as improve_prepare
 from .loop import (
     LoopError,
     check_done,
@@ -202,6 +222,34 @@ def build_parser():
         ),
     )
     _json_flag(done_p)
+
+    improve_p = sub.add_parser(
+        "improve",
+        help="improvement round (PRD 2.7): bare = write the improver "
+        "briefing (exit 3: improver agent next; exit 1: no rounds "
+        "remain); --apply = validate and install a proposal",
+    )
+    improve_p.add_argument(
+        "--apply",
+        metavar="improvement-NNN-dir",
+        help="validate the improver's proposal dir and merge its checks "
+        "into the config's goal.done",
+    )
+    improve_p.add_argument(
+        "--rounds",
+        type=int,
+        metavar="N",
+        help="run-scoped improvement-round budget confirmed at ignition "
+        "(default: the config's goal.improvement_rounds)",
+    )
+    improve_p.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_NAME,
+        help="path to config JSON (default: {0} in repo root)".format(
+            DEFAULT_CONFIG_NAME
+        ),
+    )
+    _json_flag(improve_p)
     return parser
 
 
@@ -359,6 +407,7 @@ def main(argv=None):
         briefing_path = None
         if outcome["passed"]:
             briefing_path = write_attestation_briefing(config.goal, repo_root)
+        rounds = improvement_status(config.goal, repo_root)
         if args.json:
             _emit_json(
                 {
@@ -370,6 +419,7 @@ def main(argv=None):
                         if briefing_path
                         else None
                     ),
+                    "improvement_rounds": rounds,
                 }
             )
             return 0 if outcome["passed"] else 1
@@ -385,9 +435,91 @@ def main(argv=None):
                     os.path.relpath(briefing_path, repo_root)
                 )
             )
+            if rounds["remaining"] > 0:
+                print(
+                    "{0} of {1} improvement rounds remain: after a passing "
+                    "attestation, run 'farnsworth improve' "
+                    "(PRD Section 2.7).".format(
+                        rounds["remaining"], rounds["configured"]
+                    )
+                )
             return 0
         print("GOAL NOT MET: keep looping (dispatch the next task).")
         return 1
+
+    if args.command == "improve":
+        try:
+            repo_root = repo_toplevel(os.getcwd())
+            config_path = _resolve_config(args.config)
+            config = Config.load(config_path)
+        except (ConfigError, GitError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+
+        if args.apply:
+            try:
+                result = apply_proposal(
+                    args.apply, config, config_path, repo_root
+                )
+            except ImproveError as exc:
+                # The improver failed its artifact contract: re-spawn it,
+                # never hand-patch the proposal.
+                print("error: {0}".format(exc), file=sys.stderr)
+                return 1
+            except (ImprovePreconditionError, ConfigError, GitError) as exc:
+                print("error: {0}".format(exc), file=sys.stderr)
+                return 2
+            if args.json:
+                _emit_json(result)
+                return 0
+            print(
+                "improvement round {0} installed: goal brief {1} amended "
+                "(append-only)".format(result["round"], result["goal_brief"])
+            )
+            if result["added_checks"]:
+                print(
+                    "added done checks: {0}".format(
+                        ", ".join(result["added_checks"])
+                    )
+                )
+            else:
+                print("no mechanical checks proposed (semantic-only round)")
+            print(
+                "commit the round's artifacts, then keep looping against "
+                "the raised bar."
+            )
+            return 0
+
+        try:
+            payload = improve_prepare(
+                config, repo_root, rounds_override=args.rounds
+            )
+        except (ImprovePreconditionError, ConfigError, GitError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            _emit_json(payload)
+            return 3 if payload["briefing"] else 1
+        rounds = payload["rounds"]
+        if not payload["briefing"]:
+            print(
+                "no improvement rounds remaining ({0} of {1} complete): "
+                "exit DONE, improvements banked.".format(
+                    rounds["completed"], rounds["configured"]
+                )
+            )
+            return 1
+        print(
+            "Phase boundary: improvement round {0} of {1}. Spawn the "
+            "farnsworth-improver subagent with {2}, then run "
+            "'farnsworth improve --apply {3}'.".format(
+                payload["round"],
+                rounds["configured"],
+                payload["briefing"],
+                payload["proposal_dir"],
+            )
+        )
+        return 3
 
     if args.command == "preflight":
         try:

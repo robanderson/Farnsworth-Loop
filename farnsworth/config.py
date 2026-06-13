@@ -292,9 +292,22 @@ class Config:
                 raise ConfigError(
                     "goal 'done' must contain at least one check"
                 )
+            # Optional improvement-round budget (PRD Section 2.7): the
+            # project default, confirmable per run like the fleet. 0 (the
+            # default) is today's behavior: attestation passes -> DONE.
+            rounds = goal_obj.get("improvement_rounds", 0)
+            if isinstance(rounds, bool) or not isinstance(rounds, int):
+                raise ConfigError(
+                    "goal improvement_rounds must be an integer"
+                )
+            if rounds < 0:
+                raise ConfigError(
+                    "goal improvement_rounds must be >= 0"
+                )
             goal = {
                 "brief": brief.strip() if brief else None,
                 "done": normalized_done,
+                "improvement_rounds": rounds,
             }
 
         return cls(workers, reviewer, normalized_gate, goal)
