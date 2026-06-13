@@ -333,9 +333,10 @@ Rules:
   the protocol for the same reason it writes the review briefing: a
   protocol traveling inside an orchestrator prompt is a protocol that
   drifts.
-- **Exactly four exits.** DONE (both halves pass); ESCALATED (a change
-  request blocks all remaining work pending a human); STOPPED (a
-  human-set budget or iteration cap ran out); STALLED (no measurable
+- **Exactly four exits.** DONE (both halves pass AND no improvement
+  rounds remain — spent, or honestly declined; Section 2.7); ESCALATED
+  (a change request blocks all remaining work pending a human); STOPPED
+  (a human-set budget or iteration cap ran out); STALLED (no measurable
   progress toward the done checks for 3 consecutive iterations — an
   automatic escalation, never silent spinning). Every exit is recorded in
   the orchestrator log with the iteration count.
@@ -451,6 +452,72 @@ and derive the checks from the structure.
   structure (the DSSD/JSP move) is precisely the decision space the
   field exists to explore.
 
+### 2.7 Improvement Rounds: the Bounded Ralph
+
+Ratified from
+[`proposals/improvement-rounds.md`](proposals/improvement-rounds.md)
+(kept for the full design rationale and pattern mapping). Improvement
+rounds re-import the Ralph loop's one genuine virtue — it keeps going —
+bounded and self-evaluating: Ralph persists blindly; Karpathy
+hill-climbs a number; Farnsworth with improvement rounds persists **on
+purpose, against a contract it keeps raising, a bounded number of
+times**.
+
+- **Ignition gains one question.** Alongside the fleet, the run
+  confirms `improvement_rounds` — the config's
+  `goal.improvement_rounds` (default 0 = pre-2.7 behavior) is the
+  project default, a `--rounds` / `improvementRounds` override is the
+  run-scoped choice, visible in command history like the fleet config.
+- **The trigger.** When BOTH halves of done pass (mechanical green +
+  `goal_met: true` attestation) and rounds remain, the loop does not
+  exit. `farnsworth improve` verifies those preconditions from the
+  committed artifacts, counts completed rounds from the committed
+  `.farnsworth/improvement-NNN/` dirs (never conductor memory), writes
+  `.farnsworth/improvement-briefing.md` — the CLI writes the protocol
+  for the same reason it writes the review and attestation briefings —
+  and exits 3: improver agent next. Exit 1 means no rounds remain:
+  DONE, improvements banked.
+- **The Improvement Agent (`farnsworth-improver`).** Probes the
+  finished deliverable EMPIRICALLY as a user (runs it, feeds it
+  hostile input — never proposes from reading alone), then either
+  proposes a small coherent set of improvements (2–5, each attestable
+  or gateable, in the spirit of the original objective) or declines.
+  It writes `proposal.md` (what, why, probe evidence), routes each new
+  criterion by enforceability — **mechanizable → done checks**
+  (`done-checks.json`, same schema as `goal.done`); **semantic → the
+  goal brief**, where attestation reads it (the distillation-routing
+  pattern of Section 2.6, applied to the goal contract) — and appends
+  ONE `## Improvement round N` section to the goal brief. It never
+  writes project code: improvements enter the codebase through
+  tournament tasks like every other change.
+- **Append-only, mechanically enforced.** `farnsworth improve --apply
+  <dir>` validates the artifact contract before installing: the
+  committed goal brief must survive verbatim as a prefix of the
+  amended brief, proposed checks must parse like `goal.done` entries
+  and collide with no existing check name, and only then are they
+  merged into the config. The contract only ratchets; no round can
+  hand back less than it received. Exit 1 = the improver broke its
+  contract: re-spawn it, never hand-patch a proposal.
+- **The early-out.** A round with nothing worth proposing is declined
+  with a `proposal.md` starting `improvement: none` plus reasoning —
+  skipping carries the burden of proof (the `adopt-final` inversion,
+  Section 2.2), and the loop exits DONE with rounds unspent.
+  "Improved until honestly done" beats "improved until the money ran
+  out"; a forced make-work improvement is the Ralph failure mode this
+  project exists to fix.
+- **Accounting.** The iteration budget (`maxIterations`) is GLOBAL
+  across goal and improvement rounds; an armed round resets the
+  stall series (the bar moved, the done-check series restarts) and its
+  proposal becomes the next premise's gap. The four exits are
+  unchanged. The committed round dirs plus the brief's appended
+  sections are the changelog that banks every round.
+- **Who judges the improver?** v1: the existing valves — the judge can
+  escalate a brief derived from a bad improvement, the attestor can
+  refuse an unmeetable criterion, STALLED bounds the damage, and the
+  proposal is a committed, diffable artifact a human can audit. v2
+  option (open): run the improvement itself as a design-task
+  tournament when the deliverable is high-stakes.
+
 ## 3. Roles and Models
 
 All roles run as Claude Code SUBAGENTS of the orchestrating host session —
@@ -470,6 +537,7 @@ style CLI invocation is the appropriate harness.
 |Worker                |Haiku 4.5 (`claude-haiku-4-5`)  |2    |Blind implementation attempts                                                                        |
 |Worker                |Sonnet 4.6 (`claude-sonnet-4-6`)|2    |Blind implementation attempts                                                                        |
 |Worker                |Opus 4.8 (`claude-opus-4-8`)    |1    |Blind implementation attempts (strongest independent candidate)                                      |
+|Improver              |Opus 4.8 (`claude-opus-4-8`)    |0–1  |Post-DONE deliverable probing as a user; append-only goal amendment or the attested decline (Section 2.7)|
 
 Worker diversity note: within one model family, diversity comes from capability tiers rather than architecture. The 2x Haiku / 2x Sonnet / 1x Opus mix is also an experiment in itself: per-model win rates (Section 7) will show whether cheap workers plus a strong reviewer match expensive workers, which is the economic question the loop exists to answer. *Early returns (Section 11): after one distillation cycle, a Haiku worker won the tournament outright.*
 
@@ -847,6 +915,21 @@ All metrics derive from the per-task JSON logs; a single script renders the dash
    per-agent token telemetry from `/workflows` into `run.json`,
    `maxTurns` caps on coder dispatch, and the first live
    workflow-conducted run.
+1. **M9, Improvement Rounds (the bounded Ralph):** Section 2.7
+   mechanized. Shipped 2026-06-13: `goal.improvement_rounds` config
+   (run-scoped `--rounds` override), the `farnsworth improve` verb —
+   bare writes the CLI-authored improvement briefing behind committed
+   preconditions and exits 3 at the phase boundary, `--apply`
+   mechanically enforces the append-only ratchet (goal-brief prefix
+   check, collision-free check parsing) before merging checks into
+   `goal.done` — the `farnsworth-improver` role, the workflow's
+   Improve phase (decline → DONE with rounds unspent; armed → stall
+   series reset, proposal as the next gap), the
+   `done --json` round accounting, and tests alongside `test_goal.py`.
+   Open: the first recorded improvement-round run, round-number
+   tagging in metrics (goal-round vs improvement-round economics),
+   and the v2 improvement-as-tournament option for high-stakes
+   deliverables.
 1. **M7, Two-Phase Loop (v2 CLI):** mechanize Sections 2/2.2/2.5/2.6 — gate-as-evidence (results travel with every candidate; only commit/hygiene checks disqualify), the verdict-1 schema (champion + defect ledger + lessons + gate extensions + `round_2: proceed|adopt-final|escalate`), round-2 phases (clean-slate re-dispatch with installed lessons; champion relabeled into the review field; negative-result recording), round-N progress accounting against the STALLED rule, Phase-0 artifact support (`GOAL.md`/`decisions-ledger.md`/`open-questions.md`, open questions surfaced as foci), and grammar-compiled structure gates. Until M7 lands the CLI implements the v1 single-round flow; the v2 protocol is dispatch-mode-agnostic and an orchestrator can run it today by treating each round as a CLI task and performing champion relabeling by hand. Per repo tradition, M7 should be built BY the loop.
 
 ## 10. Acceptance Criteria (faithfulness contract)
@@ -865,6 +948,9 @@ Later agents and reviewers score the implementation against this checklist:
 - [ ] A champion surviving verdict-2 is recorded in run.json and metrics as a negative learning result. *(v2; unexercised)*
 - [ ] Phase-0 projects carry GOAL.md, decisions-ledger.md, and open-questions.md; open questions become round-1 foci; attestation targets the business objectives and decisions ledger. *(v2; unexercised)*
 - [ ] Mechanically-expressible round-1 lessons land as gate-2 extensions, not only as tips. *(v2; unexercised)*
+- [ ] An improvement round only ever ADDS: the committed goal brief survives verbatim as a prefix and no existing done check is renamed, weakened, or removed — enforced by `improve --apply`, not by prompt. *(2.7; mechanism shipped and unit-tested, unexercised in a recorded run)*
+- [ ] Improvement criteria route by enforceability: mechanizable → `goal.done` checks, semantic → the goal brief read by attestation. *(2.7; unexercised)*
+- [ ] Every improvement round — armed or declined — is banked as committed artifacts (`.farnsworth/improvement-NNN/` + the brief's appended section); a declined round carries written reasoning (burden of proof). *(2.7; unexercised)*
 - [x] All decisions reconstructible from git history alone (no hidden state).
 - [x] A human can read `.code-tips.md` in under two minutes (consolidation is working). *(~35 lines after two distillations)*
 - [ ] Gate-success-over-time chart exists and is generated from real run logs. *(M5; the chart DATA now comes from `farnsworth metrics` over the banked run logs — the rendered chart itself is still open)*

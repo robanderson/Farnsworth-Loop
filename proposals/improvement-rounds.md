@@ -1,7 +1,15 @@
 # Proposal: Improvement Rounds (the bounded Ralph)
 
-Status: PROPOSED 2026-06-12 — design evaluation requested by the
-project owner; not yet implemented.
+Status: RATIFIED & IMPLEMENTED 2026-06-13 — PRD Section 2.7 is the
+normative form; shipped as `goal.improvement_rounds` + the
+`farnsworth improve` verb (briefing / `--apply` ratchet validation),
+the `farnsworth-improver` role, the workflow's Improve phase, and
+`tests/test_improve.py`. This document is kept for the design
+rationale and the pattern mapping. Deltas from this draft: round
+preconditions are read from the committed done/attestation artifacts
+(no new state), proposed checks live in the round dir's
+`done-checks.json`, and `done --json` carries
+`improvement_rounds: {configured, completed, remaining}`.
 
 ## The idea
 

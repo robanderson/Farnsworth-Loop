@@ -24,7 +24,8 @@ runtime is available.
     `farnsworth-task.js` — the conductors (dynamic workflows,
     Claude Code ≥ 2.1.154).
   - `~/.claude/agents/farnsworth-coder.md`, `farnsworth-judge.md`,
-    `farnsworth-attestor.md` — the tool-scoped roles. Each carries an
+    `farnsworth-attestor.md`, `farnsworth-improver.md` — the
+    tool-scoped roles. Each carries an
     explicit `tools:` allowlist (Bash, Read, Edit/Write, Glob, Grep)
     so the workflow's bust-out to CLI tasks runs only through
     approved tools.
@@ -71,14 +72,18 @@ surroundings:
 
 1. **Confirm with the user before any tokens are spent** (one
    AskUserQuestion): the fleet (read `farnsworth.json` workers;
-   present id / dispatch mode / model / focus per worker) and the
-   iteration budget. Write agreed changes back to the config.
+   present id / dispatch mode / model / focus per worker), the
+   iteration budget, AND how many self-directed improvement rounds to
+   run once the goal is met (PRD 2.7; default: the config's
+   `goal.improvement_rounds`, else 0). Write agreed changes back to
+   the config.
 2. **Launch the `farnsworth-loop` dynamic workflow** with args:
 
    ```js
    { repo: '/abs/path/to/target-project',
      farnsworthPath: '<FARNSWORTH_HOME>',
      maxIterations: <agreed budget>,
+     improvementRounds: <agreed rounds>,
      fleet: [ /* only when the user changed the field */ ] }
    ```
 
@@ -86,7 +91,9 @@ surroundings:
    (smallest gateable slice — one task per iteration, never the whole
    gap) → nested `farnsworth-task` two-round tournament (blind
    explore → distill → informed rebuild → verify) → merge → attest →
-   go again, exiting only DONE / ESCALATED / STOPPED / STALLED.
+   improvement rounds ratchet the goal append-only (mechanizable
+   criteria → done checks, semantic → attestation) → go again,
+   exiting only DONE / ESCALATED / STOPPED / STALLED.
 3. Tell the user the run is live and that they can watch and steer it
    in `/workflows` (pause, stop, per-agent token telemetry).
 

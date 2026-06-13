@@ -157,13 +157,16 @@ ask Claude to run the `farnsworth-loop` workflow:
 
 ```js
 { repo: '/abs/path/to/your-project',
+  improvementRounds: 1, // post-DONE goal ratchets — confirmed at ignition
   fleet: [ /* optional override — confirmed in the Fleet phase */ ] }
 ```
 
 It cycles: **premise** (derive the smallest next task) → nested
 `farnsworth-task` tournament (Fleet → R1 Explore → R1 Gate → R1 Judge
 → Distill → R2 Rebuild → R2 Gate → R2 Judge → Verify → Finalize) →
-merge → probe + attest against the goal → **go again**, exiting only
+merge → probe + attest against the goal → **improve** (rounds
+remaining? the improver probes the deliverable as a user and ratchets
+the goal append-only) → **go again**, exiting only
 at DONE / ESCALATED / STOPPED / STALLED. Run `farnsworth-task` with
 `{ repo, brief: 'tasks/task-001.md' }` for a single turn of the crank.
 Watch either in `/workflows`: live per-agent token counts, pause/stop
@@ -179,7 +182,7 @@ early or never.
 ### Under the hood: the forensic interface
 
 The conductors drive a Python CLI that owns every mechanical phase —
-`preflight`, `run`, `gate`, `finalize`, `adopt`, `done`, `report`,
+`preflight`, `run`, `gate`, `finalize`, `adopt`, `done`, `improve`, `report`,
 `metrics`, `clean` — each emitting `--json` records and exit codes the
 scripts consume. You never need to drive it by hand to *use* the loop;
 you reach for it to **replay, audit, or debug** a round, because every
@@ -259,16 +262,17 @@ What's proven in recorded runs versus what's on the bench
       a hardcoded mix
 - [x] The subprocess `command` adapter, proven end-to-end with headless
       `claude -p` fleets (word-garden-4, dollar-true costs)
+- [x] **Improvement rounds — the bounded Ralph**
+      ([`proposals/improvement-rounds.md`](proposals/improvement-rounds.md),
+      PRD Section 2.7): when both halves of done pass with rounds
+      remaining, the `farnsworth-improver` agent probes the deliverable
+      as a user and ratchets the goal append-only — `farnsworth improve`
+      writes the briefing and mechanically validates the amendment
+      (prior contract preserved verbatim, new checks collision-free);
+      shipped CLI + conductor + role, first recorded run pending
 
 **Planned**
 
-- [ ] **Improvement rounds — the bounded Ralph**
-      ([`proposals/improvement-rounds.md`](proposals/improvement-rounds.md)):
-      after the goal is attested DONE, a `farnsworth-improver` agent
-      probes the deliverable, amends the goal append-only, and re-arms
-      the loop — N self-directed rounds confirmed at ignition, budgets
-      (rounds/hours/cost), checkpoint merges, changelog from the
-      verdicts' progression notes
 - [ ] **Third-party and local coders in the parallel field:** GLM,
       MiniMax, Qwen, Codex, and local models via Ollama / LM Studio /
       MLX through the command adapter — the adapter works; the first

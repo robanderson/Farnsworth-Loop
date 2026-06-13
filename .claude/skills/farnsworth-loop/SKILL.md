@@ -1,6 +1,6 @@
 ---
 name: farnsworth-loop
-description: Run the goal-driven Farnsworth Loop until the goal is attested done - probe with `farnsworth done`, derive the smallest next task from the goal gap, run it as a /farnsworth-task tournament, merge, attest the semantic half, and go again, exiting only DONE/ESCALATED/STOPPED/STALLED. Use whenever the user asks to run the loop, run farnsworth, work toward GOAL.md, cycle or keep going until a goal is complete, resume an interrupted loop, or check whether the goal is met - even if they don't say "loop".
+description: Run the goal-driven Farnsworth Loop until the goal is attested done - probe with `farnsworth done`, derive the smallest next task from the goal gap, run it as a /farnsworth-task tournament, merge, attest the semantic half, ratchet the goal through any agreed improvement rounds, and go again, exiting only DONE/ESCALATED/STOPPED/STALLED. Use whenever the user asks to run the loop, run farnsworth, work toward GOAL.md, cycle or keep going until a goal is complete, run improvement rounds, resume an interrupted loop, or check whether the goal is met - even if they don't say "loop".
 ---
 
 # Farnsworth Loop: cycle tasks until the goal is done
@@ -54,8 +54,10 @@ running the cycle from step 1 — the probe re-measures everything.
   tournament. Produce GOAL.md, decisions-ledger.md, and
   open-questions.md, get the done checks ratified, then return here.
 - Agree the budget before the first probe: an iteration cap (default
-  8) and any token/cost cap the user names. STOPPED is a human-set
-  exit; it needs a human-set number.
+  8), any token/cost cap the user names, AND how many self-directed
+  improvement rounds to run once the goal is met (PRD Section 2.7;
+  default: the config's `goal.improvement_rounds`, else 0). STOPPED is
+  a human-set exit; it needs human-set numbers.
 
 ## The cycle
 
@@ -118,7 +120,8 @@ protocol cannot drift inside an orchestrator prompt. The attestor
 verifies empirically against the merged state; it never fixes, and
 neither do you.
 
-- `attestation.json` with `"goal_met": true` → exit **DONE**.
+- `attestation.json` with `"goal_met": true` → go to **Improvement
+  rounds** below.
 - `"goal_met": false` → the reasoning names the gap; carry it into the
   next premise derivation and keep cycling. Mechanical green plus a
   refused attestation is the loop working, not failing — record it,
@@ -128,14 +131,41 @@ For Phase-0 projects the attestation targets the BUSINESS objectives
 and the decisions ledger, never merely a loop-authored design document
 (PRD Section 2.4).
 
+## Improvement rounds (the goal ratchets, PRD Section 2.7)
+
+When both halves pass, run `python3 -m farnsworth improve --json`
+(add `--rounds N` when the ignition agreement differs from the
+config). The trust layer counts completed rounds from the committed
+`.farnsworth/improvement-*/` artifacts — never count them yourself.
+
+- Exit 1: no rounds remaining → exit **DONE**, improvements banked.
+- Exit 3: a round is open. Spawn ONE `farnsworth-improver` subagent
+  (reviewer's model), prompted with the repo root and the CLI-written
+  `.farnsworth/improvement-briefing.md` VERBATIM. It probes the
+  deliverable as a user and either amends the goal or declines.
+  - Declined (`improvement: none`): commit the proposal dir and exit
+    **DONE** with rounds unspent — skipping carried its burden of
+    proof; "improved until honestly done" beats "improved until the
+    money ran out".
+  - Proposed: run `python3 -m farnsworth improve --apply
+    <proposal-dir> --json`. Exit 0 validates the ratchet (goal brief
+    amended append-only; new checks well-formed, collision-free) and
+    installs the checks — commit the round's artifacts
+    (`Good news, everyone! improvement round N armed: <one line>`),
+    reset the stall accounting (the bar moved; the done-check series
+    restarts), carry the proposal as the gap, and go around again.
+    Exit 1 means the improver broke its artifact contract: re-spawn
+    it; never hand-patch a proposal or edit the goal yourself.
+
 ## Exits (exactly four)
 
 Record every exit in `.farnsworth/orchestrator-log.md` with the
 iteration count, then report the exit, the iteration count, and the
 final `farnsworth metrics` table to the user:
 
-- **DONE** — both halves pass: done checks green AND the attestor
-  wrote `goal_met: true`.
+- **DONE** — both halves pass (done checks green AND the attestor
+  wrote `goal_met: true`) and no improvement rounds remain — spent,
+  or honestly declined.
 - **ESCALATED** — a change request blocks all remaining work pending
   a human.
 - **STOPPED** — the human-set iteration or budget cap ran out.
@@ -152,7 +182,9 @@ mid-cycle, and never report DONE on mechanics alone.
   spawn the role that owns it.
 - Never edit GOAL.md, the done checks, or `farnsworth.json` mid-loop
   to make a probe pass — the contract outranks the conductor. Goal
-  changes are a human decision, recorded before the next iteration.
+  changes are a human decision, recorded before the next iteration;
+  the one sanctioned amendment path is an improvement round through
+  `farnsworth improve --apply`, and it only ever ADDS.
 - Never skip the journal entry; an unjournaled iteration is invisible
   to the next context and to STALLED detection.
 - Never carry a verdict, gap, or stall count purely in memory —
