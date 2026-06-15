@@ -1,329 +1,376 @@
-# The Farnsworth Loop
+# Farnsworth Loop
 
 > *"Good news, everyone!"*
 
-> **🚧 Migrating (2026-06-15):** Farnsworth Loop is moving from this Python reference
-> implementation to a **Claude Code plugin** built on **Dynamic Workflows** — the install &
-> usage docs are being rewritten. The original Python CLI is preserved at the
-> **`v1-python-reference`** tag. The narrative below still describes the concept; the plugin
-> itself now lives in this repo (`skills/`, `workflows/`, `bin/`, `agents/`, `.claude-plugin/`).
+**Farnsworth Loop is a Claude Code plugin that runs best-of-N tournaments.** You hand it a task; it produces N independent attempts in parallel, then a *blind* Anthropic Opus reviewer scores them, lists pros and cons, ranks them, and names a winner. The attempts can come from any mix of providers (Anthropic, GLM, on-device MLX, OpenAI Codex, MiniMax); the judge is always Opus, held fixed so the comparison stays honest.
 
-**The Farnsworth Loop is the Ralph loop made self-evaluating.** Keep
-Ralph's shape — a dumb driver, fresh contexts every pass, all memory
-on disk in git, run unattended — and substitute intelligence at the
-three places Ralph has none: each iteration's single attempt becomes a
-two-round, best-of-N blind tournament where round one's distilled
-lessons and champion (never its code) advance into round two; Ralph's
-human guardrail-tuner becomes the judge's automated distillation into
-the tips file; and Ralph's infinite `while :` becomes a termination
-contract — every cycle is scored against the rubric and the test
-suite, and completion is decided against the *original goal*,
-mechanically and by attestation.
+```text
+@@FL:5  Build a CLI that flattens nested JSON to dotted keys.
+```
+
+That one line triggers the loop: it asks which model(s) to run the 5 attempts on, you answer, it fans out 5 isolated workers, and a blind Opus reviewer crowns a winner. Add `:2` for two passes (a guided second round), or a `:Z` for grand loops (an unattended chain that implements each winner into a real branch and opens a PR).
 
 ---
 
-## The idea in thirty seconds
+## Contents
 
-Agent loops differ on exactly one axis: **what flows back through the
-feedback path.**
+- [The core idea](#the-core-idea)
+- [Single pass vs two pass](#single-pass-vs-two-pass)
+- [Invoking it: the sigil and prose forms](#invoking-it-the-sigil-and-prose-forms)
+  - [The `@@FL` sigil](#the-fl-sigil)
+  - [Prose model spec](#prose-model-spec)
+  - [Mixed and Top Mixed presets](#mixed-and-top-mixed-presets)
+  - [Worked examples](#worked-examples)
+- [Model providers](#model-providers)
+- [Diversity injection](#diversity-injection-pool-a--pool-b)
+- [Grand loops (`Z >= 2`)](#grand-loops-z--2)
+- [The dogfood backlog](#the-dogfood-backlog)
+- [Installation & setup](#installation--setup)
+- [The benchmarking system (`fl-bench`)](#the-benchmarking-system-fl-bench)
+- [Repository layout](#repository-layout)
+- [Honest limitations](#honest-limitations)
 
-| Loop | Feedback | Ignition | Knows when it's done |
+---
+
+## The core idea
+
+A single LLM attempt at a task is one sample from a noisy distribution. The Farnsworth Loop spends tokens to do better than one sample, in two specific ways:
+
+1. **Generate, don't iterate.** Run **N attempts in parallel**, each a *single-pass exploration* — every attempt writes its solution **once and stops**. No attempt is told it's competing or being judged; none sees another's work. The refinement happens at the *tournament* level (many diverse one-shots → review), never inside a single attempt grinding "until it works." A rough or even failed attempt is useful signal, not a wasted slot.
+
+2. **Judge blind, with a fixed strong judge.** One **Anthropic Opus reviewer** receives the deliverables labelled `Candidate A`, `B`, `C`, … with **no model identities attached**. It reads (and where feasible runs) each one, scores against task-appropriate criteria, lists concrete pros and cons, ranks them, and names a winner with reasoning. Because the judge never learns which model produced which candidate, a cheap model can win on merit — and the engine takes mechanical steps (below) to keep that blindness real.
+
+The attempts are deliberately *diverse*: different model families, sampling stochasticity, and a per-attempt framing nudge ([diversity injection](#diversity-injection-pool-a--pool-b)) all push the N solutions apart so the review has genuinely different things to compare.
+
+---
+
+## Single pass vs two pass
+
+The two modes share one spine. **Two pass is single pass plus a learning step in the middle.**
+
+| Phase | Single pass | Two pass |
+|---|---|---|
+| Round 1 attempts | N parallel, isolated, one diversity nudge each | identical |
+| Blind Opus review | scores, ranks, names winner → **this is the result** | scores, ranks, names round-1 winner **and distils guidance** |
+| Carry / discard | — | **save** the winner's deliverable; **discard** every other artifact, keep only the distilled lessons |
+| Round 2 attempts | — | N **fresh** attempts given the task + guidance (positives to emulate, pitfalls to avoid) — but **never** round-1 code |
+| Final rank | — | pool = N round-2 attempts **+ the saved round-1 winner** (N+1), re-labelled blind, one Opus ranker picks overall winner |
+
+The distilled guidance is two short lists — *positives to consider* and *challenges to avoid* — phrased as generic principles, each tagged `[strong]` (held up repeatedly) or `[tentative]` (a single sighting), with no candidate-specific code.
+
+**Why two pass discards the losing code but keeps the lessons:** re-using a winner's code would make round 2 copy it and collapse the diversity that makes the loop work. Re-using the *distilled* pros and cons keeps diversity while raising the floor. The saved round-1 champion then competes blind in the final pool on the merits — it produced no worse work for not having seen the guidance, and if a guided round-2 attempt is genuinely better, it should win.
+
+```text
+SINGLE PASS
+  task ──▶ [N attempts] ──▶ blind Opus review ──▶ winner ✓
+
+TWO PASS
+  task ──▶ [N attempts] ──▶ blind Opus review ──┬─▶ distil guidance ─┐
+                                                └─▶ save winner ──┐  │
+                                                                  │  ▼
+            [N fresh attempts + task + guidance] ◀────────────────┼──┘
+                              │                                   │
+                              ▼                                   │
+            final pool = N round-2 + saved winner ◀───────────────┘
+                              │
+                              ▼
+            blind Opus final rank ──▶ overall winner ✓
+```
+
+Two pass roughly **doubles** the attempt count (≈ 2N attempts + 2 Opus passes), so it costs about double single pass. The skill confirms volume before spending at `N ≥ 8` (single pass) or `N ≥ 6` (two pass).
+
+---
+
+## Invoking it: the sigil and prose forms
+
+Put a trigger anywhere in your message; **the text before it is the task**. All forms are case-insensitive with optional spaces around the colons. Phase 0 of the skill runs a bundled parser (`bin/fl-parse.mjs`) on your raw message — it does **not** hand-parse the sigil — and acts on the JSON it returns.
+
+> Write the trigger **literally**, unquoted. `@@FL:5` is correct; don't wrap it in shell quotes.
+
+### The `@@FL` sigil
+
+```text
+@@FL[:N][:M[:Z]]
+```
+
+| Field | Meaning | Default | Constraints |
 |---|---|---|---|
-| **Ralph** | nothing — same prompt, fresh context, persistence as strategy | one command, unattended | never: `while :` ends at Ctrl-C or an empty wallet |
-| **Karpathy** | a number — keep what beats the metric, revert the rest | one command, unattended | never: hill-climbs until you stop paying |
-| **Farnsworth** | *lessons* — every attempt, winners **and** losers, distilled into every future briefing | one command, unattended | **yes** — done checks + attestation against the original goal |
+| **N** | attempts per round | none (asks, or inferred) | integer ≥ 2 |
+| **M** | passes | **1** (single pass) | `1` or `2`; any other value is an error |
+| **Z** | grand loops | **1** (isolated tournament) | integer `1..5`; `Z > 5` is **refused** (split into batches) |
 
-Most software work has no cheap metric to thermostat against, and
-persistence alone just repeats yesterday's mistakes with today's
-tokens. The Farnsworth Loop closes the loop with **semantic feedback**:
-failures are not wasted tokens, they are gotchas passed forward —
-inspectable, diffable, versioned in git next to the code they describe.
+- `@@FL:5` → 5 attempts, single pass.
+- `@@FL:5:2` → 5 attempts, two pass.
+- `@@FL:5:2:3` → 5 attempts, two pass, **3 grand loops**.
+- `@@FL` (bare) → falls back to the interactive model gate (it asks N and the model).
 
-## The loop, end to end
+**Positional skips are forbidden.** `@@FL:5::3` is invalid — to set Z with a default M, write `@@FL:5:1:3`. (`Z=1` and omitting Z are byte-identical: today's isolated tournament.)
 
-It is a loop twice over: rounds repeat **inside** a task until
-something is adoptable, and tasks repeat until the goal is done — two
-cycles for a small brief, two hundred for a hard one. Each pass is
-deliberately small: explore, learn, rebuild with the knowledge (never
-the code), select, inspect against the goal, and **go around again**
-with the next instruction added.
+There is also a **prose marker** that extends identically: `farnsworth loop:N[:M[:Z]]` — e.g. `do abc :farnsworth loop:5` (single) or `do abc: farnsworth loop:5:2` (two pass).
 
-```
-            GOAL — the termination contract: what done means
-              │     (ignition confirms the fleet AND how many
-              │      self-directed improvement rounds to run)
-              ▼
-   ┌──────▶ DERIVE the next task — the smallest gateable
-   │         slice of what's still missing
-   │          │
-   │          ▼
-   │      EXPLORE    N blind parallel coders, focus-diversified —
-   │          │      your fleet: Claude tiers, GLM, Qwen, local…
-   │          ▼
-   │      GATE-1 ─▶ JUDGE (anonymized A/B/C/D, blind sketch first)
-   │          │      ─▶ VERDICT-1: crown a CHAMPION
-   │          ▼
-   │      DISTILL    lessons → .code-tips.md — the code is thrown
-   │          │      away; the lessons enter every future briefing
-   │          ▼
-   │      REBUILD    fresh blind coders, clean slate: the brief +
-   │          │      the lessons, never round-1 code
-   │          ▼
-   │      GATE-2 ─▶ JUDGE (champion relabeled in, judged blind)
-   │          │      ─▶ VERIFY (fresh eyes attack the verdict)
-   │          │
-   │      nothing adoptable? ──▶ distill again, rebuild again
-   │          │                  (each extra round must show
-   │          ▼                   progress, or the task escalates)
-   │      MERGE the winner — one merge commit per adoption: a
-   │          │              clean checkpoint to keep or revert
-   │          ▼
-   │      INSPECT against the goal — `farnsworth done` + attestation
-   │          │
-   ├── not done: bank the lessons, name the gap,
-   │          │  derive the next slice — GO AGAIN
-   │          ▼
-   │      GOAL MET — both halves attested.
-   │      Improvement rounds remaining?
-   │          │
-   └── yes: IMPROVE — the Improvement Agent probes the finished
-              │  deliverable as a user, asks and answers "how can
-              │  this be better?", and AMENDS the goal — append-only:
-              │  every prior check stays, the contract only ratchets,
-              │  no round can hand back less than it received. New
-              │  criteria route by enforceability (mechanizable →
-              │  done checks, semantic → attestation), the changelog
-              │  banks the round — GO AGAIN against the raised bar
-              │
-              ▼  no: budget spent — or the improver attests nothing
-                 is left worth a round (skipping carries the burden
-                 of proof, so "improved until honestly done" beats
-                 "improved until the money ran out")
-        DONE — both halves attested, improvements banked · or
-        ESCALATED / STOPPED / STALLED, always recorded, never silent
+### Prose model spec
+
+You can describe the fleet in prose **instead of** giving an explicit N. A comma- or `and`-separated list of `<count> <model>` items anywhere in the message becomes the per-attempt assignment; **the sum of the counts is N**, and the spec text is stripped from the task:
+
+```text
+@@FL two passes, 4 opus, 2 sonnet, 2 codex high, 2 glm 4.7, 2 minimax  Refactor the auth module.
 ```
 
-Anonymity is load-bearing twice over: the judge never learns which
-model wrote which diff — so cheap models win on merit, and they do —
-and the verdict-2 judge never learns which candidate is the round-1
-champion, so the loop's core claim is tested blind every task. A
-champion that survives the rebuild is recorded as a negative learning
-result, never hidden. In the loop's first dogfooding cycle, the
-empty-tips round went to Opus; with fourteen distilled lessons in the
-briefing, the rebuild went to **Haiku**.
+Counts: `4 + 2 + 2 + 2 + 2 = 12`, so **N = 12** with the per-attempt assignment
+`[opus×4, sonnet×2, codex-high×2, glm-4.7×2, minimax-m3×2]`, run as **two pass** (the phrase "two passes" sets M=2). Because the spec already answers "which models," the interactive model menu is **skipped**.
 
-## The architecture (June 2026)
+A spec is recognised as `<count> <model>` items only; an ordinary `<digit> <noun>` in the task (e.g. "fix 3 bugs") is **not** a spec. If a model token isn't recognised the parser **stops and asks** rather than silently dropping it (a dropped token would change N).
 
-Three layers, each doing what it does best:
+### Mixed and Top Mixed presets
 
-```
-.claude/workflows/farnsworth-task.js   CONDUCTOR — dynamic workflow:
-                                       phases, agent fan-out, live
-                                       token telemetry in /workflows
-.claude/agents/farnsworth-*.md         JUDGMENT — coder, judge,
-                                       verifier, attestor roles
-farnsworth/  (Python CLI)              TRUST — deterministic, token-free,
-                                       tested: worktrees, gates,
-                                       anonymization, audit artifacts
+- **Mixed (Specify Mix):** choose a concrete model for **each** attempt, one at a time. A prose spec *is* a Mixed assignment.
+- **Top Mixed:** the keyword `top mixed` (also `top-mix` / `top mix`) plus an N spreads N **as evenly as possible across `[opus, glm-5.2, codex-high]`**, remainder priority `opus > glm-5.2 > codex-high` (and `N=2` → `[opus, glm-5.2]`). N can come from the sigil or a leading count.
+
+```text
+@@FL:6 top mixed  Design a rate-limiter.
 ```
 
-Agents never grade their own work; code never asks an agent to do what
-a subprocess does for free; and every decision is reconstructible from
-git history alone — no database, no hidden state.
+N = 6 over three buckets → 2 each → `[opus, opus, glm-5.2, glm-5.2, codex-high, codex-high]`.
 
-## The premise engine (why "Farnsworth")
-
-Professor Hubert J. Farnsworth's role in Futurama is to **create the
-premise**: he announces *"Good news, everyone!"* — news that is
-frequently terrible — and the crew gets dispatched to suffer the
-consequences. The loop adopts its namesake faithfully:
-
-- **Every cycle opens with a premise.** The orchestrator reads the gap
-  between the merged state and the goal and announces the next mission
-  — the smallest gateable slice of what's missing. The task brief *is*
-  the premise.
-- **The crew implements it, blind.** Workers are sent into isolated
-  worktrees on what may well be a lethal mission; their failures are
-  not wasted, they're distilled.
-- **The episode gets judged.** A premise can be absurd, dangerous, or
-  wrong — the Professor is brilliant but careless — so nothing trusts
-  it blindly: the judge can escalate a broken premise, the verifier
-  attacks the verdict, and the attestor can refuse to call the goal
-  met. The end of every cycle asks the only question that matters:
-  *did the premise advance the goal?*
-- And per house convention, every distilled lesson lands in git as
-  `Good news, everyone! <what we learned>` — delivered exactly the way
-  the Professor would, whether or not the news is good.
-
-## Ignition
-
-One action, then it runs wild until the job is attested done — that is
-the contract. With dynamic workflows enabled (Claude Code ≥ 2.1.154),
-ask Claude to run the `farnsworth-loop` workflow:
-
-```js
-{ repo: '/abs/path/to/your-project',
-  improvementRounds: 1, // post-DONE goal ratchets — confirmed at ignition
-  fleet: [ /* optional override — confirmed in the Fleet phase */ ] }
+```text
+@@FL:5 top mixed  ...
 ```
 
-It cycles: **premise** (derive the smallest next task) → nested
-`farnsworth-task` tournament (Fleet → R1 Explore → R1 Gate → R1 Judge
-→ Distill → R2 Rebuild → R2 Gate → R2 Judge → Verify → Finalize) →
-merge → probe + attest against the goal → **improve** (rounds
-remaining? the improver probes the deliverable as a user and ratchets
-the goal append-only) → **go again**, exiting only
-at DONE / ESCALATED / STOPPED / STALLED. Run `farnsworth-task` with
-`{ repo, brief: 'tasks/task-001.md' }` for a single turn of the crank.
-Watch either in `/workflows`: live per-agent token counts, pause/stop
-keys. (A Ralph-grade `python3 -m farnsworth loop` one-liner for
-subprocess and local fleets is the next build — see Now and next.)
+N = 5 → base 1 each (3), remainder 2 by priority → opus +1, glm-5.2 +1 → `[opus, opus, glm-5.2, glm-5.2, codex-high]`.
 
-Seed a new project's `.code-tips.md` from
-[`seed-tips.md`](seed-tips.md) — the cross-project lessons distilled
-from every recorded run — and declare a `goal` with done checks in
-`farnsworth.json`: a loop without a termination contract either stops
-early or never.
+### Worked examples
 
-### Under the hood: the forensic interface
+| Invocation | N | Mode | Z | Assignment / behaviour |
+|---|---|---|---|---|
+| `@@FL:4` | 4 | single | 1 | asks the model gate, then 4 attempts |
+| `@@FL:5:2` | 5 | two | 1 | 5 attempts/round, guided round 2, final rank |
+| `@@FL` | gate | gate | 1 | bare → interactive gate (N defaults to 6, passes to 2 *in the gate*) |
+| `@@FL:6 top mixed` | 6 | single | 1 | `[opus, opus, glm-5.2, glm-5.2, codex-high, codex-high]` |
+| `@@FL 2 opus, 2 glm 5.2, 1 codex high` | 5 | single | 1 | `[opus, opus, glm-5.2, glm-5.2, codex-high]` (N inferred from the spec) |
+| `@@FL two passes, 4 opus, 2 sonnet, 2 codex high, 2 glm 4.7, 2 minimax` | 12 | two | 1 | `[opus×4, sonnet×2, codex-high×2, glm-4.7×2, minimax-m3×2]` |
+| `@@FL:5:2:3` | 5 | two | 3 | grand-loop chain (authorization + per-loop PR) |
+| `farnsworth loop:7:2` | 7 | two | 1 | prose marker, same as `@@FL:7:2` |
 
-The conductors drive a Python CLI that owns every mechanical phase —
-`preflight`, `run`, `gate`, `finalize`, `adopt`, `done`, `improve`, `report`,
-`metrics`, `clean` — each emitting `--json` records and exit codes the
-scripts consume. You never need to drive it by hand to *use* the loop;
-you reach for it to **replay, audit, or debug** a round, because every
-phase boundary is a file in git: briefings, anonymized diffs, gate
-autopsies, verdicts, attestations. No database, no hidden state — any
-decision reconstructible from history alone.
+> **Note the two different defaults.** When `@@FL` has **no N and no spec**, the parser returns `needsGate` — control passes to the interactive gate, where **N defaults to 6 and passes to 2**. That gate default is *not* the grammar default: an explicit `@@FL:5` (no M) is single pass, because the sigil's M defaults to **1**. Don't conflate the gate's "passes default to 2" with the sigil's "M defaults to 1."
 
-## Pick your fleet
+If you describe a generate-and-rank tournament in plain English with no marker at all, the skill can still infer single vs two pass and ask for N and the model.
 
-The field is **declared per run, never hardcoded**: `farnsworth.json`
-names the workers, and every dispatch starts by confirming the fleet
-you actually want — the conductor asks before any tokens are spent.
-The protocol doesn't care who codes; anonymized review means every
-entrant wins on merit alone.
+---
 
-```jsonc
-// Anthropic fleet — delegate dispatch (subscription-billed subagents)
-"workers": [
-  {"id": "w1", "model": "claude-haiku-4-5",  "focus": "test rigor"},
-  {"id": "w2", "model": "claude-sonnet-4-6", "focus": "simplicity"},
-  {"id": "w3", "model": "claude-opus-4-8",   "focus": "spec faithfulness"}
-]
+## Model providers
 
-// Third-party / local fleet — the command adapter: anything with a CLI
-"workers": [
-  {"id": "w1", "command": ["qwen-code", "-p", "{prompt}"]},          // Qwen
-  {"id": "w2", "command": ["codex", "exec", "{prompt}"]},            // Codex
-  {"id": "w3", "command": ["glm-cli", "run", "{prompt}"]},           // GLM
-  {"id": "w4", "command": ["ollama", "run", "qwen3-coder", "{prompt}"]} // local:
-]                                            // Ollama / LM Studio / MLX…
+Attempts can run on five providers. The **reviewer and final ranker are always Anthropic Opus**, dispatched via the Task tool — never anything else — so scoring stays consistent across attempts and rounds. Each non-Anthropic provider runs through a bundled runner script invoked by a thin command-runner agent (see [layout](#repository-layout)); this indirection is what makes those paths reliable.
+
+| Provider | Models (selectable axis) | Dispatch | Auth (from the **environment**) |
+|---|---|---|---|
+| **Anthropic** | `opus` · `sonnet` · `haiku` | Task tool, native in-process | the session's own Claude auth (no extra key) |
+| **GLM (z.ai)** | `glm-5.2` · `glm-5.1` · `glm-4.7` · `glm-4.5-air` | `claude` pointed at z.ai via `bin/glm-run.sh` | `ZAI_API_KEY` |
+| **Local MLX** | dynamic on-device list (via the `omlx` server) | `claude` pointed at `http://127.0.0.1:8000` via `bin/local-run.sh` | `OMLX_AUTH_TOKEN` |
+| **Codex (OpenAI)** | `gpt-5.5`, axis = reasoning effort: `codex-low/medium/high/xhigh` | `codex exec` via `bin/codex-run.sh` | `~/.codex/auth.json` (no env var) |
+| **MiniMax** | `MiniMax-M3` (the only model) | `claude` pointed at the MiniMax endpoint via `bin/minimax-run.sh` | `MINIMAX_API_KEY` |
+
+A few provider specifics worth knowing:
+
+- **Anthropic** model aliases map to API strings `claude-opus-4-8` / `claude-sonnet-4-6` / `claude-haiku-4-5`.
+- **GLM** is the `claude` CLI pointed at z.ai's Anthropic-compatible endpoint. The selection maps through `glm`'s `--model` flag, which is **not** the GLM name: `glm-5.2 → --model opus`, `glm-5.1 → --model glm-5.1`, `glm-4.7 → --model sonnet`, `glm-4.5-air → --model haiku`. (Those aliases resolve to GLM models because the wrapper sets `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`.) GLM bills the z.ai plan and is the slow one on large multi-file tasks — give it a generous `glmTimeoutSecs`.
+- **Local MLX** has a **dynamic** catalogue: fetch it live with `omlx-models` (or `curl -s http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $OMLX_AUTH_TOKEN" | jq -r '.data[].id'`). Ids pass straight through as `--model <exact-id>`. Local models are **free** (on-device) but slower, and small ones can be unreliable at saving a deliverable; prefer hosted providers for heavy writing tasks.
+- **Codex** is **pinned to `gpt-5.5`** — the only model the local ChatGPT-account auth serves (other ids return HTTP 400 unless you set `OPENAI_API_KEY` for API-key billing). So the lever is **reasoning effort**: `low | medium | high | xhigh` ("Extra high"; `minimal` is rejected). Codex has **no turn cap**, so its only per-attempt backstop is the wall clock (`codexTimeoutSecs`, default 600s). It bills your OpenAI/ChatGPT plan.
+- **MiniMax** exposes one model, `MiniMax-M3` (512K context), pinned via `ANTHROPIC_MODEL=MiniMax-M3` (so there's no `--model` flag). It bills your MiniMax plan; M3 was fast and clean on a heavy multi-file build in testing.
+
+**Every runner reads its key from the environment** — never by sourcing or grepping rc files — so the providers stay uniform. A provider whose key is unset produces an honest failure, not a fake fallback.
+
+**Provenance check (the anti-spoofing guard).** Every non-Anthropic attempt writes a marker into its run log proving it actually hit the intended endpoint — `FARNSWORTH-GLM-PROVENANCE endpoint=api.z.ai`, `FARNSWORTH-LOCAL-PROVENANCE endpoint=127.0.0.1:8000`, `FARNSWORTH-CODEX-PROVENANCE endpoint=api.openai.com`, `FARNSWORTH-MINIMAX-PROVENANCE endpoint=api.minimax.io` — plus a `DONE exit=0` with no `TIMEOUT`/`ERROR`. The validator is **line-anchored and provider-specific** (`^FARNSWORTH-<PROV>-…`), so an attempt whose own deliverable merely *mentions* a marker token can't false-fail. A candidate with no marker or no saved file is treated as a failed attempt and excluded; the round proceeds over the survivors.
+
+---
+
+## Diversity injection (Pool A / Pool B)
+
+Independent attempts only help if they actually differ; same-model siblings on an identical prompt tend to converge. Diversity injection (**default on**) gives each attempt a distinct framing drawn from a modifier pool, so any divergence is attributable to the modifier. The draw is **seeded and logged** for reproducibility, **without replacement** within a round, and biased so same-model siblings get the most-different nudges.
+
+- **Pool A — approach nudges (default on, blind-safe).** These vary *how* an attempt starts and proceeds, not what counts as a good answer (e.g. "from first principles," "test-first," "happy path first then harden," or for prose "lead with your strongest claim," "write for a smart, skeptical reader"). Because they don't move the success criteria, blind review is preserved. Pool A is **task-type-aware**: a light heuristic picks a code-flavoured or prose-flavoured set so a "data model" nudge isn't prepended to an essay.
+- **Pool B — objective lenses (opt-in only).** These deliberately bias the *tradeoff* (`safely`, `quickly`, `efficiently`, `robustly`, `minimally`, …). Useful to fan attempts across a tradeoff frontier on purpose — but an attempt told "quickly" may correctly produce something fast and thin that a completeness-minded blind reviewer marks down. Pick one honest handling and state it: **best-overall** (keep review blind; the lens is exploration spice) or **judge-to-intent** (pass the lens to the reviewer, breaking blindness). If you didn't opt in, only Pool A is used.
+
+In **two pass**, round 2 takes a **fresh Pool A draw only** — the distilled guidance already carries the objective steering, so a conflicting Pool B lens would send mixed signals.
+
+---
+
+## Grand loops (`Z >= 2`)
+
+`Z=1` (or omitted) is the isolated tournament: it touches no repo and opens no PR. **`Z >= 2` turns the tournament into an unattended chain** that, for each of `Z` loops, runs a full tournament, **implements the winning proposal into your real repository** on a new branch, verifies it, and opens one PR. It **never auto-merges.**
+
+Per loop `k` (FAN topology — the default):
+
+1. **STOP-file kill switch** checked at the top of every iteration — create `<runDir>/STOP` at any time to halt before the next loop, without killing the harness.
+2. **Branch off base:** `FL-<loop>-<random7>` off the branch you started on. *(This name overrides the global `rob/` branch-prefix rule for loop branches only.)*
+3. **Run the tournament** (the unchanged engine), with the task augmented by a **cross-loop ledger** of what prior loops already proposed, so each loop attacks something different.
+4. **Implement the winner** via the Opus `farnsworth-implementer` agent — the *only* actor that writes to the real repo. It makes the smallest coherent change on the branch, leaves it **unstaged**, records ambiguities in `FL-NOTES.md`, and never runs git.
+5. **Verify, fail-closed.** Auto-detected commands (npm scripts, `ruff`/`pytest`, `make test/check`, `cargo`, `go`) run **fail-fast**; a failure or "no verify commands" routes the PR to **draft + `needs-human`** (with a capped tail of the failing output) and **halts the chain**.
+6. **Commit, push, open the PR** (one per loop, individually mergeable off base). A per-loop **DONE marker** is written only after the PR exists, so a re-run skips completed loops.
+
+At the end the driver switches back to your starting branch. Safety rails:
+
+- **One front-loaded authorization (Phase 0b)** replaces the per-dispatch gate for the whole chain — the only way an unattended chain is compatible with "stop and ask." A **zero-token preflight** runs first (work tree clean? `gh` authenticated? remote resolves? base resolves?) and refuses on a dirty tree. You must **re-type Z** to proceed — friction proportional to blast radius.
+- **`Z_MAX = 5`.** The parser refuses `Z > 5` outright (echoing the offending Z, telling you to split into batches); the re-type guards a valid-but-large Z.
+- **Non-implementable-task check.** A task that produces a standalone artifact unrelated to the repo (a haiku, an email) would open empty PRs, so grand loops offer `Z=1` instead.
+- **STACK topology** (each loop off the previous) is opt-in (`topology=stack` in your message) and **forces halt-on-failure**; FAN (independent PRs off base) is the default.
+- **Mid-loop death** leaves an orphan `FL-<k>-*` branch with no DONE marker; on re-entry the driver **stops and tells you to inspect/delete it** — it never auto-resumes a half-applied step.
+
+The orchestration home is the skill procedure plus `bin/fl-git.sh` (which owns *all* git/gh side effects). The tournament engine (`workflows/tournament.mjs`) is **unchanged** and never touches the repo — that purity is its safety guarantee.
+
+---
+
+## The dogfood backlog
+
+Problems found while running tournaments are filed as **GitHub Issues labelled `dogfood`** (the live backlog), so they survive the gitignored `.runs/` directory and get triaged later. All forge access is confined to one helper, `bin/fl-issue.sh`, so the engine stays forge-agnostic.
+
+```bash
+bin/fl-issue.sh bootstrap                                      # (once) create the label scheme
+bin/fl-issue.sh new --sev sev2 --area parse \
+   --title "…" --evidence-file EV.md                           # file an item (dedups first)
+bin/fl-issue.sh next                                           # top open item (sev1 → sev3)
+bin/fl-issue.sh claim <N> <run-id>                             # best-effort claim
+# fix on a rob/dogfood-<N> branch, open one PR with "Closes #<N>"
 ```
 
-The 2× Haiku / 2× Sonnet / 1× Opus mix you'll see in the recorded runs
-is a *default and an experiment* — per-model win rates accumulate in
-the run logs to answer whether cheap workers plus a strong judge beat
-expensive workers — not a fixture of the design. A fleet runs one
-dispatch mode per round today; heterogeneous Claude+local fields in a
-single round are on the roadmap (PRD M8).
+- **Severity** `sev1` (wrong winners) · `sev2` (degraded but usable) · `sev3` (cosmetic/docs); **area** labels `area:review|runner|parse|git|skill|docs|infra`.
+- Every item needs a **verbatim evidence excerpt** (the helper refuses empty/placeholder evidence).
+- **PUBLIC repo:** never paste secrets or the `mapping.json` unblinding line — refer to a candidate as "blind B," not the model (the helper has refusal greps for both).
+- **Claiming is best-effort, not a mutex:** the GitHub API has no compare-and-swap, so `claim` is a TOCTOU read-after-write with a deterministic tiebreak; a git-ref push under `refs/dogfood-claims/` is the strict escape hatch for high fan-out / grand loops.
+- **No `gh` / offline?** `new` degrades to a committed draft under `docs/dogfood/inbox/` (never `.runs/`); re-file later with `drain-inbox`.
+- Legacy `D-NNNN` items live read-only under `docs/dogfood/archive/`.
 
-Seven recorded runs, every artifact committed
-([`examples/`](examples/)):
+---
 
-- **Tips raise the floor, fast.** Spec/hygiene violations went 2 → 0 in
-  one distillation cycle; defect classes covered by seed tips recurred
-  **zero** times across projects *and domains* (terminal game → CSV
-  reporting).
-- **The gate filters mechanics; the judge filters meaning.** Every
-  recorded review found real defects in candidates that passed every
-  mechanical check.
-- **The residual defect rate concentrates exactly where memory hasn't
-  been yet** — the learning thesis, read from the other side.
-- A full five-coder tournament with empirical review: ~13 minutes.
+## Installation & setup
 
-## Now and next
+Farnsworth Loop is a **Claude Code plugin** (`farnsworth-loop`, skills + agents + workflows + bin runners). It is published through the **`my-skills` marketplace** ([`robanderson/claude-my-skills`](https://github.com/robanderson/claude-my-skills)), which references this repo as an external plugin source — so a new user installs it from Claude Code with:
 
-What's proven in recorded runs versus what's on the bench
-(full milestone detail in [PRD.md](PRD.md), Section 9):
+```text
+/plugin marketplace add robanderson/claude-my-skills
+/plugin install farnsworth-loop@my-skills
+```
 
-**Working today**
+Once installed, the `@@FL` trigger and the `farnsworth-loop` / `farnsworth-bench` skills are available in your sessions; the bundled scripts under `bin/` are run with `node` / `bash` from the resolved plugin root. Confirm the `farnsworth-loop` skill appears after installing.
 
-- [x] Blind parallel dispatch into per-worker git worktrees, with
-      focus-diversified briefings and the project's tips injected
-- [x] Mechanical gate: tests/build/hygiene with per-command deadlines,
-      commit-as-artifact enforcement, parallel execution, live progress
-- [x] Anonymized review in a constructed environment (no branches, no
-      config, no attribution surfaces) with a validated three-outcome
-      verdict — plus an adversarial Verify pass on the verdict's claims
-- [x] Distillation: reviewer-owned `.code-tips.md` per project and the
-      cross-project [`seed-tips.md`](seed-tips.md) pile — zero
-      recurrence of seed-covered defect classes across runs and domains
-- [x] Goal termination contract: `farnsworth done` + semantic
-      attestation; four honest exits (DONE/ESCALATED/STOPPED/STALLED)
-- [x] Dynamic-workflow conductor (`.claude/workflows/`) running the
-      two-round explore→rebuild spine, with skills as the fallback
-      conductor and `--json` phase records throughout
-- [x] Dynamic fleet selection: the field is confirmed per run — never
-      a hardcoded mix
-- [x] The subprocess `command` adapter, proven end-to-end with headless
-      `claude -p` fleets (word-garden-4, dollar-true costs)
-- [x] **Improvement rounds — the bounded Ralph**
-      ([`proposals/improvement-rounds.md`](proposals/improvement-rounds.md),
-      PRD Section 2.7): when both halves of done pass with rounds
-      remaining, the `farnsworth-improver` agent probes the deliverable
-      as a user and ratchets the goal append-only — `farnsworth improve`
-      writes the briefing and mechanically validates the amendment
-      (prior contract preserved verbatim, new checks collision-free);
-      shipped CLI + conductor + role, first recorded run pending
+> Dynamic-workflow dispatch (the preferred backend) requires a Claude Code build with workflows enabled; without it, the skill falls back to manual Task-tool + `glm` CLI dispatch.
 
-**Planned**
+### What you need per provider
 
-- [ ] **Third-party and local coders in the parallel field:** GLM,
-      MiniMax, Qwen, Codex, and local models via Ollama / LM Studio /
-      MLX through the command adapter — the adapter works; the first
-      live non-Anthropic fleet hasn't run yet
-- [ ] **`python3 -m farnsworth loop` — the Ralph-grade CLI ignition:**
-      one terminal command cycling premise → tournament → merge →
-      attest, unattended, for subprocess/local fleets (M7's CLI
-      mechanization of the two-round spine, plus the loop driver)
-- [ ] **Heterogeneous fields:** Claude + third-party + local agents
-      competing in the *same* anonymized round (config currently
-      enforces one dispatch mode per fleet)
-- [ ] Workflow conduction of subprocess/local fleets (today they run
-      end-to-end via `farnsworth run`)
-- [ ] M7: the two-round v2 protocol mechanized in the CLI itself —
-      verdict-1 champion schema, scripted champion relabeling retired,
-      gate-as-evidence for no-candidate explore rounds
-- [ ] Per-agent token telemetry from `/workflows` into `run.json`, and
-      `maxTurns` caps on coder dispatch
-- [ ] The gate-success-over-time chart rendered from the banked run
-      logs (`farnsworth metrics` already emits the data)
-- [ ] M6: the TUI memory-map visualization of a running fleet
+**Anthropic only is enough to start.** Opus/Sonnet/Haiku attempts and the Opus judge use your session's own Claude auth — no extra keys. Everything below is **optional**, needed only if you want attempts on that provider:
 
-## Going deeper
+| Provider | You need | Set how |
+|---|---|---|
+| Anthropic | nothing extra | session auth |
+| GLM (z.ai) | the `glm` CLI + `ZAI_API_KEY` | export `ZAI_API_KEY` in your shell profile |
+| Local MLX | the `omlx` server running on `127.0.0.1:8000` + `OMLX_AUTH_TOKEN` | start `omlx`; export `OMLX_AUTH_TOKEN` |
+| Codex (OpenAI) | the `codex` CLI, signed in (`~/.codex/auth.json`) | `codex` login; optional `OPENAI_API_KEY` for non-`gpt-5.5` ids |
+| MiniMax | the `claude` CLI + `MINIMAX_API_KEY` | export `MINIMAX_API_KEY` in your shell profile |
 
-- [`PRD.md`](PRD.md) — the full specification and lab notebook: the
-  protocol, the two-round explore→rebuild structure, the goal
-  termination contract, every recorded run and every distilled lesson
-- [`examples/`](examples/) — complete forensic records of real runs
-- [`.claude/`](.claude/) — the workflow, agent roles, and skills
+Every runner reads its key **from the environment** (exported in your shell profile and inherited into the session at launch), exactly the same way for every provider. The skill probes liveness before spending a round where it can — e.g. a one-line Codex probe, an `omlx-models` fetch — and offers another tier if a provider is down or its CLI is stale (e.g. `brew upgrade codex`).
 
-## Standing on shoulders
+---
 
-- The **Ralph loop** — [Geoffrey Huntley](https://ghuntley.com/ralph/):
-  persistence as strategy, the baseline we measure against
-- The **Karpathy loop** — Andrej Karpathy's keep/discard-against-a-metric
-  framing of agentic iteration
-- **Warnier/Orr output decomposition**
-  ([structured design, 1970s](https://en.wikipedia.org/wiki/Warnier/Orr_diagram))
-  — our requirements grammars are sixty-year-old medicine
-- **Anthropic's June 2026 orchestration stack** —
-  [dynamic workflows](https://code.claude.com/docs/en/workflows),
-  [subagents](https://code.claude.com/docs/en/sub-agents),
-  [best practices](https://code.claude.com/docs/en/best-practices)
-- **Professor Hubert J. Farnsworth**, who delivered bad news the same
-  way every time, and good news only when there was some
+## The benchmarking system (`fl-bench`)
+
+The `farnsworth-bench` skill (trigger: ask to benchmark model speed, or run `/fl-bench`) is a thin wrapper over `bin/fl-bench.mjs`. It measures **generation throughput (tokens/second)** for every model the system can call, on a **cold** call (first call — connection/cache/route warmup for hosted providers, a genuine weight-load only for local MLX) and an immediate **hot** call (second identical call). It prints a table and **appends every result** to `<plugin>/.bench/results.jsonl` (append-only, written per-model immediately, so a crashed sweep keeps what it produced).
+
+```sh
+# every callable model (local MLX list discovered live), cold + hot each:
+node "<plugin-root>/bin/fl-bench.mjs" --models all
+
+# a subset:
+node "<plugin-root>/bin/fl-bench.mjs" --models anthropic,glm
+node "<plugin-root>/bin/fl-bench.mjs" --models glm:glm-5.1,codex:codex-high,opus
+
+# dry-run: print the resolved plan, make NO model calls (cheap, testable):
+node "<plugin-root>/bin/fl-bench.mjs" --list --models all
+
+# heavy profile (slower + pricier):
+node "<plugin-root>/bin/fl-bench.mjs" --models opus,minimax-m3 --profile heavy
+```
+
+**Selection grammar** (`--models`, comma-separated, de-duped): `all` (default) · a provider (`anthropic|glm|local|codex|minimax`) · `<provider>:<id>` (e.g. `glm:glm-5.1`, `codex:codex-high`, `local:<omlx-id>`) · a bare id (`opus`, `glm-5.2`, `minimax-m3`, `codex-high`, a local id).
+
+**Two workload profiles** (`--profile`, default `light`; `--heavy`/`--light` shorthand):
+
+| Profile | Input | Output cap | Timeouts (default/local) | Use |
+|---|---|---|---|---|
+| `light` (default) | ~200-word paragraph | 2048 | 240s / 600s | fast/cheap throughput smoke |
+| `heavy` | fixed **>5k-token** code context | 8192 | 600s / 1200s | representative coding/agentic load: drives a **>5k-token decode** |
+
+The light cap is **2048, not a few hundred**: an extended-thinking model rejects a sub-1024 output cap (the thinking-budget floor), which is why both profile caps sit above it. The heavy profile is for when the light profile's small decode is too tiny to characterise real coding throughput.
+
+`tok/s = output_tokens / generation_wall_seconds`, using the provider's **real** token counts (claude-family parses `claude -p --output-format json --verbose`; local uses omlx `usage.completion_tokens`; codex uses a real usage event if present, else a flagged chars/4 estimate). Auth comes from the environment exactly as the runners do; a provider whose key is unset is recorded as a **failed row** and the sweep **continues**. Each result row records the `profile` name, cold/hot output tokens, the real input size, seconds, and a `timestamp`.
+
+Useful tips: run `--list` first to confirm (and price) the plan before the real paid sweep; the heavy all-models sweep is much slower and pricier (slow local models can approach the 1200s local timeout), so warn yourself and consider a representative subset. Full reference: `bin/README.fl-bench.md`.
+
+---
+
+## Repository layout
+
+A Claude Code plugin: a manifest, two skills, eight agents, the workflow engine, and the bin helpers. How the pieces fit:
+
+```text
+farnsworth-loop/
+├── plugin.json                         # plugin manifest (name, version, skills, agents)
+├── DOGFOOD.md                          # pointer stub → live backlog is GitHub Issues
+├── skills/
+│   ├── farnsworth-loop/
+│   │   ├── SKILL.md                    # the orchestration procedure (Phases 0–7); runs the loop
+│   │   └── references/
+│   │       ├── orchestration.md        # dispatch mechanics, model ids, runner args, run layout
+│   │       ├── diversity-injection.md  # Pool A / Pool B, sampling rules
+│   │       ├── review-rubric.md        # the Opus reviewer/ranker scoring + distillation rubric
+│   │       └── dogfood.md              # the dogfood-backlog convention
+│   └── farnsworth-bench/
+│       └── SKILL.md                    # /fl-bench wrapper over bin/fl-bench.mjs
+├── agents/                             # bundled worker agents
+│   ├── farnsworth-glm-5-2.md           # GLM workers (one per GLM model) — run bin/glm-run.sh
+│   ├── farnsworth-glm-5-1.md
+│   ├── farnsworth-glm-4-7.md
+│   ├── farnsworth-glm-4-5-air.md
+│   ├── farnsworth-local.md             # one generic local worker — runs bin/local-run.sh
+│   ├── farnsworth-codex.md             # one generic codex worker — runs bin/codex-run.sh
+│   ├── farnsworth-minimax.md           # one generic minimax worker — runs bin/minimax-run.sh
+│   └── farnsworth-implementer.md       # (grand loops) Opus; applies the winner to the real repo
+├── workflows/
+│   └── tournament.mjs                  # the dynamic-workflow engine: attempts → blind review → (two pass) round 2 → final rank
+├── bin/                                # runners + helpers (run with node / bash)
+│   ├── fl-parse.mjs                    # Phase 0 invocation parser (sigil, prose spec, Top Mixed, Z)
+│   ├── fl-git.sh                       # ALL git/gh side effects for grand loops (preflight, branch, verify, PR, markers)
+│   ├── fl-issue.sh                     # the only forge-touching part: dogfood GitHub-Issues helper
+│   ├── glm-run.sh                      # provider runner scripts (build a benign command, set env,
+│   ├── local-run.sh                    #   call the nested claude/codex, write provenance markers)
+│   ├── codex-run.sh
+│   ├── minimax-run.sh
+│   ├── fl-bench.mjs                    # the throughput benchmark
+│   └── README.fl-bench.md              # fl-bench usage + results-format reference
+├── docs/
+│   ├── dogfood/archive/                # read-only legacy D-NNNN evidence
+│   ├── dogfood/inbox/                  # committed offline drafts (no-gh fallback)
+│   └── *.md                            # design notes (grand loops, persisted outcomes, …)
+└── .bench/results.jsonl                # append-only fl-bench history
+```
+
+**How the pieces fit together at run time:**
+
+- **SKILL.md is the driver.** On a trigger it runs `bin/fl-parse.mjs` (Phase 0), the mandatory model gate (Phase 1), diversity injection (Phase 1b), then dispatches.
+- **`workflows/tournament.mjs` is the preferred backend.** Invoked via the `Workflow` tool, it runs the parallel attempts, the blind Opus review, and (two pass) round 2 + final rank deterministically — watchable live in `/workflows`. It returns the structured mapping + rankings the skill reports in Phase 6. (Fallback when workflows are unavailable: manual Task-tool + `glm` CLI dispatch.)
+- **Agents are thin command-runners.** Anthropic attempts run native via the Task tool. Each non-Anthropic attempt runs through its wrapper agent (a cheap Bash-only driver) executing the matching `bin/*-run.sh` — the script sets provider env, closes stdin, calls the nested `claude`/`codex`, and writes the provenance marker. This indirection exists because a wrapper handed a *raw* nested command proved unreliable (it would solve the task itself, refuse on "safety," or let the weak inner model bail without saving); it matters most for **codex**, a fully autonomous external agent.
+- **The judge is fixed.** Reviewer and final ranker are always Opus via the Task tool. Before judging, the engine **stages** each deliverable into a clean blind tree (copying files and deleting the known engine files — `_brief.txt`, the run logs — by exact name, an *allowlist* that keeps legitimately `_`-prefixed deliverables), **validates** the success provenance contract, and **pools** the valid deliverables into one blind-labelled `_pool.md` the judge reads — failing closed on any invalid candidate.
+- **Grand loops** add `farnsworth-implementer` (the only repo-writer) and `bin/fl-git.sh` (all git/gh); the tournament engine itself stays repo-pure.
+
+---
+
+## Honest limitations
+
+The source is candid about these, and you should be too:
+
+- **Blindness has honour-system edges.** The judge gets `Read`/`Bash` and the absolute run dir, so it *could* walk to a sibling workspace and read a provenance log; the prompt tells it not to, but that part isn't mechanically enforced. And while the blind letter is decorrelated from dispatch order, the presentation order in the pool is fixed, so any positional bias in the judge is uncorrected — weight on merits, not order.
+- **Cost grows with N and mode.** Single pass ≈ N attempts + 1 Opus pass; two pass ≈ 2N + 2; grand loops multiply that by Z and add an Opus implementer + verify per loop. Cost is explicitly *not* the design constraint here, but it is real — the skill confirms volume at higher N and `Z_MAX` caps the chain at 5.
+- **Weaker models fail honestly.** `glm-4.5-air` and small local MLX models sometimes don't save a deliverable; codex can refuse or run to its wall-clock timeout. These are excluded as failed attempts, not papered over, and the round proceeds over the survivors. On-device models are poorly suited to heavy writing deliverables (one local model timed out at 600s on a ~27KB proposal) — prefer hosted providers there.
+- **Claiming a dogfood item is best-effort, not a lock** (no GitHub compare-and-swap); use the git-ref escape hatch when you need strict exclusivity.
+- **Grand loops never auto-merge, never resume.** A failed verify halts the chain into a draft `needs-human` PR; a mid-loop death stops and asks a human to clean up the orphan branch. By design, you are always the one who merges.
 
 ---
 
