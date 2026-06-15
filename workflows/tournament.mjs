@@ -133,7 +133,7 @@ const contextFiles = Array.isArray(A.contextFiles) ? A.contextFiles.filter(Boole
 const contextPath = contextFiles.length ? `${runDir}/_context/_context.md` : null
 async function buildContext() {
   if (!contextPath) return
-  const cat = contextFiles.map(f => `echo "===== ${f} ====="; cat ${q(f)} 2>/dev/null || echo "(unreadable: ${f})"; echo`).join('; ')
+  const cat = contextFiles.map(f => `echo "===== ${f} ====="; if [ ! -L ${q(f)} ] && [ -f ${q(f)} ]; then cat ${q(f)} 2>/dev/null || echo "(unreadable: ${f})"; else echo "(skipped non-regular: ${f})"; fi; echo`).join('; ')
   const cmd = `mkdir -p ${q(`${runDir}/_context`)} && { ${cat} ; } > ${q(contextPath)} && wc -c ${q(contextPath)}`
   log(`Bundling ${contextFiles.length} context file(s) → ${contextPath}`)
   await agent(`Run this exact shell command in ONE Bash call and report its stdout. Do nothing else:\n\n${cmd}`,
@@ -358,8 +358,9 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
     const provChk = provCheckShell(log, tok, lp, !!c.carriedOver)
     return `mkdir -p ${q(dest)}; cp -R ${q(c.ws)}/. ${q(dest)}/ 2>/dev/null; ` +
            `rm -f ${q(dest)}/_brief.txt ${q(dest)}/_glm_run.log ${q(dest)}/_local_run.log ${q(dest)}/_codex_run.log ${q(dest)}/_codex_last.txt ${q(dest)}/_minimax_run.log; ` +
+           `find ${q(dest)} -mindepth 1 ! -type f ! -type d -delete 2>/dev/null; ` +
            `D=$(find ${q(dest)} -type f 2>/dev/null | grep -c .); ${provChk}; ` +
-           `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; cat ${q(dest)}/* 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
+           `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; find ${q(dest)} -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
            `echo "FLV ${c.blind} d=$([ "$D" -gt 0 ] && echo 1 || echo 0) p=$P"`
   })).join('\n')
   const res = await agent(
