@@ -2,6 +2,12 @@
 
 > *"Good news, everyone!"*
 
+> **🚧 Migrating (2026-06-15):** Farnsworth Loop is moving from this Python reference
+> implementation to a **Claude Code plugin** built on **Dynamic Workflows** — the install &
+> usage docs are being rewritten. The original Python CLI is preserved at the
+> **`v1-python-reference`** tag. The narrative below still describes the concept; the plugin
+> itself now lives in this repo (`skills/`, `workflows/`, `bin/`, `agents/`, `.claude-plugin/`).
+
 **The Farnsworth Loop is the Ralph loop made self-evaluating.** Keep
 Ralph's shape — a dumb driver, fresh contexts every pass, all memory
 on disk in git, run unattended — and substitute intelligence at the

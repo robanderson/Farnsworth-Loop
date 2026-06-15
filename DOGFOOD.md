@@ -5,7 +5,7 @@
 This file is a stub kept as a discoverable pointer; it is no longer the roster.
 
 - **Live backlog:** `gh issue list --label dogfood --state all` (or the link above).
-- **File / claim / work an item:** `farnsworth-loop/bin/fl-issue.sh` (see below).
+- **File / claim / work an item:** `bin/fl-issue.sh` (see below).
 - **Convention + flow:** [`skills/farnsworth-loop/references/dogfood.md`](skills/farnsworth-loop/references/dogfood.md).
 - **Historical items (legacy `D-NNNN`):** imported as **closed** `[dogfood] D-NNNN:` issues, each
   carrying the full original evidence/repro/resolution verbatim in its body (search the `dogfood`

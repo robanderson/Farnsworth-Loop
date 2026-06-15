@@ -1,1 +1,0 @@
-# Word Garden test package

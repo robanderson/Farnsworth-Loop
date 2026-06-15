@@ -15,18 +15,18 @@ wall-time and the provider's **real** output-token count.
 
 ```sh
 # every callable model (local MLX list discovered live), cold + hot each:
-node ~/.claude/my-skills/farnsworth-loop/bin/fl-bench.mjs --models all
+node bin/fl-bench.mjs --models all
 
 # a custom subset:
-node ~/.claude/my-skills/farnsworth-loop/bin/fl-bench.mjs --models anthropic,glm
-node ~/.claude/my-skills/farnsworth-loop/bin/fl-bench.mjs --models glm:glm-5.1,codex:codex-high,opus
+node bin/fl-bench.mjs --models anthropic,glm
+node bin/fl-bench.mjs --models glm:glm-5.1,codex:codex-high,opus
 
 # dry-run: print the resolved plan, make NO model calls (cheap + testable):
-node ~/.claude/my-skills/farnsworth-loop/bin/fl-bench.mjs --list --models all
+node bin/fl-bench.mjs --list --models all
 
 # heavy profile: >5k-token input context + long (>5k-token) output, for a
 # representative coding/agentic workload (slower + pricier than light):
-node ~/.claude/my-skills/farnsworth-loop/bin/fl-bench.mjs --models opus,minimax-m3 --profile heavy
+node bin/fl-bench.mjs --models opus,minimax-m3 --profile heavy
 ```
 
 It is invoked like the other `bin/` tools (a plain script run with `node` /

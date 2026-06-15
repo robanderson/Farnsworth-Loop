@@ -22,11 +22,11 @@ transient committed **inbox** used when `gh` is unreachable.
 | Thing | Location |
 |---|---|
 | Live backlog (open/claimed/closed, sev/area) | GitHub Issues, label `dogfood` |
-| The capability (bootstrap / file / next / claim / drain-inbox) | `farnsworth-loop/bin/fl-issue.sh` |
+| The capability (bootstrap / file / next / claim / drain-inbox) | `bin/fl-issue.sh` |
 | Issue form (structural evidence enforcement) | `.github/ISSUE_TEMPLATE/dogfood.yml` |
-| This convention | `farnsworth-loop/skills/farnsworth-loop/references/dogfood.md` |
+| This convention | `skills/farnsworth-loop/references/dogfood.md` |
 | Historical evidence (legacy `D-NNNN`) | the **closed** `dogfood` issues (full evidence in each body) |
-| Offline drafts (committed, transient) | `farnsworth-loop/docs/dogfood/inbox/` |
+| Offline drafts (committed, transient) | `docs/dogfood/inbox/` |
 
 **Target repo (not hard-coded).** `bin/fl-issue.sh` resolves the repo once per run: `$GH_REPO` if
 set (`owner/repo`), otherwise inferred by `gh` from the current checkout's git remote, and every
@@ -113,7 +113,7 @@ failure, `fl-issue.sh new` **degrades to a committed draft** under `docs/dogfood
 
 ## Historical items (legacy `D-NNNN` ids)
 
-Before the migration, items were rostered in `farnsworth-loop/DOGFOOD.md` with one evidence file per
+Before the migration, items were rostered in `DOGFOOD.md` with one evidence file per
 item under `docs/dogfood/`. Those were imported as **closed** GitHub issues titled `[dogfood] D-NNNN: …`,
 each carrying the **full original evidence/repro/resolution verbatim** in its body, and the in-repo
 files were removed — the closed issues are the sole record now. Code comments that reference

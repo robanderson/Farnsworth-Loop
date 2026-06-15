@@ -32,7 +32,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"              # farnsworth-loop/
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"              # repo root (= plugin root)
 DOGFOOD_DIR="$PLUGIN_ROOT/docs/dogfood"
 INBOX_DIR="$DOGFOOD_DIR/inbox"
 

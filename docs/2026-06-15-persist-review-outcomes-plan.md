@@ -1,6 +1,6 @@
 # Implementation Plan — Persist Farnsworth Loop review/judge outcomes to disk
 
-**File touched:** `farnsworth-loop/workflows/tournament.mjs` (single file; additive only).
+**File touched:** `workflows/tournament.mjs` (single file; additive only).
 **Contract:** no new agent *type* and no new judge/attempt; no behavior change to the existing flow; negligible perf cost; fully backward-compatible. Only NEW files are written, and a write failure must NEVER crash the (already fully-paid) run.
 
 > **Provenance of this plan.** Synthesised from a two-pass @@FL:8 tournament (2 opus, 2 sonnet, 2 codex-high, 2 minimax). Tournament winner was an Opus plan ("candidate I"); this doc grafts onto it the **verified line-anchors** from the real source and the **atomic-write discipline** of the runner-up — and **corrects one fatal error that every top-ranked plan shared** (see §0). The blind judges could not catch that error because they reasoned from the file's `.mjs` extension, not from the workflow execution sandbox.

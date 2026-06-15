@@ -138,7 +138,7 @@ If dynamic workflows are unavailable, use the manual Task-tool + `glm`/`omlx`-CL
 One run directory, with separate round folders and isolated per-candidate workspaces. Isolation is not optional: parallel agents writing to a shared path produce race conditions and overwritten files.
 
 ```
-farnsworth-loop/
+<plugin-root>/
 └── <run-id>/
     ├── round-1/
     │   ├── candidate-1/        # round 1 attempt workspaces
@@ -179,7 +179,7 @@ Task:
 Rules:
 - Fully specified — do NOT ask questions; make reasonable defaults and just produce your solution.
 - SINGLE pass, then STOP: write the file ONCE and stop. Do NOT run, test, inspect, rewrite, or polish it — your first version is final, even if imperfect.
-- Save your solution file(s) to: farnsworth-loop/<run-id>/round-1/candidate-<i>/  (an empty workspace is a failure;
+- Save your solution file(s) to: <run-id>/round-1/candidate-<i>/  (an empty workspace is a failure;
   the file need NOT be flawless). Work only in that directory.
 - End with a 2 to 4 sentence note on your approach, tradeoffs, and any known limitations.
 ```
@@ -211,7 +211,7 @@ And pitfalls that hurt attempts (avoid, unless you have a concrete reason they d
 Rules:
 - Fully specified — do NOT ask questions; make reasonable defaults and just produce your solution.
 - SINGLE pass, then STOP: write the file ONCE and stop. Do NOT run, test, inspect, rewrite, or polish it — your first version is final, even if imperfect.
-- Save your solution file(s) to: farnsworth-loop/<run-id>/round-2/candidate-<i>/  (an empty workspace is a failure;
+- Save your solution file(s) to: <run-id>/round-2/candidate-<i>/  (an empty workspace is a failure;
   the file need NOT be flawless). Work only in that directory.
 - End with a 2 to 4 sentence note on your approach, tradeoffs, and any known limitations.
 ```
