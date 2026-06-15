@@ -252,7 +252,7 @@ Farnsworth Loop is a **Claude Code plugin** (`farnsworth-loop`, skills + agents 
 
 Once installed, the `@@FL` trigger and the `farnsworth-loop` / `farnsworth-bench` skills are available in your sessions; the bundled scripts under `bin/` are run with `node` / `bash` from the resolved plugin root. Confirm the `farnsworth-loop` skill appears after installing.
 
-> Dynamic-workflow dispatch (the preferred backend) requires a Claude Code build with workflows enabled; without it, the skill falls back to manual Task-tool + `glm` CLI dispatch.
+> **Enabling dynamic workflows.** The preferred backend runs on Claude Code's dynamic-workflow orchestration. Turn it on by upgrading effort to its maximum: run `/effort` and select **ultracode** (max = xhigh reasoning + dynamic workflow orchestration). With it on, the tournament fans out through the `Workflow` engine and is watchable live in `/workflows`. Without it, the skill automatically falls back to manual Task-tool + `glm` CLI dispatch — the same tournament, just not driven by the workflow engine.
 
 ### What you need per provider
 
