@@ -1,9 +1,0 @@
-* 3abb931 task-001 attestation: GOAL MET; loop exit DONE at 1 iteration; closing metrics, process findings, run report
-* 94fd4c9 Good news, everyone! task-001 lessons installed
-*   1a0ced8 task-001: adopt candidate D
-|\  
-| * 17e0da3 Implement Wine Stock Report Generator (complete program + tests + README)
-* | 6710cbc task-001 audit: dispatch ledger, gate results, candidate diffs, review, verdict, run log
-|/  
-* 1658e78 orchestrator log: run design, preflight findings, task-001 derivation
-* bdd1c60 seed: PRD, fixture CSV, GOAL contract, fleet config, 12-entry cross-project tips seed, task-001 brief

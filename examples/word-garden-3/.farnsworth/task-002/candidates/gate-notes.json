@@ -1,9 +1,0 @@
-{
-  "gate": ["tests: python3 -m unittest discover -s tests", "compile: python3 -m compileall -q word_garden", "piped-eof: printf '' | python3 -m word_garden exits 0", "engine-untouched: engine + engine-test files byte-identical to base"],
-  "results": {
-    "A": {"passed": true, "tests": 105, "autopsy": "tests: exit 0 (105); compile: 0; piped-eof: 0; engine untouched; hygiene clean"},
-    "B": {"passed": true, "tests": 145, "autopsy": "tests: exit 0 (145); compile: 0; piped-eof: 0; engine untouched; hygiene clean"},
-    "C": {"passed": true, "tests": 119, "autopsy": "tests: exit 0 (119); compile: 0; piped-eof: 0; engine untouched; hygiene clean"}
-  },
-  "failures": []
-}

@@ -1,7 +1,0 @@
-{
-  "A": "Candidate A: gate pass; clean commit set, no pyc, added .gitignore",
-  "B": "Candidate B: gate pass; clean commit set, no pyc, added .gitignore",
-  "C": "Candidate C: gate pass; hygiene: committed __pycache__ .pyc files",
-  "D": "Candidate D: gate pass; hygiene: committed __pycache__ .pyc files",
-  "E": "Candidate E: gate pass; clean commit set, no pyc, added .gitignore"
-}
