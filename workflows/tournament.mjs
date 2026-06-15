@@ -137,8 +137,10 @@ const contextPath = contextFiles.length ? `${runDir}/_context/_context.md` : nul
 // ARGUMENT — never interpolated into a double-quoted `echo "===== ${f} ====="`, where $()/backticks/
 // ${} in a path would execute (and a bare $VAR would silently mangle the label). printf treats `%`
 // only in the FORMAT string, so a `%` in the path is harmless data.
+// SECURITY (issue #23): read a path only if it is a regular file AND not a symlink
+// (`[ ! -L ] && [ -f ]`), so a planted symlink/special file can't be dereferenced into the bundle.
 function contextCatCmd(files) {
-  return files.map(f => `printf '===== %s =====\\n' ${q(f)}; cat ${q(f)} 2>/dev/null || printf '(unreadable: %s)\\n' ${q(f)}; echo`).join('; ')
+  return files.map(f => `printf '===== %s =====\\n' ${q(f)}; if [ ! -L ${q(f)} ] && [ -f ${q(f)} ]; then cat ${q(f)} 2>/dev/null || printf '(unreadable: %s)\\n' ${q(f)}; else printf '(skipped non-regular: %s)\\n' ${q(f)}; fi; echo`).join('; ')
 }
 async function buildContext() {
   if (!contextPath) return
@@ -362,8 +364,9 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
     const provChk = provCheckShell(log, tok, lp, !!c.carriedOver)
     return `mkdir -p ${q(dest)}; cp -R ${q(c.ws)}/. ${q(dest)}/ 2>/dev/null; ` +
            `rm -f ${q(dest)}/_brief.txt ${q(dest)}/_glm_run.log ${q(dest)}/_local_run.log ${q(dest)}/_codex_run.log ${q(dest)}/_codex_last.txt ${q(dest)}/_minimax_run.log; ` +
+           `find ${q(dest)} -mindepth 1 ! -type f ! -type d -delete 2>/dev/null; ` +
            `D=$(find ${q(dest)} -type f 2>/dev/null | grep -c .); ${provChk}; ` +
-           `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; cat ${q(dest)}/* 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
+           `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; find ${q(dest)} -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
            `echo "FLV ${c.blind} d=$([ "$D" -gt 0 ] && echo 1 || echo 0) p=$P"`
   })).join('\n')
   const res = await agent(
