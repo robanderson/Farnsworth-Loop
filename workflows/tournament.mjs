@@ -131,9 +131,18 @@ const codexRunnerCmd = (runner, flag, ws, b) => `${cmdHead(ws, b)} && FL_TIMEOUT
 // judge. No bundle is built when contextFiles is empty.
 const contextFiles = Array.isArray(A.contextFiles) ? A.contextFiles.filter(Boolean) : []
 const contextPath = contextFiles.length ? `${runDir}/_context/_context.md` : null
+// Build the shell command that concatenates the context files into one bundle.
+// SECURITY (issue #22): a context-file path is shell DATA, so EVERY place it reaches the shell must
+// pass through q() (single-quote escape). The label is emitted with `printf '%s'` taking q(f) as an
+// ARGUMENT — never interpolated into a double-quoted `echo "===== ${f} ====="`, where $()/backticks/
+// ${} in a path would execute (and a bare $VAR would silently mangle the label). printf treats `%`
+// only in the FORMAT string, so a `%` in the path is harmless data.
+function contextCatCmd(files) {
+  return files.map(f => `printf '===== %s =====\\n' ${q(f)}; cat ${q(f)} 2>/dev/null || printf '(unreadable: %s)\\n' ${q(f)}; echo`).join('; ')
+}
 async function buildContext() {
   if (!contextPath) return
-  const cat = contextFiles.map(f => `echo "===== ${f} ====="; cat ${q(f)} 2>/dev/null || echo "(unreadable: ${f})"; echo`).join('; ')
+  const cat = contextCatCmd(contextFiles)
   const cmd = `mkdir -p ${q(`${runDir}/_context`)} && { ${cat} ; } > ${q(contextPath)} && wc -c ${q(contextPath)}`
   log(`Bundling ${contextFiles.length} context file(s) → ${contextPath}`)
   await agent(`Run this exact shell command in ONE Bash call and report its stdout. Do nothing else:\n\n${cmd}`,
