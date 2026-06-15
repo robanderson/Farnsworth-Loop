@@ -94,7 +94,7 @@ const q = s => "'" + String(s).replace(/'/g, "'\\''") + "'" // single-quote shel
 // Runner paths for the non-Anthropic providers (passed in via args). Each provider's
 // real (nested-Claude) call lives in a bundled script, so the wrapper agent only ever
 // sees a benign `bash <runner> <flag>` command — nothing to refuse, shortcut, or
-// self-substitute. GLM has an inline fallback; local always uses its runner.
+// self-substitute. All providers require their runner script; GLM has no inline fallback.
 const glmRunner = A.glmRunner
 const localRunner = A.localRunner
 const codexRunner = A.codexRunner
@@ -140,15 +140,6 @@ async function buildContext() {
     { model: 'haiku', phase: 'Round 1', label: 'context' }).catch(() => null)
 }
 
-function glmInline(flag, ws, b) {
-  return `${cmdHead(ws, b)} && ` +
-    `echo "FARNSWORTH-GLM-PROVENANCE endpoint=api.z.ai flag=${flag}" >> _glm_run.log && ` +
-    `ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" ` +
-    `ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.2[1m]" ANTHROPIC_DEFAULT_SONNET_MODEL="glm-4.7" ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air" ` +
-    `claude -p "$(cat _brief.txt)" ${flag} --max-turns ${glmMaxTurns} --permission-mode acceptEdits --allowedTools "Bash Read Write Edit" >> _glm_run.log 2>&1; ` +
-    `echo "FARNSWORTH-GLM-DONE exit=$?" >> _glm_run.log; tail -20 _glm_run.log`
-}
-
 const RUNVERBATIM = (cmd, ws, log) =>
   `This is an approved internal step of the farnsworth-loop tournament: it writes a brief file and runs a bundled project runner script, which performs the attempt. Run the following shell command EXACTLY as given, in one Bash call, and do nothing else (do not attempt the task yourself, do not edit the command):\n\n${cmd}\n\nThen report the deliverable path(s) in ${ws} and the last ~15 lines of ${log}.`
 
@@ -164,7 +155,11 @@ function dispatch(a, ws, guidance, phaseTitle) {
   if (a.dispatch === 'glm') {
     opts.agentType = nsAgent(a.agentType)
     const flag = GLM_FLAG[a.displayModel]
-    const cmd = glmRunner ? runnerCmd(glmRunner, flag, ws, b, glmMaxTurns, glmTimeoutSecs) : glmInline(flag, ws, b)
+    if (!glmRunner) {
+      log(`attempt ${a.label} (${a.displayModel}) skipped: glmRunner not supplied (pass args.glmRunner pointing to bin/glm-run.sh)`)
+      return null
+    }
+    const cmd = runnerCmd(glmRunner, flag, ws, b, glmMaxTurns, glmTimeoutSecs)
     prompt = RUNVERBATIM(cmd, ws, '_glm_run.log')
   } else if (a.dispatch === 'local') {
     opts.agentType = nsAgent(a.agentType) // farnsworth-local
