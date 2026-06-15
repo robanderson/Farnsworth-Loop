@@ -34,6 +34,17 @@
 // hard cap so a fat-fingered @@FL:5:2:30 cannot run 30 repo-mutating loops.
 const Z_MAX = 5;
 
+// Runaway-safety ceiling on tournament size. N>N_MAX is refused outright. This
+// bounds one invocation's fan-out; together with Z_MAX=5 it caps dispatches at
+// 80, while still allowing the normal small review pools this parser is built for.
+const N_MAX = 16;
+
+function nMaxError(n) {
+  return 'N=' + n + ' exceeds the tournament-size ceiling N_MAX=' + N_MAX +
+    '. This is a runaway-safety bound. Split into batches: run several invocations with N<=' +
+    N_MAX + ' instead.';
+}
+
 // ---------------------------------------------------------------------------
 // Normaliser table (the strict gate). alias -> { model, dispatch }.
 // Keys are the *canonicalised* token form (lowercased, internal whitespace
@@ -228,10 +239,11 @@ function locateSpec(msg) {
 }
 
 // Given a located spec slice, expand it into an assignment array, collecting
-// unknown tokens as errors. Returns { assignment, count, unknowns[] }.
+// unknown tokens as errors. Returns { assignment, count, unknowns[], overflows[] }.
 function expandSpec(specRaw) {
   const assignment = [];
   const unknowns = [];
+  const overflows = [];
   // Iterate per item.
   const itemFinder = new RegExp(COUNT_RX + '(' + MODEL_TOKEN_RX + ')', 'ig');
   let m;
@@ -244,9 +256,14 @@ function expandSpec(specRaw) {
       unknowns.push(m[2].trim());
       continue; // recorded as unknown; do NOT drop silently — surfaced below.
     }
+    const nextTotal = assignment.length + count;
+    if (count > N_MAX || nextTotal > N_MAX) {
+      overflows.push({ count, total: nextTotal, token: m[2].trim() });
+      continue;
+    }
     for (let i = 0; i < count; i++) assignment.push(norm.model);
   }
-  return { assignment, count: any ? assignment.length : 0, unknowns, any };
+  return { assignment, count: any ? assignment.length : 0, unknowns, overflows, any };
 }
 
 // Detect a connector-licensed UNKNOWN token: '<count> <arbitrary>' sitting next
@@ -281,6 +298,7 @@ const TOP_MIXED_RX = /\btop[\s-]*mix(?:ed)?\b/i;
 const TOP_MIXED_LEADCOUNT_RX = /(\d+)\s*top[\s-]*mix(?:ed)?\b/i;
 
 function topMixedAssignment(n) {
+  if (!Number.isSafeInteger(n) || n < 2 || n > N_MAX) return [];
   if (n === 2) return ['opus', 'glm-5.2']; // 1/1/0 by spec
   const base = Math.floor(n / 3);
   let rem = n % 3;
@@ -306,6 +324,13 @@ function parse(rawInput) {
     needsGate: false,
   };
   const errors = [];
+  const oversizedNs = new Set();
+  const pushNMaxError = (n) => {
+    if (!oversizedNs.has(n)) {
+      errors.push(nMaxError(n));
+      oversizedNs.add(n);
+    }
+  };
 
   if (typeof rawInput !== 'string') {
     errors.push('Input must be a string.');
@@ -486,6 +511,9 @@ function parse(rawInput) {
       nMarker = marker.nSeg.value;
     }
   }
+  if (nMarker != null && nMarker > N_MAX) {
+    pushNMaxError(nMarker);
+  }
 
   // --- 7. Prose model spec scan + Top Mixed. ---
   // Work against the message (spec/keyword can appear anywhere). FIRST strip the
@@ -534,6 +562,10 @@ function parse(rawInput) {
       }
       if (tmN < 2) {
         errors.push('Top Mixed needs N >= 2 (got N=' + tmN + ').');
+      } else if (tmN > N_MAX) {
+        pushNMaxError(tmN);
+        assignment = null;
+        nSpec = null;
       } else {
         assignment = topMixedAssignment(tmN);
         nSpec = tmN;
@@ -550,6 +582,11 @@ function parse(rawInput) {
       const norm = normaliseModel(h.tok);
       if (!norm && !allUnknowns.includes(h.tok)) allUnknowns.push(h.tok);
     }
+    if (exp.overflows.length) {
+      for (const o of exp.overflows) pushNMaxError(o.total);
+      assignment = null;
+      nSpec = null;
+    }
     if (allUnknowns.length) {
       errors.push(
         'Unrecognised model token(s) in spec: ' + allUnknowns.map(u => '"' + u + '"').join(', ') +
@@ -558,7 +595,7 @@ function parse(rawInput) {
       );
       assignment = null;
       nSpec = null;
-    } else if (exp.count > 0) {
+    } else if (!exp.overflows.length && exp.count > 0) {
       assignment = exp.assignment;
       nSpec = exp.count;
     }
@@ -607,6 +644,10 @@ function parse(rawInput) {
   if (n != null) {
     if (n < 2) {
       errors.push('N must be an integer >= 2 (got N=' + n + ').');
+      n = null;
+      assignment = null;
+    } else if (n > N_MAX) {
+      pushNMaxError(n);
       n = null;
       assignment = null;
     }
@@ -698,6 +739,7 @@ export {
   NORMALISER,
   TOP_MIXED_POOL,
   Z_MAX,
+  N_MAX,
 };
 
 // ---------------------------------------------------------------------------
@@ -712,12 +754,12 @@ const isMain = (() => {
 
 if (isMain) {
   const raw = process.argv.slice(2).join(' ');
-  let out;
   try {
-    out = parse(raw);
+    const out = parse(raw);
+    process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } catch (e) {
-    out = { task: '', n: null, mode: null, z: 1, assignment: null,
-            errors: ['internal parse error: ' + (e && e.message ? e.message : String(e))] };
+    const out = { task: '', n: null, mode: null, z: 1, assignment: null,
+                  errors: ['internal parse error: ' + (e && e.message ? e.message : String(e))] };
+    process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   }
-  process.stdout.write(JSON.stringify(out, null, 2) + '\n');
 }

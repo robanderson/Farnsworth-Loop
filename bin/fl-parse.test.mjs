@@ -9,7 +9,11 @@
 // Feature 1 (grand loops Z): Z=1 unchanged, Z>=2 valid, Z>Z_MAX rejected,
 // positional-skip still invalid.
 
-import { parse, normaliseModel, topMixedAssignment, expandSpec, Z_MAX } from './fl-parse.mjs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { parse, normaliseModel, topMixedAssignment, expandSpec, Z_MAX, N_MAX } from './fl-parse.mjs';
+
+const FL_PARSE_CLI = fileURLToPath(new URL('./fl-parse.mjs', import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -82,6 +86,37 @@ function parseCase(label, input, expect = {}, opts = {}) {
 function unit(label, cond) {
   if (cond) { passed++; }
   else { failed++; failures.push(`  [${label}] unit assertion failed`); }
+}
+
+function cliParseCase(label, input, expect = {}, opts = {}) {
+  const p = spawnSync(process.execPath, [FL_PARSE_CLI, input], { encoding: 'utf8' });
+  if (p.status === 0) { passed++; }
+  else {
+    failed++;
+    failures.push(`  [${label}] expected CLI exit 0, got ${p.status}; stderr=${show(p.stderr)}`);
+    return;
+  }
+  let r;
+  try {
+    r = JSON.parse(p.stdout);
+    passed++;
+  } catch (e) {
+    failed++;
+    failures.push(`  [${label}] expected JSON stdout, got ${show(p.stdout)}`);
+    return;
+  }
+  for (const [k, v] of Object.entries(expect)) {
+    assertField(label, k, r[k], v);
+  }
+  if (opts.errorIncludes !== undefined) {
+    const errs = r.errors || [];
+    const hit = errs.some(e => e.toLowerCase().includes(opts.errorIncludes.toLowerCase()));
+    if (hit) { passed++; }
+    else {
+      failed++;
+      failures.push(`  [${label}] expected an error including "${opts.errorIncludes}", got errors=${show(errs)}`);
+    }
+  }
 }
 
 // ===========================================================================
@@ -157,6 +192,24 @@ parseCase('invalid M=3', 'do abc @@FL:5:3',
 // --- N < 2 ---
 parseCase('N=1 invalid', 'do abc @@FL:1',
   { n: null }, { errorIncludes: 'N must be an integer >= 2' });
+
+// --- N > N_MAX rejected loudly and safely ---
+parseCase('N over ceiling marker', 'do abc @@FL:9999',
+  { n: null, assignment: null }, { errorIncludes: 'N=9999 exceeds the tournament-size ceiling N_MAX=' + N_MAX });
+parseCase('N at ceiling valid', 'do abc @@FL:' + N_MAX,
+  { n: N_MAX, assignment: null }, { noErrors: true });
+parseCase('spec over ceiling rejected before expansion', '@@FL run with 50000000 opus, 1 glm',
+  { n: null, assignment: null }, { errorIncludes: 'N=50000000 exceeds the tournament-size ceiling' });
+parseCase('spec total over ceiling rejected', '@@FL run with 10 opus, 10 glm',
+  { n: null, assignment: null }, { errorIncludes: 'N=20 exceeds the tournament-size ceiling' });
+parseCase('top mixed over ceiling rejected before expansion', 'do abc top mixed @@FL:9999',
+  { n: null, assignment: null, preset: 'top-mixed' }, { errorIncludes: 'N=9999 exceeds the tournament-size ceiling' });
+
+// --- CLI regression: oversize inputs exit 0 with errors[] (no crash/OOM) ---
+cliParseCase('CLI huge prose spec exits 0', '@@FL run with 50000000 opus, 1 glm',
+  { n: null, assignment: null }, { errorIncludes: 'N=50000000 exceeds the tournament-size ceiling' });
+cliParseCase('CLI N over ceiling exits 0', '@@FL:9999',
+  { n: null, assignment: null }, { errorIncludes: 'N=9999 exceeds the tournament-size ceiling N_MAX=' + N_MAX });
 
 // --- no marker ---
 parseCase('no marker', 'fix 3 bugs in the parser',
@@ -336,6 +389,9 @@ unit('topMixed N=6', eq(topMixedAssignment(6), ['opus', 'opus', 'glm-5.2', 'glm-
 unit('topMixed N=5', eq(topMixedAssignment(5), ['opus', 'opus', 'glm-5.2', 'glm-5.2', 'codex-high']));
 unit('expandSpec basic', eq(expandSpec('2 opus, 1 sonnet').assignment, ['opus', 'opus', 'sonnet']));
 unit('Z_MAX is 5', Z_MAX === 5);
+unit('N_MAX is 16', N_MAX === 16);
+unit('expandSpec over N_MAX reports overflow', expandSpec('50000000 opus').overflows[0].total === 50000000);
+unit('topMixed over N_MAX returns empty safely', eq(topMixedAssignment(N_MAX + 1), []));
 
 // ===========================================================================
 // report.
