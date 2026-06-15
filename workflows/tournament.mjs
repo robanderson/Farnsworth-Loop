@@ -94,7 +94,7 @@ const q = s => "'" + String(s).replace(/'/g, "'\\''") + "'" // single-quote shel
 // Runner paths for the non-Anthropic providers (passed in via args). Each provider's
 // real (nested-Claude) call lives in a bundled script, so the wrapper agent only ever
 // sees a benign `bash <runner> <flag>` command — nothing to refuse, shortcut, or
-// self-substitute. GLM has an inline fallback; local always uses its runner.
+// self-substitute. All providers require their runner script; GLM has no inline fallback.
 const glmRunner = A.glmRunner
 const localRunner = A.localRunner
 const codexRunner = A.codexRunner
@@ -131,22 +131,24 @@ const codexRunnerCmd = (runner, flag, ws, b) => `${cmdHead(ws, b)} && FL_TIMEOUT
 // judge. No bundle is built when contextFiles is empty.
 const contextFiles = Array.isArray(A.contextFiles) ? A.contextFiles.filter(Boolean) : []
 const contextPath = contextFiles.length ? `${runDir}/_context/_context.md` : null
+// Build the shell command that concatenates the context files into one bundle.
+// SECURITY (issue #22): a context-file path is shell DATA, so EVERY place it reaches the shell must
+// pass through q() (single-quote escape). The label is emitted with `printf '%s'` taking q(f) as an
+// ARGUMENT — never interpolated into a double-quoted `echo "===== ${f} ====="`, where $()/backticks/
+// ${} in a path would execute (and a bare $VAR would silently mangle the label). printf treats `%`
+// only in the FORMAT string, so a `%` in the path is harmless data.
+// SECURITY (issue #23): read a path only if it is a regular file AND not a symlink
+// (`[ ! -L ] && [ -f ]`), so a planted symlink/special file can't be dereferenced into the bundle.
+function contextCatCmd(files) {
+  return files.map(f => `printf '===== %s =====\\n' ${q(f)}; if [ ! -L ${q(f)} ] && [ -f ${q(f)} ]; then cat ${q(f)} 2>/dev/null || printf '(unreadable: %s)\\n' ${q(f)}; else printf '(skipped non-regular: %s)\\n' ${q(f)}; fi; echo`).join('; ')
+}
 async function buildContext() {
   if (!contextPath) return
-  const cat = contextFiles.map(f => `echo "===== ${f} ====="; if [ ! -L ${q(f)} ] && [ -f ${q(f)} ]; then cat ${q(f)} 2>/dev/null || echo "(unreadable: ${f})"; else echo "(skipped non-regular: ${f})"; fi; echo`).join('; ')
+  const cat = contextCatCmd(contextFiles)
   const cmd = `mkdir -p ${q(`${runDir}/_context`)} && { ${cat} ; } > ${q(contextPath)} && wc -c ${q(contextPath)}`
   log(`Bundling ${contextFiles.length} context file(s) → ${contextPath}`)
   await agent(`Run this exact shell command in ONE Bash call and report its stdout. Do nothing else:\n\n${cmd}`,
     { model: 'haiku', phase: 'Round 1', label: 'context' }).catch(() => null)
-}
-
-function glmInline(flag, ws, b) {
-  return `${cmdHead(ws, b)} && ` +
-    `echo "FARNSWORTH-GLM-PROVENANCE endpoint=api.z.ai flag=${flag}" >> _glm_run.log && ` +
-    `ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" ` +
-    `ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.2[1m]" ANTHROPIC_DEFAULT_SONNET_MODEL="glm-4.7" ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air" ` +
-    `claude -p "$(cat _brief.txt)" ${flag} --max-turns ${glmMaxTurns} --permission-mode acceptEdits --allowedTools "Bash Read Write Edit" >> _glm_run.log 2>&1; ` +
-    `echo "FARNSWORTH-GLM-DONE exit=$?" >> _glm_run.log; tail -20 _glm_run.log`
 }
 
 const RUNVERBATIM = (cmd, ws, log) =>
@@ -164,7 +166,11 @@ function dispatch(a, ws, guidance, phaseTitle) {
   if (a.dispatch === 'glm') {
     opts.agentType = nsAgent(a.agentType)
     const flag = GLM_FLAG[a.displayModel]
-    const cmd = glmRunner ? runnerCmd(glmRunner, flag, ws, b, glmMaxTurns, glmTimeoutSecs) : glmInline(flag, ws, b)
+    if (!glmRunner) {
+      log(`attempt ${a.label} (${a.displayModel}) skipped: glmRunner not supplied (pass args.glmRunner pointing to bin/glm-run.sh)`)
+      return null
+    }
+    const cmd = runnerCmd(glmRunner, flag, ws, b, glmMaxTurns, glmTimeoutSecs)
     prompt = RUNVERBATIM(cmd, ws, '_glm_run.log')
   } else if (a.dispatch === 'local') {
     opts.agentType = nsAgent(a.agentType) // farnsworth-local
@@ -542,6 +548,109 @@ function summaryMd({ task, mode, n, unblind, r1mapping, r1review, finalMapping, 
   return L.join('\n') + '\n'
 }
 
+// ---- begin: contribution estimation (PURE; persistence is a separate thin step) ----
+// ESTIMATE — per-model attribution is a HEURISTIC, not ground truth. Intentionally
+// forward-improvable. Algorithm: see proposal.md / the comment on computeContributions.
+// Persistence is a thin `persist()` call elsewhere in this file; this block is pure
+// (data in, data out — no I/O, no globals, no module side-effects).
+//
+// Single named knobs (all in one place so a future revision can swap them out cleanly):
+//   CONTRIB_RANK_DECAY   — per-rank weight function (super-linear so the winning model
+//                          stays dominant over a rival that fields several mid-rank finalists).
+//   CONTRIB_WINNER_BONUS — additive winner emphasis in the CODE channel (ensures the
+//                          winning model gets the dominant share, the acceptance criterion
+//                          the issue calls out).
+//   CONTRIB_GUIDANCE_SHARE — fraction of the FINAL total allocated to the round-1
+//                          guidance channel in two-pass (round-2 outputs were shaped by
+//                          round-1 priors, so round-1 models deserve partial credit even
+//                          though their code was discarded).
+const CONTRIB_RANK_DECAY = (K, pos) => Math.pow(2, K - pos) // K = #ranked valid cands, pos 1-indexed
+const CONTRIB_WINNER_BONUS = 1.0                            // additive; in weight units
+const CONTRIB_GUIDANCE_SHARE = 0.30                        // 30% to round-1 guidance (two-pass only)
+
+// ESTIMATE — returns [{ model, pct, detail }] with pcts summing to exactly 100.
+// Returns [] (never throws) when no valid candidate or no verdict exists.
+function computeContributions(round1, guidance, final, mode) {
+  // Channel 1 (code): final ranking in two-pass, round-1 ranking in single-pass.
+  const codeReview = (mode === 'two' && final && final.rank && !final.rank.__failed)
+    ? final.rank
+    : (round1 && round1.review && !round1.review.__failed ? round1.review : null)
+  const codeMapping = (mode === 'two' && final && Array.isArray(final.mapping))
+    ? final.mapping
+    : (round1 && Array.isArray(round1.mapping) ? round1.mapping : null)
+  if (!codeReview || !codeMapping) return []
+  const codeWeights = weightsFor(codeMapping, codeReview, CONTRIB_RANK_DECAY, CONTRIB_WINNER_BONUS)
+  if (!codeWeights.size) return []
+
+  // Channel 2 (guidance): round-1 ranking, only in two-pass with a valid round-1 verdict.
+  const guideReview = (mode === 'two' && guidance && round1 && round1.review && !round1.review.__failed)
+    ? round1.review : null
+  const guideMapping = (round1 && Array.isArray(round1.mapping)) ? round1.mapping : null
+  const guideWeights = (guideReview && guideMapping)
+    ? weightsFor(guideMapping, guideReview, CONTRIB_RANK_DECAY, 0) // no winner bonus on guidance
+    : new Map()
+
+  // Combine: code = (1 - share), guidance = share. share=0 in single-pass (no guidance channel).
+  const share = (mode === 'two' && guideWeights.size > 0) ? CONTRIB_GUIDANCE_SHARE : 0
+  const combined = new Map()
+  for (const [m, w] of codeWeights)  combined.set(m, (combined.get(m) || 0) + w * (1 - share))
+  for (const [m, w] of guideWeights) combined.set(m, (combined.get(m) || 0) + w * share)
+
+  return largestRemainderRound(combined, share)
+}
+
+// Internal: rank-based weights per model, summing repeated candidates of the same model.
+// Filters out valid:false candidates BEFORE weighting, so failed attempts contribute 0 by
+// construction (and never appear in the output).
+function weightsFor(mapping, review, decayFn, winnerBonus) {
+  const byCandidate = new Map()
+  for (const m of (mapping || [])) byCandidate.set(m.candidate, m)
+  const validLetters = (review.ranking || []).filter(l => {
+    const m = byCandidate.get(l); return m && m.valid !== false
+  })
+  if (!validLetters.length) return new Map()
+  const K = validLetters.length
+  const w = new Map()
+  validLetters.forEach((letter, i) => {
+    const m = byCandidate.get(letter); if (!m || !m.model) return
+    const ww = decayFn(K, i + 1) + (i === 0 ? winnerBonus : 0) // bonus on the FIRST-ranked valid cand only
+    w.set(m.model, (w.get(m.model) || 0) + ww)
+  })
+  return w
+}
+
+// Internal: sum of all values in a Map.
+function contribSumValues(map) { let s = 0; for (const v of map.values()) s += v; return s }
+
+// Internal: normalize a Map<model, rawWeight> to pcts summing to EXACTLY 100 via
+// largest-remainder rounding (drift is given to the LARGEST shares, one unit each, until
+// the sum is exactly 100). Returns [] if the total is non-positive.
+function largestRemainderRound(combined, share) {
+  const total = contribSumValues(combined)
+  if (!isFinite(total) || total <= 0) return []
+  const scaled = [...combined.entries()].map(([m, w]) => [m, (w / total) * 100])
+  const rows = scaled.map(([m, v]) => ({ m, f: Math.floor(v), r: v - Math.floor(v) }))
+  const assigned = rows.reduce((s, x) => s + x.f, 0)
+  const drift = 100 - assigned
+  // Sort by remainder DESC; ties broken by raw weight DESC (largest model first) so the
+  // drift goes to the model that already has the largest share — i.e. the winning model
+  // is the FIRST place any rounding drift lands. Stable sort; no random tie-break.
+  const ordered = [...rows].sort((a, b) => (b.r - a.r) || (b.f + b.r) - (a.f + a.r))
+  for (let i = 0; i < drift && i < ordered.length; i++) ordered[i].f += 1
+  const detailTwo = share > 0
+    ? `${Math.round(share * 100)}% guidance-channel credit from round-1 models; `
+    : ''
+  return ordered
+    .filter(x => x.f > 0) // drop zero-share models (the rounding pass can produce 0 for negligible weights)
+    .map(({ m, f }) => ({
+      model: m,
+      pct: f,
+      detail: `ESTIMATE — rank-decay 2^(K-pos) + winner-bonus ${CONTRIB_WINNER_BONUS}; ${detailTwo}see workflows/tournament.mjs (computeContributions) for the exact formula`,
+    }))
+    .sort((a, b) => b.pct - a.pct) // largest first — the report's natural reading order
+}
+// ---- end: contribution estimation (PURE; persistence is a separate thin step) ----
+
 // ---- Round 1 ----
 phase('Round 1')
 await buildContext() // shared context bundle (no-op unless args.contextFiles given) — built once, before the attempts
@@ -586,11 +695,13 @@ await persist([
 
 if (mode === 'single') {
   // P3: single-pass — mapping/verdict already written at P2; add the summaries
+  const contributions = computeContributions({ mapping: r1mapping, review }, null, null, mode)
   await persist([
     { path: `${runDir}/SUMMARY.md`, content: summaryMd({ task, mode, n: N, unblind: true, r1mapping, r1review: review }) },
     { path: `${runDir}/SUMMARY.blind.md`, content: summaryMd({ task, mode, n: N, unblind: false, r1mapping, r1review: review }) },
+    { path: `${runDir}/contributions.json`, content: json({ note: 'ESTIMATE — per-model attribution is a HEURISTIC, not ground truth. See workflows/tournament.mjs (computeContributions) for the exact formula. Forward-improvable.', mode, contributions }) },
   ], 'Review')
-  return { mode, n: N, round1: { mapping: r1mapping, review } }
+  return { mode, n: N, round1: { mapping: r1mapping, review }, contributions }
 }
 
 // ---- Two pass ----
@@ -642,16 +753,24 @@ if (finalRank.__failed) {
 // #7: resolve winnerRound against the VALID finalist set; omit the field if unresolved (no literal "undefined")
 const winnerEntry = blindF.find(c => c.blind === finalRank.winner)
 // P6: completed two-pass — full key + final verdict + summaries
+const contributions = computeContributions(
+  { mapping: r1mapping, review },
+  review.guidance,
+  { mapping: finalMapping, rank: finalRank, winnerRound: winnerEntry ? winnerEntry.round : null },
+  mode
+)
 await persist([
   { path: `${runDir}/mapping.json`, content: json({ mode, n: N, round1: r1mapping, winner1: review.winner, final: finalMapping, winner: finalRank.winner, winnerRound: winnerEntry ? winnerEntry.round : null, carriedOverWinner }) },
   { path: `${runDir}/review-final/verdict.json`, content: json(finalRank) },
   { path: `${runDir}/review-final/verdict.md`, content: verdictToMd(finalRank, 'Final rank verdict') },
   { path: `${runDir}/SUMMARY.md`, content: summaryMd({ task, mode, n: N, unblind: true, r1mapping, r1review: review, finalMapping, finalRank, winnerRound: winnerEntry ? winnerEntry.round : null }) },
   { path: `${runDir}/SUMMARY.blind.md`, content: summaryMd({ task, mode, n: N, unblind: false, r1mapping, r1review: review, finalMapping, finalRank, winnerRound: winnerEntry ? winnerEntry.round : null }) },
+  { path: `${runDir}/contributions.json`, content: json({ note: 'ESTIMATE — per-model attribution is a HEURISTIC, not ground truth. See workflows/tournament.mjs (computeContributions) for the exact formula. Forward-improvable.', mode, winner: finalRank.winner, winnerRound: winnerEntry ? winnerEntry.round : null, contributions }) },
 ], 'Final rank')
 return {
   mode, n: N,
   round1: { mapping: r1mapping, review },
   guidance: review.guidance,
   final: { mapping: finalMapping, rank: finalRank, ...(winnerEntry ? { winnerRound: winnerEntry.round } : {}) },
+  contributions,
 }

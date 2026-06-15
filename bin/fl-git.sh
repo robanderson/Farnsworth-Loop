@@ -107,8 +107,64 @@ detect_verify() {
 }
 
 # --------------------------------------------------------------------------
-# run_verify — run the detected verify commands FAIL-CLOSED and FAIL-FAST.
-# Commands come from stdin (one per line) if given, else from detect_verify.
+# verify_safe_diff — SECURITY GATE for the unattended verify step (issue #21).
+#
+# The implementer leaves its changes UNSTAGED in the work tree. A verify command
+# like `make test` / `npm run build` / `pytest` does not just run fixed code: it
+# executes the *body* of the recipe/script/conftest the implementer just wrote
+# from an LLM-authored proposal. So before run_verify executes ANYTHING, refuse
+# if the implementer's changes touch any file whose CONTENTS a toolchain would
+# execute. Those changes must be reviewed by a human (draft+needs-human) instead
+# of auto-run with the operator's credentials.
+#
+# Inspects modified (unstaged + staged) AND new untracked files. rc 0 == safe
+# (nothing executable touched), rc 1 == unsafe (prints the offending files). When
+# not inside a git work tree there is no implementer diff to gate, so rc 0.
+# --------------------------------------------------------------------------
+verify_safe_diff() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  local -a changed=() hits=()
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] && changed+=("$f")
+  done < <(
+    {
+      git diff --name-only 2>/dev/null
+      git diff --cached --name-only 2>/dev/null
+      git ls-files --others --exclude-standard 2>/dev/null
+    } | sort -u
+  )
+  [ "${#changed[@]}" -gt 0 ] || return 0   # clean tree: nothing to gate (avoids empty-array nounset)
+  for f in "${changed[@]}"; do
+    case "$f" in
+      # npm scripts can run anything; make recipes; python build/test config and
+      # pytest-autoloaded conftest; rust build hooks; go module/tests; CI & hooks;
+      # and the test sources the test runners EXECUTE.
+      package.json|*/package.json|\
+      Makefile|makefile|GNUmakefile|*/Makefile|*/makefile|*/GNUmakefile|*.mk|\
+      pyproject.toml|*/pyproject.toml|setup.py|*/setup.py|setup.cfg|*/setup.cfg|\
+      tox.ini|*/tox.ini|conftest.py|*/conftest.py|\
+      Cargo.toml|*/Cargo.toml|build.rs|*/build.rs|\
+      go.mod|*/go.mod|\
+      test_*.py|*/test_*.py|*_test.py|*/*_test.py|\
+      *_test.go|*/*_test.go|\
+      .github/workflows/*|.gitlab-ci.yml|*/.gitlab-ci.yml|.git/hooks/*|*/.git/hooks/*)
+        hits+=("$f") ;;
+    esac
+  done
+  if [ "${#hits[@]}" -gt 0 ]; then
+    echo "FL-VERIFY-REFUSE-UNSAFE: implementer change touches verify-executable file(s); a human must review before local verify runs:" >&2
+    for f in "${hits[@]}"; do echo "  - $f" >&2; done
+    return 1
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# run_verify — run the FROZEN verify commands FAIL-CLOSED and FAIL-FAST.
+# Commands come from stdin (one per line). The set is frozen at preflight and
+# piped in by the driver; run_verify NEVER re-detects on the (implementer-mutated)
+# tree — see issue #21.
 # CONTRACT (the crown jewel):
 #   (a) returns a real NONZERO status on ANY failing command;
 #   (b) breaks on the FIRST failure (fail-fast);
@@ -118,41 +174,59 @@ detect_verify() {
 # combined log would mask an earlier failure). All output goes to stdout/stderr so
 # the caller can `> verify.log 2>&1` it.
 #
+# Hardening (issue #21 — unattended verify-time RCE):
+#   - GATE: refuse (rc 1) if the implementer's changes touch a verify-executable
+#     file (verify_safe_diff) — that is the path by which a proposal smuggles code
+#     into `make test`/`npm run`/`pytest`.
+#   - SECRET-DROP: unset provider credentials so a verify command can neither read
+#     nor exfiltrate them (gh/git auth is used by OTHER helper calls, in separate
+#     processes — not here).
+#   - NO LIVE RE-DETECT: empty stdin -> rc 2 (unverifiable), never re-scan a tree
+#     the implementer just mutated.
+#   - ARGV EXEC: run each command as a word-split argv vector, NOT via `eval`, so
+#     `;`/`|`/`$()`/backticks in a command line are inert literal args.
+#
 # rc 0  -> all passed
-# rc 1  -> a command failed (output shows which)
-# rc 2  -> no verify commands available (caller -> draft needs-human PR)
+# rc 1  -> a command failed, OR the gate refused (caller -> draft needs-human PR)
+# rc 2  -> no (frozen) verify commands provided (caller -> draft needs-human PR)
 # --------------------------------------------------------------------------
 run_verify() {
+  # GATE first: never execute anything when the implementer touched executable code.
+  if ! verify_safe_diff; then
+    echo "FL-VERIFY-HALT: refusing to run verify on implementer-authored executable changes (fail-closed)" >&2
+    return 1
+  fi
+
+  # SECRET-DROP: strip credentials from this process (and thus every command it runs).
+  unset ZAI_API_KEY MINIMAX_API_KEY OMLX_AUTH_TOKEN OPENAI_API_KEY \
+        ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN GH_TOKEN GITHUB_TOKEN 2>/dev/null || true
+
   local -a cmds=()
   if [ ! -t 0 ]; then
-    # read commands from stdin
+    # read the FROZEN commands from stdin (one per line)
     while IFS= read -r line; do
       [ -n "$line" ] && cmds+=("$line")
     done
   fi
-  if [ "${#cmds[@]}" -eq 0 ]; then
-    # No commands piped in: detect them now.
-    local detected
-    detected="$(detect_verify)" || true
-    if [ -n "$detected" ]; then
-      while IFS= read -r line; do
-        [ -n "$line" ] && cmds+=("$line")
-      done <<EOF
-$detected
-EOF
-    fi
-  fi
 
+  # NO LIVE RE-DETECT: an empty frozen set is "unverifiable", not "go scan the
+  # (mutated) tree and run whatever you find".
   if [ "${#cmds[@]}" -eq 0 ]; then
-    echo "FL-VERIFY: no verify commands detected (cannot verify)" >&2
+    echo "FL-VERIFY: no verify commands provided on stdin (frozen set empty; not re-detecting a mutated tree)" >&2
     return 2
   fi
 
   local rc=0 c
+  local -a words
   for c in "${cmds[@]}"; do
     echo "FL-VERIFY-RUN: $c"
+    # ARGV EXEC: split on whitespace and run as a vector — no `eval`, so shell
+    # metacharacters are inert. (The frozen verify commands are simple argv.)
+    words=()
+    read -r -a words <<< "$c"
+    [ "${#words[@]}" -gt 0 ] || continue
     # Direct rc capture; break on first failure so a later success cannot mask it.
-    if eval "$c"; then
+    if "${words[@]}"; then
       echo "FL-VERIFY-OK: $c"
     else
       rc=$?
@@ -481,6 +555,7 @@ if ! _fl_is_sourced; then
     fl_branch)             fl_branch "$@" ;;
     preflight)             preflight "$@" ;;
     detect_verify)         detect_verify "$@" ;;
+    verify_safe_diff)      verify_safe_diff "$@" ;;
     run_verify)            run_verify "$@" ;;
     commit_and_push)       commit_and_push "$@" ;;
     open_pr)               open_pr "$@" ;;
@@ -500,7 +575,8 @@ Functions:
   fl_branch <loop>
   preflight <base> <runDir>
   detect_verify
-  run_verify                      (commands on stdin one/line, else auto-detect)
+  verify_safe_diff                (rc 0 safe, rc 1 implementer touched executable file)
+  run_verify                      (FROZEN commands on stdin one/line; gated + secrets dropped)
   commit_and_push <branch> <base> <message>
   open_pr <branch> <base> <title> <bodyFile>
   open_pr_needs_human <branch> <base> <title> <bodyFile>

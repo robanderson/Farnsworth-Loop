@@ -2,6 +2,8 @@
 
 > *"Good news, everyone!"*
 
+![Farnsworth Loop in action](docs/images/farnsworth-loop-in-action.png)
+
 **Farnsworth Loop is a Claude Code plugin that runs best-of-N tournaments.** You hand it a task; it produces N independent attempts in parallel, then a *blind* Anthropic Opus reviewer scores them, lists pros and cons, ranks them, and names a winner. The attempts can come from any mix of providers (Anthropic, GLM, on-device MLX, OpenAI Codex, MiniMax); the judge is always Opus, held fixed so the comparison stays honest.
 
 ```text
