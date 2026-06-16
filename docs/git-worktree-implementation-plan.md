@@ -178,11 +178,12 @@ Each phase is independently valuable and reversible; later phases depend on earl
 | `blindFail()` genericiser | `tournament.mjs:462` |
 | Grand-loop driver: main agent + `fl-git.sh`, no nested workflow, `tournament.mjs` unchanged | `skills/farnsworth-loop/SKILL.md:214` |
 | Implementer re-derives from proposal artifact | `agents/farnsworth-implementer.md:3,11,18–19` |
-| `run_verify`: shell, `eval "$c"`, no timeout | `bin/fl-git.sh:125–173` (esp. `:165`) |
+| `run_verify`: shell, argv exec (`"${words[@]}"`, no `eval`), no timeout by default; native watchdog (background `sleep`+`kill`) when `FL_VERIFY_TIMEOUT>0` | `bin/fl-git.sh:193–247` (argv exec at `:225–229`; watchdog at `:236–270`) |
+| `verify_safe_diff`: rc 1 if the implementer touched a verify-executable file (refuses verify) | `bin/fl-git.sh:124–161` |
 | Verify-fail → draft `needs-human` + HALT | `skills/farnsworth-loop/SKILL.md:231` |
 | Top-Mixed N=2 → `[opus, glm-5.2]` | `skills/farnsworth-loop/SKILL.md:39,113` |
 | No `git worktree` usage anywhere in-tree | grep across `workflows/`, `bin/`, `skills/`, `agents/` |
 
 ---
 
-*Generated as a scoping/design artifact for [#32](https://github.com/robanderson/Farnsworth-Loop/issues/32). Not a committed implementation; everything here is a plan to evaluate.*
+*Generated as a scoping/design artifact for [#32](https://github.com/robanderson/Farnsworth-Loop/issues/32). Originally a plan to evaluate; the §9 grounding table is corrected in place as each phase is implemented (the `run_verify` row was stale — issue #21 replaced `eval` with argv exec and moved the function). The Phase 3a wall-clock timeout (`FL_VERIFY_TIMEOUT`) is now committed.*
