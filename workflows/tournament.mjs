@@ -54,6 +54,26 @@ function brief(nudge, ws, guidance, ctx) {
   const ctxLine = ctx
     ? `\nShared context for this task has ALREADY been gathered for you in one file: ${ctx}\nRead that single file at the start — it contains the source material you need. Do NOT re-read the underlying source files one by one (that work is already done).\n`
     : ''
+  if (repoMode) {
+    return `You are working INSIDE an existing git repository checked out at: ${ws}
+This is your own isolated branch off a pinned base commit. Apply your change DIRECTLY to the real files (edit/create/delete as needed) to accomplish the task. Do NOT write a "proposal" or a description of a change — make the change itself.
+
+Task:
+${task}
+${g}${ctxLine}
+${nudge}
+
+Rules:
+- This task is fully specified. Do NOT ask clarifying questions, present options, or stop for input — make reasonable default choices and just produce your solution.
+- Single pass: make your change once, then STOP. Do NOT run the test suite, do NOT iterate to green.
+  (A separate automated step tests every candidate after you finish — testing yourself only wastes your turn budget. Weak/local models that loop on "run tests, fix, repeat" time out; do not.)
+- Do NOT run any git command. Do NOT commit, branch, stage, push, or touch .git. Just edit files.
+  The harness snapshots your working tree into a commit for you after you stop.
+- Do NOT write a proposal or patch plan. Apply the requested change directly to files in this checkout.
+- Leave a 2 to 4 sentence note on your approach, plus any tradeoffs or known limitations, in FL-ATTEMPT-NOTES.md at the repo root.
+- Work only in this checkout: ${ws}
+- To save a file, just write it. If a file-edit tool refuses because the file "must be read first" (a stale copy exists), do NOT spend turns reading/retrying — overwrite it directly with the shell instead, e.g. \`cat > FILE <<'EOF' ... EOF\`.`
+  }
   return `You are solving a self-contained task. Produce ONE complete solution in a single focused pass.
 
 Task:
@@ -131,6 +151,13 @@ const codexRunnerCmd = (runner, flag, ws, b) => `${cmdHead(ws, b)} && FL_TIMEOUT
 // judge. No bundle is built when contextFiles is empty.
 const contextFiles = Array.isArray(A.contextFiles) ? A.contextFiles.filter(Boolean) : []
 const contextPath = contextFiles.length ? `${runDir}/_context/_context.md` : null
+// repoMode (Phase 1, worktree-per-attempt): gated OFF by default so the scratch-directory path is
+// byte-for-byte the existing behavior. Only when args.repoMode === true do workers edit real files in
+// a per-attempt git worktree off args.baseRef (a pinned sha) and the harness snapshot+diff the tree.
+const repoMode = A.repoMode === true
+const baseRef = A.baseRef || null
+const baseSha = baseRef
+const safeRunId = String(runDir || 'run').split('/').filter(Boolean).pop().replace(/[^A-Za-z0-9._-]/g, '-') || 'run'
 // Build the shell command that concatenates the context files into one bundle.
 // SECURITY (issue #22): a context-file path is shell DATA, so EVERY place it reaches the shell must
 // pass through q() (single-quote escape). The label is emitted with `printf '%s'` taking q(f) as an
@@ -149,6 +176,76 @@ async function buildContext() {
   log(`Bundling ${contextFiles.length} context file(s) → ${contextPath}`)
   await agent(`Run this exact shell command in ONE Bash call and report its stdout. Do nothing else:\n\n${cmd}`,
     { model: 'haiku', phase: 'Round 1', label: 'context' }).catch(() => null)
+}
+
+// ---- repoMode worktree helpers (Phase 1). ALL gated on repoMode: every function below returns/falls
+// through to the existing behavior when repoMode is false, so repoMode:false is byte-for-byte today. ----
+const worktreeBranch = (roundName, label) => `flwt/${safeRunId}/${roundName}/${label}`
+const worktreeLogDir = (roundName, label) => `${runDir}/_engine-logs/${roundName}/${label}`
+const worktreeMetaDir = `${runDir}/_worktrees`
+const engineFiles = ['_brief.txt', '_glm_run.log', '_local_run.log', '_codex_run.log', '_codex_last.txt', '_minimax_run.log']
+const engineLogPath = (c, log) => {
+  if (!repoMode || !log) return log ? `${c.ws}/${log}` : ''
+  const roundName = c.round === 2 ? 'round-2' : 'round-1'
+  return `${worktreeLogDir(roundName, c.label || c.blind)}/${log}`
+}
+
+function worktreeSetupShell(c, roundName) {
+  const branch = worktreeBranch(roundName, c.label)
+  const ws = c.ws
+  const excludes = engineFiles.map(f => `printf '%s\\n' ${q(f)} >> "$exclude"`).join('; ')
+  return `branch=${q(branch)}; ws=${q(ws)}; baseSha=${q(baseSha)}; ` +
+    `mkdir -p ${q(`${runDir}/${roundName}`)} ${q(worktreeMetaDir)}; ` +
+    `if [ ! -e "$ws/.git" ]; then git worktree add -b "$branch" "$ws" "$baseSha" --no-checkout 2>/dev/null || git worktree add -b "$branch" "$ws" "$baseSha"; fi; ` +
+    `git -C "$ws" checkout -q "$baseSha" -- . 2>/dev/null || git -C "$ws" reset -q --hard "$baseSha"; ` +
+    `exclude=$(git -C "$ws" rev-parse --git-path info/exclude); mkdir -p "$(dirname "$exclude")"; ` +
+    `printf '\\n# Farnsworth Loop engine files\\n' >> "$exclude"; ${excludes}`
+}
+
+async function buildWorktrees(roundName, list) {
+  if (!repoMode) return
+  if (!baseSha) throw new Error('repoMode requires args.baseRef')
+  const script = list.map(c => worktreeSetupShell(c, roundName)).join('\n')
+  log(`Preparing ${list.length} git worktree(s) for ${roundName} from ${baseSha}`)
+  await agent(
+    `Run this exact shell script in ONE Bash call. It serially creates git worktrees for the tournament attempts; do not parallelize it and do not do anything else.\n\n${script}`,
+    { model: 'haiku', phase: roundName === 'round-1' ? 'Round 1' : 'Round 2', label: `${roundName}-worktrees` }
+  ).catch(() => null)
+}
+
+function snapshotShell(c, roundName) {
+  const ws = c.ws
+  const logDir = worktreeLogDir(roundName, c.label)
+  const cleanEngineFiles = engineFiles.map(f =>
+    `if [ -f "$ws/${f}" ]; then cp "$ws/${f}" "$logDir/${f}" 2>/dev/null || true; fi; ` +
+    `if git -C "$ws" ls-files --error-unmatch ${q(f)} >/dev/null 2>&1; then git -C "$ws" checkout -q "$baseSha" -- ${q(f)} 2>/dev/null || true; else rm -f "$ws/${f}"; fi`
+  ).join('; ')
+  return `ws=${q(ws)}; logDir=${q(logDir)}; mkdir -p "$logDir"; ${cleanEngineFiles}; ` +
+    `git -C "$ws" add -A; ` +
+    `if git -C "$ws" diff --cached --quiet; then :; else ` +
+    `GIT_AUTHOR_NAME=farnsworth GIT_AUTHOR_EMAIL=farnsworth@localhost ` +
+    `GIT_COMMITTER_NAME=farnsworth GIT_COMMITTER_EMAIL=farnsworth@localhost ` +
+    `GIT_AUTHOR_DATE="$baseDate" GIT_COMMITTER_DATE="$baseDate" ` +
+    `git -C "$ws" commit -q -m 'farnsworth attempt' 1>/dev/null; fi`
+}
+
+async function snapshotWorktrees(roundName, list) {
+  if (!repoMode || !list.length) return
+  if (!baseSha) throw new Error('repoMode requires args.baseRef')
+  const dateFile = `${worktreeMetaDir}/base-date`
+  const script = [
+    `set -eu`,
+    `mkdir -p ${q(worktreeMetaDir)}`,
+    `baseSha=$(git rev-parse --verify ${q(`${baseSha}^{commit}`)})`,
+    `dateFile=${q(dateFile)}`,
+    `if [ -s "$dateFile" ]; then baseDate=$(cat "$dateFile"); else baseDate=$(git show -s --format=%cI "$baseSha"); printf '%s\\n' "$baseDate" > "$dateFile"; fi`,
+    ...list.map(c => snapshotShell(c, roundName)),
+  ].join('\n')
+  log(`Snapshotting ${list.length} worktree(s) for ${roundName}`)
+  await agent(
+    `Run this exact shell script in ONE Bash call. It serially snapshots each worktree into at most one fixed-identity commit; do not parallelize it and do not do anything else.\n\n${script}`,
+    { model: 'haiku', phase: roundName === 'round-1' ? 'Review' : 'Final rank', label: `${roundName}-snapshot` }
+  ).catch(() => null)
 }
 
 const RUNVERBATIM = (cmd, ws, log) =>
@@ -343,12 +440,13 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
   const pool = `${reviewDir}/_pool.md`
   const script = [`mkdir -p ${q(reviewDir)}; : > ${q(pool)}`].concat(list.map(c => {
     const dest = `${reviewDir}/${c.blind}`
+    const diffPath = `${dest}/candidate.diff`
     const log = c.dispatch === 'glm' ? '_glm_run.log'
               : c.dispatch === 'local' ? '_local_run.log'
               : c.dispatch === 'codex' ? '_codex_run.log'
               : c.dispatch === 'minimax' ? '_minimax_run.log'
               : ''
-    const lp = log ? q(`${c.ws}/${log}`) : ''
+    const lp = log ? q(engineLogPath(c, log)) : ''
     // Provider-specific, LINE-ANCHORED marker token. Runners write their FARNSWORTH-<PROV>-* markers at
     // column 0, so matching '^FARNSWORTH-<PROV>-' (not the greedy 'FARNSWORTH-.*-') stops an attempt whose
     // OWN deliverable/transcript merely MENTIONS a marker — e.g. a proposal discussing FARNSWORTH-CODEX-ERROR,
@@ -362,6 +460,21 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
     // winner is wrongly dropped. provCheckShell skips ONLY the provenance grep for a carryover (P=1); the
     // deliverable requirement below (`D>0`) is still enforced, so an empty carryover is still excluded.
     const provChk = provCheckShell(log, tok, lp, !!c.carriedOver)
+    if (repoMode) {
+      // repoMode: the blind artifact is a DIFF, not a copied workspace. Capture `git diff <baseSha> HEAD`
+      // (no author/date/branch/message metadata leaks into judging) and keep the same D/P pool gate + FLV
+      // line protocol. The carried-over round-1 winner is already a staged candidate.diff (not a live
+      // worktree), so copy it forward and keep the D-0004 provenance skip (provChk -> P=1 for carryover).
+      if (c.carriedOver) {
+        return `mkdir -p ${q(dest)}; if [ -s ${q(`${c.ws}/candidate.diff`)} ]; then cp ${q(`${c.ws}/candidate.diff`)} ${q(diffPath)}; D=1; else D=0; fi; ${provChk}; ` +
+               `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; cat ${q(diffPath)} 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
+               `echo "FLV ${c.blind} d=$([ "$D" -gt 0 ] && echo 1 || echo 0) p=$P"`
+      }
+      return `mkdir -p ${q(dest)}; git -C ${q(c.ws)} diff ${q(baseSha)} HEAD --no-color --no-prefix > ${q(diffPath)} 2>/dev/null; ` +
+             `if [ -s ${q(diffPath)} ]; then D=1; else D=0; fi; ${provChk}; ` +
+             `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; cat ${q(diffPath)} 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
+             `echo "FLV ${c.blind} d=$([ "$D" -gt 0 ] && echo 1 || echo 0) p=$P"`
+    }
     return `mkdir -p ${q(dest)}; cp -R ${q(c.ws)}/. ${q(dest)}/ 2>/dev/null; ` +
            `rm -f ${q(dest)}/_brief.txt ${q(dest)}/_glm_run.log ${q(dest)}/_local_run.log ${q(dest)}/_codex_run.log ${q(dest)}/_codex_last.txt ${q(dest)}/_minimax_run.log; ` +
            `find ${q(dest)} -mindepth 1 ! -type f ! -type d -delete 2>/dev/null; ` +
@@ -654,9 +767,12 @@ function largestRemainderRound(combined, share) {
 // ---- Round 1 ----
 phase('Round 1')
 await buildContext() // shared context bundle (no-op unless args.contextFiles given) — built once, before the attempts
+const r1Worktrees = attempts.map(a => ({ ...a, ws: `${runDir}/round-1/${a.label}` }))
+await buildWorktrees('round-1', r1Worktrees) // repoMode-only no-op otherwise
 log(`Round 1: ${attempts.length} attempts (${attempts.map(a => a.displayModel).join(', ')})`)
-const r1 = (await parallel(attempts.map(a => () => dispatch(a, `${runDir}/round-1/${a.label}`, null, 'Round 1')))).filter(Boolean)
+const r1 = (await parallel(r1Worktrees.map(a => () => dispatch(a, a.ws, null, 'Round 1')))).filter(Boolean)
 if (!r1.length) return { error: 'all round-1 attempts failed (dispatch errors)' }
+await snapshotWorktrees('round-1', r1) // repoMode-only no-op otherwise
 
 phase('Review')
 const staged1 = await stageAndValidate(blindLabel(r1, 1), `${runDir}/review-1`, 'Review')
@@ -710,7 +826,10 @@ if (!winner1) log(`round-1 winner "${review.winner}" not among valid candidates;
 const champ = winner1 || blind1[0]
 phase('Round 2')
 log(`Round 2: ${attempts.length} guided attempts; carrying over round-1 winner (${champ.displayModel})`)
-const r2 = (await parallel(attempts.map(a => () => dispatch(a, `${runDir}/round-2/${a.label}`, review.guidance, 'Round 2')))).filter(Boolean)
+const r2Worktrees = attempts.map(a => ({ ...a, ws: `${runDir}/round-2/${a.label}` }))
+await buildWorktrees('round-2', r2Worktrees) // repoMode-only no-op otherwise
+const r2 = (await parallel(r2Worktrees.map(a => () => dispatch(a, a.ws, review.guidance, 'Round 2')))).filter(Boolean)
+await snapshotWorktrees('round-2', r2) // repoMode-only no-op otherwise
 
 // final pool = round-2 attempts + the carried-over round-1 winner. Staging erases the round path,
 // so the judge cannot tell which finalist is the carryover.
@@ -720,7 +839,7 @@ const r2 = (await parallel(attempts.map(a => () => dispatch(a, `${runDir}/round-
 // this flag, a runner-backed (glm/codex/minimax/local) round-1 winner would re-grep the stripped dir,
 // get P=0, and be wrongly dropped from the final pool the Opus ranker reads.
 const finalPool = [
-  ...r2.map(c => ({ ws: c.ws, displayModel: c.displayModel, dispatch: c.dispatch, round: 2 })),
+  ...r2.map(c => ({ ws: c.ws, label: c.label, displayModel: c.displayModel, dispatch: c.dispatch, round: 2 })),
   { ws: champ.ws, displayModel: champ.displayModel, dispatch: champ.dispatch, round: 1, carriedOver: true },
 ]
 phase('Final rank')
