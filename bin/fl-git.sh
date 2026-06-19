@@ -20,6 +20,7 @@
 #   fl_branch <loop>                       -> "FL-<loop>-<suffix>"
 #   preflight <base> <runDir>              -> collects ALL failures; rc!=0 on any
 #   detect_verify                          -> prints detected verify commands (one/line); rc 0 if any
+#   fl_run_with_timeout <secs> -- <cmd...> -> run argv with a wall-clock watchdog; 124 == timed out
 #   run_verify                             -> reads commands on stdin or detects; fail-FAST; real rc
 #   commit_and_push <branch> <base> <msg>  -> commit (guarded) + push -u; rc propagated
 #   open_pr <branch> <base> <title> <bodyFile>            -> normal PR; prints URL
@@ -33,6 +34,12 @@ set -uo pipefail
 # body limit. tail -c keeps the most-recent (usually most-relevant) bytes.
 FL_VERIFY_TAIL_BYTES="${FL_VERIFY_TAIL_BYTES:-12000}"
 FL_NEEDS_HUMAN_LABEL="${FL_NEEDS_HUMAN_LABEL:-needs-human}"
+
+# Per-command wall-clock budget for run_verify. macOS has no `timeout`/`gtimeout`,
+# so each verify command runs under fl_run_with_timeout (below). A command that
+# overruns is killed (TERM->KILL) and reported as rc 124 (GNU-timeout-compatible),
+# which run_verify treats as a normal verify FAIL. Overridable (tests use a tiny value).
+FL_VERIFY_CMD_TIMEOUT="${FL_VERIFY_CMD_TIMEOUT:-600}"
 
 # --------------------------------------------------------------------------
 # fl_suffix — 7 chars from [0-9a-z], macOS-portable, /dev/urandom only.
@@ -161,6 +168,65 @@ verify_safe_diff() {
 }
 
 # --------------------------------------------------------------------------
+# fl_run_with_timeout <secs> -- <cmd argv...>
+# Run a command (as an argv vector — no eval) under a wall-clock watchdog.
+# macOS-portable: NO `timeout`/`gtimeout`, pure bash 3.2 job control.
+#
+# Contract (GNU-timeout-compatible):
+#   - returns the command's REAL exit status when it finishes on its own;
+#   - if the command overruns <secs>, it is sent SIGTERM, then SIGKILL after a
+#     short grace, and the result is normalised to rc 124 ("timed out") so the
+#     caller can distinguish a timeout from a genuine nonzero exit;
+#   - reaps BOTH the command AND the watchdog (and the watchdog's own sleep) so
+#     no background process leaks — including on the common EARLY-COMPLETION path
+#     where the command finishes well under the timeout and the watchdog is torn
+#     down mid-sleep (a naive `( sleep N; kill ) &` orphans that sleep to init).
+# NOTE: a sub-~10ms command has a benign residual orphan-sleep race (the parent
+#   can tear the watchdog down before its TERM trap is installed) — out of scope;
+#   real verify commands (node/bash/pytest) are >=50ms and never leak.
+# Usage: fl_run_with_timeout 600 -- npm run build --if-present
+# --------------------------------------------------------------------------
+FL_VERIFY_KILL_GRACE="${FL_VERIFY_KILL_GRACE:-2}"
+fl_run_with_timeout() {
+  local secs="${1:?timeout seconds required}"; shift
+  [ "${1:-}" = "--" ] && shift
+  [ "$#" -gt 0 ] || { echo "FL-TIMEOUT: no command given" >&2; return 2; }
+
+  # Run the verify command in the background.
+  "$@" &
+  local cmd_pid=$!
+
+  # Watchdog: background ITS OWN sleep separately and remember that sleep's PID,
+  # so tearing the watchdog down also stops the sleep (no orphaned sleep on the
+  # fast-success path). The grace sleep is short and inline (only reached when the
+  # timeout has already fired, i.e. the leak window does not exist there).
+  ( sleep "$secs" &
+    local sleep_pid=$!
+    # When the watchdog is killed early (command finished first), reap the sleep
+    # too, then exit without touching the (already-gone) command.
+    trap 'kill "$sleep_pid" 2>/dev/null; exit 0' TERM
+    wait "$sleep_pid" 2>/dev/null
+    # Timeout fired: escalate TERM -> (grace) -> KILL on the command.
+    kill -TERM "$cmd_pid" 2>/dev/null
+    sleep "$FL_VERIFY_KILL_GRACE"
+    kill -KILL "$cmd_pid" 2>/dev/null ) &
+  local watch_pid=$!
+
+  # Wait for the command; capture its REAL rc.
+  wait "$cmd_pid" 2>/dev/null; local rc=$?
+
+  # Tear down the watchdog (and, via its TERM trap, its sleep) and reap it so it
+  # never leaks regardless of which side won the race.
+  kill -TERM "$watch_pid" 2>/dev/null
+  wait "$watch_pid" 2>/dev/null
+
+  # A signal-coded result (>=128) means the watchdog killed it -> normalise to the
+  # GNU-timeout code. Genuine nonzero exits (<128) pass through untouched.
+  if [ "$rc" -ge 128 ]; then rc=124; fi
+  return "$rc"
+}
+
+# --------------------------------------------------------------------------
 # run_verify — run the FROZEN verify commands FAIL-CLOSED and FAIL-FAST.
 # Commands come from stdin (one per line). The set is frozen at preflight and
 # piped in by the driver; run_verify NEVER re-detects on the (implementer-mutated)
@@ -226,7 +292,9 @@ run_verify() {
     read -r -a words <<< "$c"
     [ "${#words[@]}" -gt 0 ] || continue
     # Direct rc capture; break on first failure so a later success cannot mask it.
-    if "${words[@]}"; then
+    # Per-command wall-clock watchdog (macOS has no `timeout`); a 124 (timed out)
+    # is a nonzero rc and so is handled by the existing fail path below, as a FAIL.
+    if fl_run_with_timeout "$FL_VERIFY_CMD_TIMEOUT" -- "${words[@]}"; then
       echo "FL-VERIFY-OK: $c"
     else
       rc=$?
@@ -556,6 +624,7 @@ if ! _fl_is_sourced; then
     preflight)             preflight "$@" ;;
     detect_verify)         detect_verify "$@" ;;
     verify_safe_diff)      verify_safe_diff "$@" ;;
+    fl_run_with_timeout)   fl_run_with_timeout "$@" ;;
     run_verify)            run_verify "$@" ;;
     commit_and_push)       commit_and_push "$@" ;;
     open_pr)               open_pr "$@" ;;
@@ -576,6 +645,7 @@ Functions:
   preflight <base> <runDir>
   detect_verify
   verify_safe_diff                (rc 0 safe, rc 1 implementer touched executable file)
+  fl_run_with_timeout <secs> -- <cmd...>   (run argv with a wall-clock watchdog; rc 124 == timed out)
   run_verify                      (FROZEN commands on stdin one/line; gated + secrets dropped)
   commit_and_push <branch> <base> <message>
   open_pr <branch> <base> <title> <bodyFile>
