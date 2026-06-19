@@ -12,7 +12,12 @@
 // tournament.
 //
 // CLI:   node fl-parse.mjs "<raw user message>"
-// Prints { task, n, mode, z, assignment, preset?, conflict?, errors?, needsGate? }
+// Prints { task, n, mode, z, assignment, preset?, conflict?, errors?, needsGate?,
+//          repoMode, baseRef }
+//   repoMode : boolean — true => repo-anchored (worktree-per-attempt) grand loop;
+//               false (default) => today's self-contained tournament, byte-for-byte.
+//   baseRef  : string|null — pinned base sha for repo-anchored mode. The PARSER only
+//               ever records null (the SKILL resolves the sha at run time; plan §4/§13).
 //
 // Feature 1 (grand loops, Z): Z is now a REAL parameter, not inert plumbing.
 //   - Z optional, default 1.  Z=1 == today's behaviour exactly (isolated
@@ -137,6 +142,20 @@ const GRAND_LOOP_RX = /(\d+)\s*grand\s+loops?\b/i;
 //   BEFORE : immediately precedes the marker (bounded by the marker itself)
 const PASS_AFTER_RX  = /^[\s:,-]*\b(two|single|one)[\s-]?pass\b(?=\s*(?:[,;]|\d|$))/i;
 const PASS_BEFORE_RX = /\b(two|single|one)[\s-]?pass\b[\s:,-]*$/i;
+
+// Marker-adjacent repo-mode keywords (plan §4). Recognised ONLY immediately adjacent
+// to the marker (after it, else before it) and stripped at the source side — the SAME
+// D-0006 discipline the pass-count directive uses — so an ordinary 'anchored' or
+// 'self-contained' elsewhere in the task body is never misread as a directive and is
+// never eaten from the task. (We do NOT use a global `top mixed`-style scan/strip here
+// precisely because 'anchored'/'self-contained' are common words; see plan §4 + D-0006.)
+//   opt-IN  : 'repo-anchored' / 'repo anchored' / 'anchored'    -> repoMode true
+//   opt-OUT : '--no-repo' / 'self-contained' / 'self contained' -> forces repoMode false
+// The final repoMode is resolved in section 5b (Z>=2 default; opt-out wins).
+const REPO_ANCHORED_AFTER_RX  = /^[\s:,-]*\b(?:repo[\s-]?anchored|anchored)\b/i;
+const REPO_ANCHORED_BEFORE_RX = /\b(?:repo[\s-]?anchored|anchored)\b[\s:,-]*$/i;
+const NO_REPO_AFTER_RX  = /^[\s:,-]*(?:--no-repo|self[\s-]?contained)\b/i;
+const NO_REPO_BEFORE_RX = /(?:--no-repo|self[\s-]?contained)\b[\s:,-]*$/i;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -322,6 +341,8 @@ function parse(rawInput) {
     z: 1,
     assignment: null,
     needsGate: false,
+    repoMode: false, // P0 (plan §4): false => today's self-contained tournament unchanged
+    baseRef: null,   // P0: resolved to a pinned sha by the SKILL; the parser records null
   };
   const errors = [];
   const oversizedNs = new Set();
@@ -441,6 +462,28 @@ function parse(rawInput) {
   }
   result.mode = mode;
 
+  // --- 4b. Repo-mode keywords (marker-adjacent; plan §4). ---
+  // Stripped at the source side (like the pass directive above) so the keyword never
+  // reaches `task`, and so an ordinary 'anchored'/'self-contained' in the body is left
+  // intact. Opt-out (--no-repo / self-contained) wins over opt-in; the Z>=2 default is
+  // applied later in section 5b.
+  let repoMode = false;
+  let repoForcedOff = false;
+  if (REPO_ANCHORED_AFTER_RX.test(postMarker)) {
+    repoMode = true;
+    postMarker = postMarker.replace(REPO_ANCHORED_AFTER_RX, ' ');
+  } else if (REPO_ANCHORED_BEFORE_RX.test(preMarker)) {
+    repoMode = true;
+    preMarker = preMarker.replace(REPO_ANCHORED_BEFORE_RX, ' ');
+  }
+  if (NO_REPO_AFTER_RX.test(postMarker)) {
+    repoForcedOff = true;
+    postMarker = postMarker.replace(NO_REPO_AFTER_RX, ' ');
+  } else if (NO_REPO_BEFORE_RX.test(preMarker)) {
+    repoForcedOff = true;
+    preMarker = preMarker.replace(NO_REPO_BEFORE_RX, ' ');
+  }
+
   // Task = both sides of the marker (D-0007), with the adjacent pass directive (if
   // any) already removed; stripAll() removes the spec / keywords / other directives.
   let task = preMarker + ' ' + postMarker;
@@ -500,6 +543,27 @@ function parse(rawInput) {
     }
   }
   result.z = z;
+
+  // --- 5b. Resolve repoMode (plan §4): Z>=2 default + opt-out. ---
+  // Grand-loop mode (Z>=2) is the only mode that writes to a real repo, so
+  // repo-anchored mode defaults ON for Z>=2 unless the user forced it off. All Z<2 runs
+  // (and explicit opt-outs) stay repoMode:false == today, byte-for-byte. Guarded by
+  // z<=Z_MAX so an already-invalid over-ceiling run does not flip the flag.
+  if (!repoForcedOff && z >= 2 && z <= Z_MAX) repoMode = true;
+  if (repoForcedOff) repoMode = false;
+  result.repoMode = repoMode;
+  result.baseRef = null; // the parser is mode-only; the SKILL pins the sha at run time
+  // Fail-closed validation: repo-anchored mode needs a PR target, which only Z>=2
+  // provides. The unsafe combination (repoMode && z<2) is made unrunnable by
+  // construction — it becomes an errors[] entry and section 11 then nulls n/assignment,
+  // exactly like the over-ceiling-Z error in section 5. repoMode is PRESERVED (like an
+  // over-ceiling z) so the message can name the offending mode.
+  if (repoMode && z < 2) {
+    errors.push(
+      'repo-anchored mode requires Z>=2; it has no PR target at Z=1. ' +
+      'Use @@FL:N:M:Z with Z>=2, or drop the repo-anchored keyword.'
+    );
+  }
 
   // --- 6. Sigil/marker N. ---
   let nMarker = null;
@@ -759,6 +823,7 @@ if (isMain) {
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } catch (e) {
     const out = { task: '', n: null, mode: null, z: 1, assignment: null,
+                  repoMode: false, baseRef: null,
                   errors: ['internal parse error: ' + (e && e.message ? e.message : String(e))] };
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   }

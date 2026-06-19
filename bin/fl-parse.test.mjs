@@ -394,6 +394,61 @@ unit('expandSpec over N_MAX reports overflow', expandSpec('50000000 opus').overf
 unit('topMixed over N_MAX returns empty safely', eq(topMixedAssignment(N_MAX + 1), []));
 
 // ===========================================================================
+// PHASE 0 — repo-mode plumbing (repoMode / baseRef). NEW (plan §4, P0).
+// ===========================================================================
+
+// --- default repoMode=false & baseRef=null ---
+parseCase('P0 default repoMode false / baseRef null', 'do abc @@FL:5',
+  { repoMode: false, baseRef: null }, { noErrors: true });
+
+// --- the keyword sets repoMode=true AND is stripped from `task` ---
+parseCase('P0 repo-anchored (hyphen) sets mode + stripped', 'do abc repo-anchored @@FL:5:1:2',
+  { task: 'do abc', repoMode: true, z: 2, baseRef: null }, { noErrors: true });
+parseCase('P0 "repo anchored" (space) sets mode + stripped', 'do abc @@FL:5:1:2 repo anchored',
+  { task: 'do abc', repoMode: true }, { noErrors: true });
+parseCase('P0 bare "anchored" before marker sets mode', 'anchored @@FL:5:1:2',
+  { task: '', repoMode: true, z: 2 }, { noErrors: true });
+
+// --- Z>=2 defaults repoMode=true with NO keyword ---
+parseCase('P0 Z>=2 defaults repoMode true', 'do abc @@FL:5:1:2',
+  { repoMode: true, z: 2, task: 'do abc' }, { noErrors: true });
+
+// --- --no-repo / self-contained override the Z>=2 default to false ---
+parseCase('P0 --no-repo overrides Z>=2 default', 'do abc @@FL:5:1:2 --no-repo',
+  { repoMode: false, z: 2, task: 'do abc' }, { noErrors: true });
+parseCase('P0 self-contained overrides Z>=2 default', 'do abc @@FL:5:1:2 self-contained',
+  { repoMode: false, z: 2, task: 'do abc' }, { noErrors: true });
+// opt-out also wins over an explicit opt-in keyword; both are stripped.
+parseCase('P0 anchored then --no-repo -> false, both stripped', 'do abc @@FL:5:1:2 repo-anchored --no-repo',
+  { task: 'do abc', repoMode: false, z: 2 }, { noErrors: true });
+
+// --- repoMode && z<2 error path: errors[] populated, n/assignment nulled ---
+parseCase('P0 anchored + Z=1 -> error, n/assignment nulled', 'do abc repo-anchored @@FL:5',
+  { n: null, assignment: null, repoMode: true, z: 1 },
+  { errorIncludes: 'repo-anchored mode requires Z>=2' });
+
+// --- baseRef is always null from the parser (SKILL pins the sha later) ---
+unit('P0 baseRef null even when repo-anchored', parse('do abc @@FL:5:1:2 repo-anchored').baseRef === null);
+
+// --- NO regressions: marker-adjacency safety + existing parses unchanged ---
+// 'anchored' / 'self-contained' as ordinary TASK words are NOT directives and are NOT eaten.
+parseCase('P0 "anchored" in task body untouched', 'fix the anchored footer @@FL:5',
+  { task: 'fix the anchored footer', repoMode: false, n: 5, z: 1 }, { noErrors: true });
+parseCase('P0 "self-contained" in task body untouched', 'review the self-contained module @@FL:5',
+  { task: 'review the self-contained module', repoMode: false, n: 5, z: 1 }, { noErrors: true });
+// A Z=1 run with no keyword stays fully byte-identical (repoMode:false, no error).
+{
+  const r = parse('do abc @@FL:5');
+  unit('P0 Z=1 unchanged: n/mode/z/task', r.n === 5 && r.mode === 1 && r.z === 1 && r.task === 'do abc');
+  unit('P0 Z=1 unchanged: repoMode false, no errors', r.repoMode === false && r.errors === undefined);
+}
+// Z>=2 defaulting repoMode=true does NOT perturb any other field of an existing shape.
+{
+  const r = parse('do abc @@FL:5:1:2');
+  unit('P0 Z=2 leaves n/mode/assignment/needsGate', r.n === 5 && r.mode === 1 && r.assignment === null && r.needsGate === false);
+}
+
+// ===========================================================================
 // report.
 // ===========================================================================
 console.log(`\nfl-parse tests: ${passed} passed, ${failed} failed`);
