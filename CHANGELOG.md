@@ -7,15 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); each
 
 ### Fixed — grok runner latency hardening
 
-- **`bin/grok-run.sh`** now runs grok in **lean single-pass mode** (`--no-plan --no-subagents --no-memory`),
-  matching the tournament's "write once, stop" contract. grok-build defaults to a plan→search→build cycle and
-  can spawn up to 8 parallel sub-agents; for a single-pass attempt that is unnecessary work and the main
-  variable-latency surface. Bounding it keeps each attempt **~15–30s** (verified across both variants on
-  trivial and multi-requirement tasks). `bin/fl-bench.mjs` `dispatchGrok` gets the same lean flags.
+- **`bin/grok-run.sh`** now bounds grok to a single independent agent loop with **`--no-subagents --no-memory`**.
+  `--no-subagents`: grok-build can otherwise spawn up to 8 parallel sub-agents (an internal swarm) — that both
+  fights FL's "N **independent** attempts" model and is the main variable-latency surface. `--no-memory`: keeps
+  each attempt hermetic/reproducible (no cross-session memory leaking between runs). `bin/fl-bench.mjs`
+  `dispatchGrok` gets the same flags.
+- **Deliberately NOT `--no-plan`.** That flag toggles grok's read-only plan *permission mode*, not the model's
+  reasoning, and FL runs planning-heavy tasks. A measured A/B on a planning deliverable showed `--no-plan` gave
+  **no** speed benefit yet produced a **thinner** plan, so it is omitted — grok keeps its full planning behavior.
 - **Context:** a live-fire tournament saw one grok-build attempt run ~6 min once; it was **not reproducible**
-  (five follow-up runs were 15–50s), so this is defensive hardening that removes the fan-out latency surface
-  rather than a confirmed fix for that specific transient. grok itself completed correctly and a grok variant
-  (`grok-composer-2.5-fast`) won that tournament's blind review.
+  (follow-up runs were 15–50s), so this is defensive hardening that removes the sub-agent fan-out latency
+  surface rather than a confirmed fix for that specific transient. grok itself completed correctly and a grok
+  variant (`grok-composer-2.5-fast`) won that tournament's blind review.
 
 ## [0.0.3] — 2026-06-19
 

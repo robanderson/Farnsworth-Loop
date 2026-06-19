@@ -35,12 +35,15 @@ echo "FARNSWORTH-GROK-PROVENANCE endpoint=cli-chat-proxy.grok.com auth=${AUTHMOD
 #   --max-turns N       : PRIMARY iteration guard. Grok HAS this (codex does not) — the deliverable written
 #                         before the cap is preserved.
 #   --disable-web-search: hermetic attempts (no network reads skewing diversity); also quiets web/MCP tools.
-#   --no-plan           : SINGLE-PASS lever. grok-build defaults to a plan->search->build cycle; a tournament
-#   --no-subagents      : attempt is ONE single-pass generation, so we forbid plan mode AND sub-agent fan-out
-#   --no-memory         : (grok-build can spawn up to 8 parallel sub-agents) AND cross-session memory load.
-#                         These BOUND grok's work to one agent loop — matching the brief's "write once, stop"
-#                         and removing the main variable-latency surface (a fanned-out plan can balloon to
-#                         minutes on a non-trivial task; a lean single pass stays ~15-30s).
+#   --no-subagents      : an FL attempt is ONE independent piece of work; grok-build can otherwise spawn up to
+#                         8 parallel sub-agents (an internal swarm), which both fights FL's "N independent
+#                         attempts" model AND is the main variable-latency surface (a fanned-out run can
+#                         balloon to minutes on a non-trivial task; a single agent loop stays ~15-30s).
+#   --no-memory         : cross-session memory OFF, so each attempt is hermetic/reproducible and can't be
+#                         influenced by — or leak state into — other sessions/attempts. Unrelated to reasoning.
+#                         NOTE: we deliberately do NOT pass --no-plan. That flag toggles grok's read-only plan
+#                         *permission mode*, not the model's reasoning; FL runs planning-heavy tasks and a
+#                         measured A/B showed --no-plan gave NO speed benefit yet thinner plans, so it is omitted.
 #   --no-alt-screen     : run INLINE — no fullscreen TUI takeover (mandatory under the `>> LOG` redirect).
 #   --no-auto-update    : skip the background update check (CI gotcha) so a script run never stalls/mutates.
 #   --cwd "$PWD"        : scope the agent's working root to this attempt workspace (analog of codex -C "$PWD").
@@ -58,7 +61,6 @@ perl -e '
     --always-approve \
     --max-turns "$MAXTURNS" \
     --disable-web-search \
-    --no-plan \
     --no-subagents \
     --no-memory \
     --no-alt-screen \

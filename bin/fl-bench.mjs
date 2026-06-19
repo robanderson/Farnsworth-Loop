@@ -657,9 +657,8 @@ function dispatchGrok(target, timeoutSecs, cfg) {
     '--no-alt-screen',
     '--no-auto-update',
     '--disable-web-search',
-    '--no-plan',          // pure single-turn generation: never enter plan->search->build
-    '--no-subagents',     // or fan out sub-agents (grok-build can spawn up to 8) — bounds latency
-    '--no-memory',
+    '--no-subagents',     // pure single-turn generation: never fan out sub-agents (bounds latency)
+    '--no-memory',        // hermetic. (NOT --no-plan: it only toggles plan permission mode, not reasoning.)
   ]
   const argv = perlAlarmArgv(timeoutSecs, ['grok', ...grokArgs])
   const t0 = Date.now()
