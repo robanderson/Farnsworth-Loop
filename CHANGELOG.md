@@ -3,6 +3,44 @@
 All notable changes to the **farnsworth-loop** plugin are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/); each version maps to a git tag.
 
+## [0.1.0] — 2026-06-20
+
+### Added — repo-anchored worktree mode (P0–P6): attempts build real code in git worktrees
+
+A new **opt-in repo-anchored** task mode: each tournament attempt is a real `git worktree` branched off a
+single pinned base, the winning attempt's commit is adopted directly as the mergeable ref (collapsing the
+lossy "Opus implementer re-derives the proposal" hop), and a fail-closed validation gate (verify + a nested
+security audit) guards it before any PR. Every new path is gated on `repoMode` / `FL_VERIFY_SANDBOX`, so the
+default (off) behavior is **byte-for-byte unchanged**. Shipped in seven staged, independently-valuable phases —
+themselves implemented end-to-end by the Farnsworth Loop (a 7-loop grand-loop) and validated with a live
+repo-anchored tournament. Design doc: `docs/git-worktree-implementation-plan-v2.md`.
+
+- **P0 — mode plumbing** (`bin/fl-parse.mjs`): `repoMode`/`baseRef` result fields; marker-adjacent
+  `repo-anchored` / `--no-repo` / `self-contained` keywords (stripped at source); `Z>=2` defaults it on;
+  `repoMode && z<2` is a fail-closed parser error. Parser stays pure/total.
+- **`run_verify` wall-clock timeout** (`bin/fl-git.sh`): portable bash-3.2 `fl_run_with_timeout` watchdog
+  (TERM→KILL, reaps both the command and its watchdog, rc→124), wired per verify command;
+  `FL_VERIFY_CMD_TIMEOUT` (default 600s) — the one missing `run_verify` hardening.
+- **P1 — worktree-per-attempt** (`workflows/tournament.mjs`): `buildWorktrees`/`snapshotWorktrees`, the
+  repo-anchored brief ("apply your change on this branch"), a fixed-identity harness commit (no
+  author/timestamp/branch leak), and diff-based blind staging; engine/provenance logs kept OUTSIDE the
+  worktree so `git add -A` can never commit a provider token.
+- **P3 — validation gate**: `detect_verify [<dir>]` (freeze the verify set from the winner's worktree); SKILL
+  Phase-7 nested `@@FL` security audit (sibling Workflow, union-of-findings reconciler — not the competitive
+  judge) + bounded runner-up→needs-human fallback, disambiguating `run_verify`'s overloaded rc 1.
+- **P2 — winner-as-ref adoption** (`adopt_winner_branch`): aliases the `FL-` branch to the winner's EXACT
+  gated commit (no re-author/squash/cherry-pick — "validated ref == merged ref"); `farnsworth-implementer`
+  scoped to legacy (`repoMode:false`) mode.
+- **P5 — test/lint enrichment** (`enrichBlindPool`): per-candidate test/lint run in the worktree (reusing
+  `detect_verify` + `fl_run_with_timeout`) → a blind-safe, counts-only summary into the judge's pool; secrets
+  dropped before running candidate code.
+- **P6 — sandboxed verify**: relax `verify_safe_diff`'s config-touch refusal ONLY under `FL_VERIFY_SANDBOX=1`
+  (set by the driver after the audit clears), running verify under a no-network/no-credentials sandbox
+  (macOS `sandbox-exec` reference profile, or an operator `FL_VERIFY_SANDBOX_WRAPPER`); fail-closed (rc 125)
+  if the sandbox is unavailable — never unsandboxed.
+
+Tests: `fl-parse` 322→398, `fl-git` 33→81, plus new `workflows/tournament-worktree-mode.test.mjs`.
+
 ## [0.0.4] — 2026-06-19
 
 ### Changed — grok runner: bound to one independent agent loop + web-search knob
