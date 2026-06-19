@@ -157,6 +157,18 @@ parseCase('spec bare glm -> 5.2', 'do x with 3 glm @@FL',
 parseCase('spec minimax', 'do y with 2 minimax @@FL',
   { n: 2, z: 1, assignment: ['minimax-m3', 'minimax-m3'] }, { noErrors: true });
 
+// Grok (two variants on a -m model axis; bare 'grok' -> grok-build per the operator's '/model grok').
+parseCase('spec grok bare -> grok-build', 'do y with 2 grok @@FL',
+  { n: 2, z: 1, assignment: ['grok-build', 'grok-build'] }, { noErrors: true });
+parseCase('spec grok both variants', 'build x with 1 grok-build, 1 grok composer 2.5 fast @@FL',
+  { n: 2, z: 1, assignment: ['grok-build', 'grok-composer-2.5-fast'] }, { noErrors: true });
+parseCase('spec bare composer -> grok-composer', 'do z with 2 composer 2.5 fast @@FL',
+  { n: 2, z: 1, assignment: ['grok-composer-2.5-fast', 'grok-composer-2.5-fast'] }, { noErrors: true });
+parseCase('spec grok mixed with anthropic', 'improve X @@FL with 1 opus, 1 grok, 1 grok composer',
+  { n: 3, z: 1, assignment: ['opus', 'grok-build', 'grok-composer-2.5-fast'] }, { noErrors: true });
+parseCase('spec grok strips spec from task', '@@FL 2 grok improve the parser',
+  { task: 'improve the parser', n: 2, z: 1, assignment: ['grok-build', 'grok-build'] }, { noErrors: true });
+
 // --- Top Mixed preset ---
 parseCase('top mixed N=6', 'do abc top mixed @@FL:6',
   { n: 6, z: 1, preset: 'top-mixed', assignment: ['opus', 'opus', 'glm-5.2', 'glm-5.2', 'codex-high', 'codex-high'] }, { noErrors: true });
@@ -383,6 +395,11 @@ unit('normalise opus', normaliseModel('opus') && normaliseModel('opus').model ==
 unit('normalise codex high', normaliseModel('codex high') && normaliseModel('codex high').model === 'codex-high');
 unit('normalise codex-high dash', normaliseModel('codex-high') && normaliseModel('codex-high').model === 'codex-high');
 unit('normalise bare glm', normaliseModel('glm') && normaliseModel('glm').model === 'glm-5.2');
+unit('normalise bare grok -> grok-build', normaliseModel('grok') && normaliseModel('grok').model === 'grok-build');
+unit('normalise grok dispatch is grok', normaliseModel('grok') && normaliseModel('grok').dispatch === 'grok');
+unit('normalise grok composer 2.5 fast', normaliseModel('grok composer 2.5 fast') && normaliseModel('grok composer 2.5 fast').model === 'grok-composer-2.5-fast');
+unit('normalise grok-composer-2.5-fast dash', normaliseModel('grok-composer-2.5-fast') && normaliseModel('grok-composer-2.5-fast').model === 'grok-composer-2.5-fast');
+unit('normalise bare composer -> grok-composer', normaliseModel('composer 2.5 fast') && normaliseModel('composer 2.5 fast').model === 'grok-composer-2.5-fast');
 unit('normalise unknown -> null', normaliseModel('gpt4') === null);
 unit('topMixed N=2', eq(topMixedAssignment(2), ['opus', 'glm-5.2']));
 unit('topMixed N=6', eq(topMixedAssignment(6), ['opus', 'opus', 'glm-5.2', 'glm-5.2', 'codex-high', 'codex-high']));

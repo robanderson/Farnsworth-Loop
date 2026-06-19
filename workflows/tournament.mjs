@@ -13,14 +13,15 @@ export const meta = {
 //   task: string,
 //   mode: 'single' | 'two',
 //   runDir: string,                       // absolute base dir for workspaces
-//   glmRunner / localRunner / codexRunner: string,  // bundled runner-script paths (per provider used)
+//   glmRunner / localRunner / codexRunner / minimaxRunner / grokRunner: string,  // bundled runner-script paths (per provider used)
 //   codexTimeoutSecs: number,             // optional wall-clock backstop for codex (default 600)
+//   grokTimeoutSecs: number,              // optional wall-clock backstop for grok (default 600); grok ALSO honours grokMaxTurns
 //   attempts: [ {                         // one per attempt, length N
 //      label: 'candidate-1',
-//      dispatch: 'anthropic' | 'glm' | 'local' | 'codex',
+//      dispatch: 'anthropic' | 'glm' | 'local' | 'codex' | 'minimax' | 'grok',
 //      model: 'haiku'|'sonnet'|'opus',    // when dispatch=anthropic (or the exact local/codex model id)
-//      agentType: 'farnsworth-glm-5-2',   // when dispatch=glm/local/codex (the worker agent)
-//      displayModel: 'glm-5.2',           // for the report (kept private from judges); codex: 'codex-high'
+//      agentType: 'farnsworth-glm-5-2',   // when dispatch=glm/local/codex/minimax/grok (the worker agent)
+//      displayModel: 'glm-5.2',           // for the report (kept private from judges); codex: 'codex-high'; grok: 'grok-build'
 //      r1nudge: string,
 //      r2nudge: string,
 //   } ]
@@ -109,6 +110,14 @@ const CODEX_FLAG = {
   'codex-high': '-m gpt-5.5 -c model_reasoning_effort=high',
   'codex-xhigh': '-m gpt-5.5 -c model_reasoning_effort=xhigh',
 }
+// Grok display model -> the `grok` -m flag that selects it. The two operator-requested variants are a
+// MODEL axis (analogous to codex's reasoning-effort axis): grok-build is xAI's agentic-coding model
+// (grok-code-fast-1 lineage); grok-composer-2.5-fast is Cursor Composer 2.5 (Kimi K2.5 lineage), the
+// CLI default. The runner pins -m so grok never falls back to config.toml's default model silently.
+const GROK_FLAG = {
+  'grok-build': '-m grok-build',
+  'grok-composer-2.5-fast': '-m grok-composer-2.5-fast',
+}
 const q = s => "'" + String(s).replace(/'/g, "'\\''") + "'" // single-quote shell-escape
 
 // Runner paths for the non-Anthropic providers (passed in via args). Each provider's
@@ -119,6 +128,7 @@ const glmRunner = A.glmRunner
 const localRunner = A.localRunner
 const codexRunner = A.codexRunner
 const minimaxRunner = A.minimaxRunner
+const grokRunner = A.grokRunner
 // Per-attempt guards for GLM/local runners (enforced inside the runner scripts):
 //  - max-turns: PRIMARY guard — caps agentic iterations so single-pass attempts can't
 //    grind the write->run->fix loop (which balloons context, esp. on local models).
@@ -137,6 +147,11 @@ const glmTimeoutSecs = Number(A.glmTimeoutSecs) > 0 ? Math.floor(Number(A.glmTim
 // Codex exec is agentic with NO turn cap (no --max-turns flag), so the wall-clock timeout is its ONLY
 // per-attempt backstop and gets its own, roomier default. Override via args.codexTimeoutSecs.
 const codexTimeout = Number(A.codexTimeoutSecs) > 0 ? Math.floor(Number(A.codexTimeoutSecs)) : 600
+// Grok is a full autonomous coding agent (like codex it gets a roomier wall-clock default), but UNLIKE
+// codex it ALSO has --max-turns, so it uses BOTH per-attempt guards via the standard runnerCmd:
+// grokMaxTurns (default = glm's 30) as the primary iteration cap + grokTimeout as the wall-clock backstop.
+const grokMaxTurns = Number(A.grokMaxTurns) > 0 ? Math.floor(Number(A.grokMaxTurns)) : glmMaxTurns
+const grokTimeout = Number(A.grokTimeoutSecs) > 0 ? Math.floor(Number(A.grokTimeoutSecs)) : 600
 const cmdHead = (ws, b) => `mkdir -p ${q(ws)} && cd ${q(ws)} && printf '%s' ${q(b)} > _brief.txt`
 const runnerCmd = (runner, flag, ws, b, maxTurns, timeout = attemptTimeout) => `${cmdHead(ws, b)} && FL_MAX_TURNS=${maxTurns} FL_TIMEOUT_SECS=${timeout} bash ${q(runner)} ${flag}`
 // Codex reuses cmdHead + the runner but overrides the wall-clock with codexTimeout (no FL_MAX_TURNS:
@@ -183,7 +198,7 @@ async function buildContext() {
 const worktreeBranch = (roundName, label) => `flwt/${safeRunId}/${roundName}/${label}`
 const worktreeLogDir = (roundName, label) => `${runDir}/_engine-logs/${roundName}/${label}`
 const worktreeMetaDir = `${runDir}/_worktrees`
-const engineFiles = ['_brief.txt', '_glm_run.log', '_local_run.log', '_codex_run.log', '_codex_last.txt', '_minimax_run.log']
+const engineFiles = ['_brief.txt', '_glm_run.log', '_local_run.log', '_codex_run.log', '_codex_last.txt', '_minimax_run.log', '_grok_run.log']
 const engineLogPath = (c, log) => {
   if (!repoMode || !log) return log ? `${c.ws}/${log}` : ''
   const roundName = c.round === 2 ? 'round-2' : 'round-1'
@@ -281,6 +296,16 @@ function dispatch(a, ws, guidance, phaseTitle) {
     opts.agentType = nsAgent(a.agentType) // farnsworth-minimax (one generic agent; MiniMax exposes only MiniMax-M3)
     // No --model flag: the runner's ANTHROPIC_MODEL pins MiniMax-M3 (all aliases map to it).
     prompt = RUNVERBATIM(runnerCmd(minimaxRunner, '', ws, b, minimaxMaxTurns), ws, '_minimax_run.log')
+  } else if (a.dispatch === 'grok') {
+    opts.agentType = nsAgent(a.agentType) // farnsworth-grok (one generic agent for BOTH grok variants)
+    const flag = GROK_FLAG[a.displayModel] || `-m ${a.model}` // grok-build | grok-composer-2.5-fast -> grok -m
+    if (!grokRunner) {
+      log(`attempt ${a.label} (${a.displayModel}) skipped: grokRunner not supplied (pass args.grokRunner pointing to bin/grok-run.sh)`)
+      return null
+    }
+    // Grok uses the STANDARD runnerCmd (both FL_MAX_TURNS and FL_TIMEOUT_SECS), NOT codexRunnerCmd:
+    // unlike codex, grok HAS --max-turns, so it gets both guards like glm/minimax. (Key structural delta.)
+    prompt = RUNVERBATIM(runnerCmd(grokRunner, flag, ws, b, grokMaxTurns, grokTimeout), ws, '_grok_run.log')
   } else {
     // Native Anthropic attempt. NOTE: the workflow agent() primitive exposes no turn/time cap,
     // so (unlike GLM/local) these are bounded only by the single-pass brief. If a future agent()
@@ -445,6 +470,7 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
               : c.dispatch === 'local' ? '_local_run.log'
               : c.dispatch === 'codex' ? '_codex_run.log'
               : c.dispatch === 'minimax' ? '_minimax_run.log'
+              : c.dispatch === 'grok' ? '_grok_run.log'
               : ''
     const lp = log ? q(engineLogPath(c, log)) : ''
     // Provider-specific, LINE-ANCHORED marker token. Runners write their FARNSWORTH-<PROV>-* markers at
@@ -454,7 +480,7 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
     // false-negative was real: it invalidated two genuinely-successful GLM proposals about this very feature.
     // FAIL CLOSED (#2): the PROVENANCE line is written UNCONDITIONALLY at runner startup, so a missing log
     // here means the runner never ran (native-solve spoof / refusal) → P=0. Native attempts (no runner) → P=1.
-    const tok = c.dispatch === 'glm' ? 'GLM' : c.dispatch === 'local' ? 'LOCAL' : c.dispatch === 'codex' ? 'CODEX' : c.dispatch === 'minimax' ? 'MINIMAX' : ''
+    const tok = c.dispatch === 'glm' ? 'GLM' : c.dispatch === 'local' ? 'LOCAL' : c.dispatch === 'codex' ? 'CODEX' : c.dispatch === 'minimax' ? 'MINIMAX' : c.dispatch === 'grok' ? 'GROK' : ''
     // D-0004: a carried-over round-1 winner was ALREADY provenance-validated in round 1, but its engine log
     // was stripped during round-1 staging — so re-grepping its stripped staging dir always yields P=0 and the
     // winner is wrongly dropped. provCheckShell skips ONLY the provenance grep for a carryover (P=1); the
@@ -476,7 +502,7 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
              `echo "FLV ${c.blind} d=$([ "$D" -gt 0 ] && echo 1 || echo 0) p=$P"`
     }
     return `mkdir -p ${q(dest)}; cp -R ${q(c.ws)}/. ${q(dest)}/ 2>/dev/null; ` +
-           `rm -f ${q(dest)}/_brief.txt ${q(dest)}/_glm_run.log ${q(dest)}/_local_run.log ${q(dest)}/_codex_run.log ${q(dest)}/_codex_last.txt ${q(dest)}/_minimax_run.log; ` +
+           `rm -f ${q(dest)}/_brief.txt ${q(dest)}/_glm_run.log ${q(dest)}/_local_run.log ${q(dest)}/_codex_run.log ${q(dest)}/_codex_last.txt ${q(dest)}/_minimax_run.log ${q(dest)}/_grok_run.log; ` +
            `find ${q(dest)} -mindepth 1 ! -type f ! -type d -delete 2>/dev/null; ` +
            `D=$(find ${q(dest)} -type f 2>/dev/null | grep -c .); ${provChk}; ` +
            `if [ "$D" -gt 0 ] && [ "$P" -eq 1 ]; then { echo "===== Candidate ${c.blind} ====="; find ${q(dest)} -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null; echo; } >> ${q(pool)}; fi; ` +
