@@ -35,6 +35,12 @@ echo "FARNSWORTH-GROK-PROVENANCE endpoint=cli-chat-proxy.grok.com auth=${AUTHMOD
 #   --max-turns N       : PRIMARY iteration guard. Grok HAS this (codex does not) — the deliverable written
 #                         before the cap is preserved.
 #   --disable-web-search: hermetic attempts (no network reads skewing diversity); also quiets web/MCP tools.
+#   --no-plan           : SINGLE-PASS lever. grok-build defaults to a plan->search->build cycle; a tournament
+#   --no-subagents      : attempt is ONE single-pass generation, so we forbid plan mode AND sub-agent fan-out
+#   --no-memory         : (grok-build can spawn up to 8 parallel sub-agents) AND cross-session memory load.
+#                         These BOUND grok's work to one agent loop — matching the brief's "write once, stop"
+#                         and removing the main variable-latency surface (a fanned-out plan can balloon to
+#                         minutes on a non-trivial task; a lean single pass stays ~15-30s).
 #   --no-alt-screen     : run INLINE — no fullscreen TUI takeover (mandatory under the `>> LOG` redirect).
 #   --no-auto-update    : skip the background update check (CI gotcha) so a script run never stalls/mutates.
 #   --cwd "$PWD"        : scope the agent's working root to this attempt workspace (analog of codex -C "$PWD").
@@ -52,6 +58,9 @@ perl -e '
     --always-approve \
     --max-turns "$MAXTURNS" \
     --disable-web-search \
+    --no-plan \
+    --no-subagents \
+    --no-memory \
     --no-alt-screen \
     --no-auto-update \
     --cwd "$PWD" </dev/null >> "$LOG" 2>&1
