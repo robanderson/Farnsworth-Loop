@@ -420,6 +420,11 @@ const STAGE_SCHEMA = {
   required: ['results'],
 }
 
+// Phase 5's blind grammar. The shell creates this line from exit codes only; it is also the
+// allowlist used before the pool is rebuilt. Keep every value numeric/boolean and fixed-position.
+const ENRICHMENT_FALLBACK = 'automated_checks: enrichment_ok=0 checks_ok=0 verify_pass=0 verify_fail=0 verify_timeout=0 build_detected=0 build_ok=0 build_fail=0 build_timeout=0 lint_pass=0 lint_fail=0 lint_timeout=0'
+const ENRICHMENT_GRAMMAR = '^automated_checks: enrichment_ok=[01] checks_ok=[01] verify_pass=[0-9]+ verify_fail=[0-9]+ verify_timeout=[0-9]+ build_detected=[01] build_ok=[01] build_fail=[01] build_timeout=[01] lint_pass=[0-9]+ lint_fail=[0-9]+ lint_timeout=[0-9]+$'
+
 // D-0004 FIX — PURE, drift-proof provenance-gate builder.
 // Emits the shell snippet that sets P (the provenance flag the `D>0 && P==1` pool gate reads).
 //   - log:        the engine log filename for this dispatch ('' for native Anthropic) — selects the path.
@@ -524,8 +529,87 @@ async function stageAndValidate(list, reviewDir, phaseTitle) {
     const r = v[c.blind]                           // FAIL CLOSED: missing/unparsed → invalid
     const valid = !!(r && r.deliverable && r.provenance)
     const failReason = valid ? '' : (!r ? 'staging result missing (failed closed)' : (!r.deliverable ? 'no deliverable saved' : 'provenance check failed (timeout/error/empty)'))
-    return { ...c, ws: `${reviewDir}/${c.blind}`, valid, failReason }
+    // Staging changes ws to the blind review directory. Phase 5 still needs the runnable checkout;
+    // expose it only in repoMode so the legacy object shape and all legacy consumers stay unchanged.
+    return repoMode
+      ? { ...c, liveWs: c.ws, ws: `${reviewDir}/${c.blind}`, valid, failReason }
+      : { ...c, ws: `${reviewDir}/${c.blind}`, valid, failReason }
   })
+}
+
+// Phase 5: run checks in live worktrees, then rebuild the blind pool from an allowlisted summary.
+// The engine cannot import node:fs/process, so this mirrors buildWorktrees()/stageAndValidate():
+// one cheap agent, one deterministic Bash script. No agent-authored prose is ever pooled.
+async function enrichBlindPool(list, reviewDir, phaseTitle) {
+  if (!repoMode || !list.length) return
+  const pool = `${reviewDir}/_pool.md`
+  const fallback = q(ENRICHMENT_FALLBACK + '\n')
+  const grammar = q(ENRICHMENT_GRAMMAR)
+  const perCandidate = list.map(c => {
+    const dest = `${reviewDir}/${c.blind}`
+    const summary = `${dest}/enrichment.txt`
+    if (c.carriedOver) {
+      // The round-1 champion was already checked before the first blind pick. It has no live ws here;
+      // copy only its strict summary, never rerun it and never copy arbitrary prior-pool text.
+      const source = c.enrichmentSource || `${c.ws}/enrichment.txt`
+      return `mkdir -p ${q(dest)}; ` +
+             `if [ -f ${q(source)} ] && grep -Eq ${grammar} ${q(source)}; then cp ${q(source)} ${q(summary)}; else printf '%s' ${fallback} > ${q(summary)}; fi`
+    }
+    const ws = c.liveWs
+    return `(` +
+      `ws=${q(ws)}; summary=${q(summary)}; commands=${q(`${dest}/.verify-commands`)}; lint_commands=${q(`${dest}/.lint-commands`)}; ` +
+      `mkdir -p ${q(dest)}; printf '%s' ${fallback} > "$summary"; : > "$commands"; : > "$lint_commands"; ` +
+      `helper=$(git rev-parse --show-toplevel)/bin/fl-git.sh; timeout=\${FL_VERIFY_CMD_TIMEOUT:-600}; ` +
+      `case "$timeout" in ''|*[!0-9]*) timeout=600;; esac; ` +
+      // Drop provider secrets before running untrusted candidate code (mirrors run_verify). The z.ai key
+      // name is assembled at shell-runtime ("Z"+"AI_API_KEY") so the engine source keeps the #25 hygiene
+      // guarantee (no literal ZAI key token in tournament.mjs); the same variable is still unset at runtime.
+      `for v in "Z""AI_API_KEY" MINIMAX_API_KEY OMLX_AUTH_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN GH_TOKEN GITHUB_TOKEN; do unset "$v"; done; ` +
+      `enrichment_ok=0; vp=0; vf=0; vt=0; lp=0; lf=0; lt=0; bd=0; bf=0; bt=0; ` +
+      `if bash "$helper" fl_run_with_timeout "$timeout" -- bash "$helper" detect_verify "$ws" > "$commands" 2>/dev/null; then enrichment_ok=1; else : > "$commands"; fi; ` +
+      `while IFS= read -r cmd; do ` +
+        `case "$cmd" in ''|'#'*) continue;; esac; ` +
+        `read -r -a words <<< "$cmd"; [ "\${#words[@]}" -gt 0 ] || continue; ` +
+        `is_lint=0; case "$cmd" in *lint*|*eslint*|*ruff*|*clippy*|*'go vet'*) is_lint=1;; esac; ` +
+        `is_build=0; case "$cmd" in *build*) is_build=1; bd=1;; esac; ` +
+        `if (cd "$ws" && bash "$helper" fl_run_with_timeout "$timeout" -- "\${words[@]}") >/dev/null 2>&1; then rc=0; else rc=$?; fi; ` +
+        `if [ "$rc" -eq 0 ]; then vp=$((vp+1)); [ "$is_lint" -eq 0 ] || lp=$((lp+1)); ` +
+        `elif [ "$rc" -eq 124 ]; then vt=$((vt+1)); [ "$is_lint" -eq 0 ] || lt=$((lt+1)); [ "$is_build" -eq 0 ] || bt=1; ` +
+        `else vf=$((vf+1)); [ "$is_lint" -eq 0 ] || lf=$((lf+1)); [ "$is_build" -eq 0 ] || bf=1; fi; ` +
+      `done < "$commands"; ` +
+      // Fixed lint detection only. Never execute candidate-supplied command text or assume a new helper.
+      `if [ -f "$ws/package.json" ] && grep -Eq '"lint"[[:space:]]*:' "$ws/package.json"; then printf '%s\\n' 'npm run lint' >> "$lint_commands"; fi; ` +
+      `if [ -f "$ws/Makefile" ] && grep -Eq '^[[:space:]]*lint[[:space:]]*:' "$ws/Makefile"; then printf '%s\\n' 'make lint' >> "$lint_commands"; fi; ` +
+      `if [ -f "$ws/pyproject.toml" ] && grep -Eq '^\\[tool\\.ruff([].]|$)' "$ws/pyproject.toml"; then printf '%s\\n' 'ruff check .' >> "$lint_commands"; fi; ` +
+      `if [ -f "$ws/Cargo.toml" ]; then printf '%s\\n' 'cargo clippy --all-targets' >> "$lint_commands"; fi; ` +
+      `if [ -f "$ws/go.mod" ]; then printf '%s\\n' 'go vet ./...' >> "$lint_commands"; fi; ` +
+      `while IFS= read -r cmd; do ` +
+        `[ -n "$cmd" ] || continue; grep -Fqx "$cmd" "$commands" 2>/dev/null && continue; ` +
+        `read -r -a words <<< "$cmd"; ` +
+        `if (cd "$ws" && bash "$helper" fl_run_with_timeout "$timeout" -- "\${words[@]}") >/dev/null 2>&1; then rc=0; else rc=$?; fi; ` +
+        `if [ "$rc" -eq 0 ]; then lp=$((lp+1)); elif [ "$rc" -eq 124 ]; then lt=$((lt+1)); else lf=$((lf+1)); fi; ` +
+      `done < "$lint_commands"; ` +
+      `bo=0; if [ "$bd" -eq 1 ] && [ "$bf" -eq 0 ] && [ "$bt" -eq 0 ]; then bo=1; fi; ` +
+      `checks_ok=0; if [ "$enrichment_ok" -eq 1 ] && [ "$vf" -eq 0 ] && [ "$vt" -eq 0 ] && [ "$lf" -eq 0 ] && [ "$lt" -eq 0 ]; then checks_ok=1; fi; ` +
+      `printf 'automated_checks: enrichment_ok=%s checks_ok=%s verify_pass=%s verify_fail=%s verify_timeout=%s build_detected=%s build_ok=%s build_fail=%s build_timeout=%s lint_pass=%s lint_fail=%s lint_timeout=%s\\n' ` +
+        `"$enrichment_ok" "$checks_ok" "$vp" "$vf" "$vt" "$bd" "$bo" "$bf" "$bt" "$lp" "$lf" "$lt" > "$summary"; ` +
+      `if ! grep -Eq ${grammar} "$summary"; then printf '%s' ${fallback} > "$summary"; fi; ` +
+      `rm -f "$commands" "$lint_commands"` +
+    `)`
+  }).join('\n')
+  const rebuild = [`tmp=${q(`${pool}.enriched`)}`, `: > "$tmp"`, ...list.map(c => {
+    const dest = `${reviewDir}/${c.blind}`
+    return `{ printf '===== Candidate %s =====\\n' ${q(c.blind)}; ` +
+           `cat ${q(`${dest}/candidate.diff`)} 2>/dev/null; ` +
+           `printf '\\n--- Automated checks ---\\n'; ` +
+           `if grep -Eq ${grammar} ${q(`${dest}/enrichment.txt`)}; then cat ${q(`${dest}/enrichment.txt`)}; else printf '%s' ${fallback}; fi; ` +
+           `printf '\\n'; } >> "$tmp"`
+  }), `mv -f "$tmp" ${q(pool)}`].join('\n')
+  const script = `${perCandidate}\n${rebuild}`
+  await agent(
+    `Run this exact shell script in ONE Bash call. It runs blind tournament checks and atomically rebuilds the blind pool. Do not print, summarize, or expose command output; do nothing else:\n\n${script}`,
+    { model: 'haiku', phase: phaseTitle, label: 'test-lint-enrichment' }
+  ).catch(() => null)
 }
 
 // #6 + #7: never silently carry the wrong artifact or trust an off-spec ranking — normalize the
@@ -821,6 +905,8 @@ if (!blind1.length) {
   return { mode, n: N, error: 'no valid round-1 deliverables', round1: { mapping: r1mapping } }
 }
 
+if (repoMode) await enrichBlindPool(blind1, `${runDir}/review-1`, 'Review')
+
 const review = await judge('reviewer', blind1, mode === 'two', `${runDir}/review-1/_pool.md`,
   mode === 'two' ? REVIEW_SCHEMA : RANK_SCHEMA, 'Review', 'review')
 if (review.__failed) {
@@ -872,7 +958,7 @@ await snapshotWorktrees('round-2', r2) // repoMode-only no-op otherwise
 // get P=0, and be wrongly dropped from the final pool the Opus ranker reads.
 const finalPool = [
   ...r2.map(c => ({ ws: c.ws, label: c.label, displayModel: c.displayModel, dispatch: c.dispatch, round: 2 })),
-  { ws: champ.ws, displayModel: champ.displayModel, dispatch: champ.dispatch, round: 1, carriedOver: true },
+  { ws: champ.ws, displayModel: champ.displayModel, dispatch: champ.dispatch, round: 1, carriedOver: true, enrichmentSource: `${champ.ws}/enrichment.txt` },
 ]
 phase('Final rank')
 const stagedF = await stageAndValidate(blindLabel(finalPool, 2), `${runDir}/review-final`, 'Final rank')
@@ -889,6 +975,8 @@ if (!blindF.length) {
   ], 'Final rank')
   return { mode, n: N, round1: { mapping: r1mapping }, guidance: review.guidance, final: { mapping: finalMapping, error: 'no valid finalists' } } // #5
 }
+
+if (repoMode) await enrichBlindPool(blindF, `${runDir}/review-final`, 'Final rank')
 
 const finalRank = await judge('final ranker', blindF, false, `${runDir}/review-final/_pool.md`, RANK_SCHEMA, 'Final rank', 'final-rank')
 if (finalRank.__failed) {
