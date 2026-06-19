@@ -8,12 +8,20 @@
 #   - no live re-detection: empty frozen set -> rc 2, never re-scan a mutated tree
 #   - argv execution: command lines run as argv (no `eval`), so `;`/`|`/`$()` are inert
 #   - preserved contract: fail-FAST (break on first failure), all-pass rc 0
+#   - P6 default-off gate: existing config-touch refusals remain unchanged
+#   - P6 opt-in route: config-touch is accepted only onto the sandbox path
+#   - P6 fail-closed route: a missing wrapper never falls back to direct execution
+#   - secret-drop still applies before the sandbox wrapper is entered
 #
 # Self-contained: builds throwaway git repos in mktemp dirs; no network, no toolchains.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLGIT="$HERE/fl-git.sh"
+
+# Host/operator settings must not opt the issue-#21 regression tests into P6.
+# Test cases below set these inline only where explicitly required.
+unset FL_VERIFY_SANDBOX FL_VERIFY_SANDBOX_WRAPPER
 
 pass=0; fail=0
 ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
@@ -152,6 +160,64 @@ done
 for s in README.md FL-NOTES.md docs/notes.txt src/app.py main.go util.rs; do
   check "H: gate allows $s" "$(gate_trips "$s")" "safe"
 done
+
+# ---------------------------------------------------------------------------
+# S) P6 sandbox GATING/ROUTING. These tests use a fake pass-through wrapper to
+#    prove argv routing only; they make NO claim about OS-level isolation.
+#    Existing A/H above run with the flag unset and remain the no-regression
+#    proof for issue #21's default fail-closed behavior.
+# ---------------------------------------------------------------------------
+S=$(mktemp -d); repo="$S/repo"; mkrepo "$repo"
+printf '{"scripts":{"build":"true"}}' > "$repo/package.json"
+
+# S1: exactly FL_VERIFY_SANDBOX=1 relaxes the config-touch refusal decision.
+out="$( cd "$repo" && FL_VERIFY_SANDBOX=1 bash "$FLGIT" verify_safe_diff 2>&1 )"; rc=$?
+check "S1: sandbox opt-in relaxes config-touch gate -> rc 0" "$rc" "0"
+case "$out" in *FL-VERIFY-SANDBOX-ROUTE*package.json*) ok "S1: emits sandbox-route marker + offending file";; *) bad "S1: missing sandbox-route/package.json marker";; esac
+
+# Fake wrapper contract: wrapper -- <argv...>. It records entry, then execs.
+# This is intentionally NOT an isolation test.
+wrapper="$S/fake-sandbox-wrapper"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf invoked > "${FL_TEST_WRAPPER_MARKER:?}"' \
+  '[ "${1:-}" = "--" ] && shift' \
+  'exec "$@"' > "$wrapper"
+chmod +x "$wrapper"
+
+# S2: run_verify routes a config-touching diff through the selected wrapper.
+marker="$S/WRAPPER_INVOKED"; ran="$S/RAN"; rm -f "$marker" "$ran"
+out="$( cd "$repo" && printf '%s\n' "touch $ran" | \
+  FL_VERIFY_SANDBOX=1 FL_VERIFY_SANDBOX_WRAPPER="$wrapper" \
+  FL_TEST_WRAPPER_MARKER="$marker" bash "$FLGIT" run_verify 2>&1 )"; rc=$?
+check "S2: sandbox-routed config-touch verify -> rc 0" "$rc" "0"
+[ -e "$marker" ] && ok "S2: sandbox wrapper invoked" || bad "S2: sandbox wrapper not invoked"
+[ -e "$ran" ] && ok "S2: verify command ran through wrapper" || bad "S2: routed verify command did not run"
+case "$out" in *FL-VERIFY-SANDBOX-ROUTE*) ok "S2: run_verify records relaxed gate decision";; *) bad "S2: run_verify missing sandbox-route marker";; esac
+
+# S3: existing provider-secret drop occurs before entering the wrapper.
+leak="$S/leak.sh"; keyout="$S/KEYOUT"; rm -f "$marker" "$keyout"
+printf '#!/usr/bin/env bash\necho "${ZAI_API_KEY:-EMPTY}" > "$1"\n' > "$leak"
+chmod +x "$leak"
+( cd "$repo" && printf '%s\n' "bash $leak $keyout" | \
+  FL_VERIFY_SANDBOX=1 FL_VERIFY_SANDBOX_WRAPPER="$wrapper" \
+  FL_TEST_WRAPPER_MARKER="$marker" ZAI_API_KEY=secret123 \
+  bash "$FLGIT" run_verify ) >/dev/null 2>&1; rc=$?
+check "S3: sandbox-routed verify -> rc 0" "$rc" "0"
+got="$(cat "$keyout" 2>/dev/null || echo MISSING)"
+check "S3: ZAI_API_KEY dropped before sandbox wrapper" "$got" "EMPTY"
+[ -e "$marker" ] && ok "S3: secret-drop assertion used sandbox route" || bad "S3: wrapper not invoked"
+
+# S4: force unavailable-wrapper path by naming a nonexistent absolute path.
+# Do not empty PATH: setup and code under test still need git/coreutils.
+missing="$S/does-not-exist/sandbox-wrapper"; proof="$S/UNSANDBOXED"; rm -f "$proof"
+out="$( cd "$repo" && printf '%s\n' "touch $proof" | \
+  FL_VERIFY_SANDBOX=1 FL_VERIFY_SANDBOX_WRAPPER="$missing" \
+  bash "$FLGIT" run_verify 2>&1 )"; rc=$?
+[ "$rc" -ne 0 ] && ok "S4: unavailable wrapper -> nonzero ($rc)" || bad "S4: unavailable wrapper unexpectedly passed"
+[ ! -e "$proof" ] && ok "S4: no unsandboxed fallback execution" || bad "S4: command ran unsandboxed after wrapper failure"
+case "$out" in *FL-VERIFY-SANDBOX-UNAVAILABLE*fail-closed*) ok "S4: emits stable unavailable/fail-closed marker";; *) bad "S4: missing unavailable/fail-closed marker";; esac
+rm -rf "$S"
 
 # ---------------------------------------------------------------------------
 # T) fl_run_with_timeout in isolation: real rc passthrough, timeout->124, and

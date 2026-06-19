@@ -21,6 +21,7 @@
 #   preflight <base> <runDir>              -> collects ALL failures; rc!=0 on any
 #   detect_verify [<dir>]                  -> prints detected verify commands (one/line); rc 0 if any; <dir> default '.'
 #   fl_run_with_timeout <secs> -- <cmd...> -> run argv with a wall-clock watchdog; 124 == timed out
+#   fl_verify_sandbox_exec <cmd...>        -> run argv through the selected sandbox; fail closed if unavailable
 #   run_verify                             -> reads commands on stdin or detects; fail-FAST; real rc
 #   commit_and_push <branch> <base> <msg>  -> commit (guarded) + push -u; rc propagated
 #   adopt_winner_branch <flBranch> <base> <winnerWorktreeBranch>
@@ -43,6 +44,17 @@ FL_NEEDS_HUMAN_LABEL="${FL_NEEDS_HUMAN_LABEL:-needs-human}"
 # overruns is killed (TERM->KILL) and reported as rc 124 (GNU-timeout-compatible),
 # which run_verify treats as a normal verify FAIL. Overridable (tests use a tiny value).
 FL_VERIFY_CMD_TIMEOUT="${FL_VERIFY_CMD_TIMEOUT:-600}"
+
+# Sandboxed verify is deliberately DEFAULT OFF. Only the Phase-7 driver may set
+# FL_VERIFY_SANDBOX=1, inline, after the nested audit cleared the exact diff.
+# FL_VERIFY_SANDBOX_WRAPPER is an optional operator hook for a container/VM
+# launcher. It must name one executable which accepts:
+#
+#   wrapper -- <verify-command> <arg>...
+#
+# When unset, fl_verify_sandbox_exec uses the macOS sandbox-exec reference
+# profile below. Missing/invalid wrappers fail closed; there is no unsandboxed
+# fallback while FL_VERIFY_SANDBOX=1.
 
 # --------------------------------------------------------------------------
 # fl_suffix — 7 chars from [0-9a-z], macOS-portable, /dev/urandom only.
@@ -140,7 +152,10 @@ detect_verify() {
 #
 # Inspects modified (unstaged + staged) AND new untracked files. rc 0 == safe
 # (nothing executable touched), rc 1 == unsafe (prints the offending files). When
-# not inside a git work tree there is no implementer diff to gate, so rc 0.
+# FL_VERIFY_SANDBOX=1, an unsafe hit is reported as accepted for sandbox routing
+# and returns 0; run_verify then MUST route every command through the sandbox
+# leaf. With the flag unset/0, behavior is byte-identical to issue #21. When not
+# inside a git work tree there is no implementer diff to gate, so rc 0.
 # --------------------------------------------------------------------------
 verify_safe_diff() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
@@ -174,11 +189,98 @@ verify_safe_diff() {
     esac
   done
   if [ "${#hits[@]}" -gt 0 ]; then
+    if [ "${FL_VERIFY_SANDBOX:-0}" = "1" ]; then
+      echo "FL-VERIFY-SANDBOX-ROUTE: verify-executable file(s) accepted only for sandboxed verify:" >&2
+      for f in "${hits[@]}"; do echo "  - $f" >&2; done
+      return 0
+    fi
+    # DEFAULT-OFF PATH: keep the issue-#21 output and return code exactly as
+    # before P6.
     echo "FL-VERIFY-REFUSE-UNSAFE: implementer change touches verify-executable file(s); a human must review before local verify runs:" >&2
     for f in "${hits[@]}"; do echo "  - $f" >&2; done
     return 1
   fi
   return 0
+}
+
+# --------------------------------------------------------------------------
+# fl_verify_sandbox_exec <cmd argv...>
+# Sandbox LEAF for run_verify. The timeout remains the outer layer so a hung
+# wrapper/container is killed by the existing watchdog.
+#
+# Operator hook: FL_VERIFY_SANDBOX_WRAPPER names one trusted executable which
+# receives `--` followed by the untouched verify argv. It is responsible for
+# enforcing the environment's no-network/no-operator-credentials invariant and
+# for executing the current worktree (the audit-cleared candidate).
+#
+# Default: macOS sandbox-exec reference profile. It denies network and reads of
+# common operator credential paths. Paths are passed as sandbox parameters;
+# sandbox profile text does not expand shell variables. The profile otherwise
+# allows filesystem access required by project toolchains. Existing run_verify
+# secret-drop remains mandatory and happens before this function is called.
+#
+# rc 125 means the selected sandbox is unavailable. Never run argv unsandboxed.
+# --------------------------------------------------------------------------
+fl_verify_sandbox_exec() {
+  [ "$#" -gt 0 ] || { echo "FL-VERIFY-SANDBOX-FAIL: no command given" >&2; return 125; }
+
+  local requested="${FL_VERIFY_SANDBOX_WRAPPER:-}"
+  local sandbox_bin=""
+  if [ -n "$requested" ]; then
+    sandbox_bin="$(command -v "$requested" 2>/dev/null || true)"
+    if [ -z "$sandbox_bin" ]; then
+      echo "FL-VERIFY-SANDBOX-UNAVAILABLE: wrapper '$requested' not found or not executable (fail-closed)" >&2
+      return 125
+    fi
+    "$sandbox_bin" -- "$@"
+    return $?
+  fi
+
+  sandbox_bin="$(command -v sandbox-exec 2>/dev/null || true)"
+  if [ -z "$sandbox_bin" ]; then
+    echo "FL-VERIFY-SANDBOX-UNAVAILABLE: sandbox-exec not found and FL_VERIFY_SANDBOX_WRAPPER is unset (fail-closed)" >&2
+    return 125
+  fi
+
+  local home="${HOME:-/var/empty}"
+  local profile='(version 1)
+(allow default)
+(deny network*)
+(deny file-read*
+  (subpath (param "FL_SSH_DIR"))
+  (subpath (param "FL_AWS_DIR"))
+  (subpath (param "FL_AZURE_DIR"))
+  (subpath (param "FL_GCLOUD_DIR"))
+  (subpath (param "FL_GH_DIR"))
+  (subpath (param "FL_DOCKER_DIR"))
+  (subpath (param "FL_KUBE_DIR"))
+  (subpath (param "FL_CODEX_DIR"))
+  (subpath (param "FL_CLAUDE_DIR"))
+  (subpath (param "FL_GROK_DIR"))
+  (subpath (param "FL_KEYCHAINS_DIR"))
+  (literal (param "FL_NPMRC"))
+  (literal (param "FL_PYPIRC"))
+  (literal (param "FL_NETRC"))
+  (literal (param "FL_GIT_CREDS")))'
+
+  "$sandbox_bin" \
+    -D FL_SSH_DIR="$home/.ssh" \
+    -D FL_AWS_DIR="$home/.aws" \
+    -D FL_AZURE_DIR="$home/.azure" \
+    -D FL_GCLOUD_DIR="$home/.config/gcloud" \
+    -D FL_GH_DIR="$home/.config/gh" \
+    -D FL_DOCKER_DIR="$home/.docker" \
+    -D FL_KUBE_DIR="$home/.kube" \
+    -D FL_CODEX_DIR="$home/.codex" \
+    -D FL_CLAUDE_DIR="$home/.claude" \
+    -D FL_GROK_DIR="$home/.grok" \
+    -D FL_KEYCHAINS_DIR="$home/Library/Keychains" \
+    -D FL_NPMRC="$home/.npmrc" \
+    -D FL_PYPIRC="$home/.pypirc" \
+    -D FL_NETRC="$home/.netrc" \
+    -D FL_GIT_CREDS="$home/.git-credentials" \
+    -p "$profile" \
+    "$@"
 }
 
 # --------------------------------------------------------------------------
@@ -308,12 +410,25 @@ run_verify() {
     # Direct rc capture; break on first failure so a later success cannot mask it.
     # Per-command wall-clock watchdog (macOS has no `timeout`); a 124 (timed out)
     # is a nonzero rc and so is handled by the existing fail path below, as a FAIL.
-    if fl_run_with_timeout "$FL_VERIFY_CMD_TIMEOUT" -- "${words[@]}"; then
-      echo "FL-VERIFY-OK: $c"
+    if [ "${FL_VERIFY_SANDBOX:-0}" = "1" ]; then
+      # Timeout OUTSIDE, sandbox at the LEAF. The wrapper receives argv, not a
+      # shell string. Missing wrapper/profile returns nonzero before argv runs.
+      if fl_run_with_timeout "$FL_VERIFY_CMD_TIMEOUT" -- fl_verify_sandbox_exec "${words[@]}"; then
+        echo "FL-VERIFY-OK: $c"
+      else
+        rc=$?
+        echo "FL-VERIFY-FAIL: $c (exit $rc)" >&2
+        break
+      fi
     else
-      rc=$?
-      echo "FL-VERIFY-FAIL: $c (exit $rc)" >&2
-      break
+      # DEFAULT-OFF PATH: intentionally identical to pre-P6 execution.
+      if fl_run_with_timeout "$FL_VERIFY_CMD_TIMEOUT" -- "${words[@]}"; then
+        echo "FL-VERIFY-OK: $c"
+      else
+        rc=$?
+        echo "FL-VERIFY-FAIL: $c (exit $rc)" >&2
+        break
+      fi
     fi
   done
 
@@ -712,6 +827,7 @@ if ! _fl_is_sourced; then
     detect_verify)         detect_verify "$@" ;;
     verify_safe_diff)      verify_safe_diff "$@" ;;
     fl_run_with_timeout)   fl_run_with_timeout "$@" ;;
+    fl_verify_sandbox_exec) fl_verify_sandbox_exec "$@" ;;
     run_verify)            run_verify "$@" ;;
     commit_and_push)       commit_and_push "$@" ;;
     adopt_winner_branch)   adopt_winner_branch "$@" ;;
@@ -734,6 +850,7 @@ Functions:
   detect_verify [<dir>]           (detect against <dir>, default '.'; e.g. a winner worktree)
   verify_safe_diff                (rc 0 safe, rc 1 implementer touched executable file)
   fl_run_with_timeout <secs> -- <cmd...>   (run argv with a wall-clock watchdog; rc 124 == timed out)
+  fl_verify_sandbox_exec <cmd...> (run argv through the selected sandbox; rc 125 == sandbox unavailable, fail-closed)
   run_verify                      (FROZEN commands on stdin one/line; gated + secrets dropped)
   commit_and_push <branch> <base> <message>
   adopt_winner_branch <flBranch> <base> <winnerWorktreeBranch>   (repo-anchored: alias FL- branch to winner's EXACT commit + push -u)
