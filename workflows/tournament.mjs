@@ -16,6 +16,7 @@ export const meta = {
 //   glmRunner / localRunner / codexRunner / minimaxRunner / grokRunner: string,  // bundled runner-script paths (per provider used)
 //   codexTimeoutSecs: number,             // optional wall-clock backstop for codex (default 600)
 //   grokTimeoutSecs: number,              // optional wall-clock backstop for grok (default 600); grok ALSO honours grokMaxTurns
+//   grokWebSearch: boolean,               // optional — true enables grok's web search (default false = hermetic, like the other providers)
 //   attempts: [ {                         // one per attempt, length N
 //      label: 'candidate-1',
 //      dispatch: 'anthropic' | 'glm' | 'local' | 'codex' | 'minimax' | 'grok',
@@ -153,7 +154,8 @@ const codexTimeout = Number(A.codexTimeoutSecs) > 0 ? Math.floor(Number(A.codexT
 const grokMaxTurns = Number(A.grokMaxTurns) > 0 ? Math.floor(Number(A.grokMaxTurns)) : glmMaxTurns
 const grokTimeout = Number(A.grokTimeoutSecs) > 0 ? Math.floor(Number(A.grokTimeoutSecs)) : 600
 const cmdHead = (ws, b) => `mkdir -p ${q(ws)} && cd ${q(ws)} && printf '%s' ${q(b)} > _brief.txt`
-const runnerCmd = (runner, flag, ws, b, maxTurns, timeout = attemptTimeout) => `${cmdHead(ws, b)} && FL_MAX_TURNS=${maxTurns} FL_TIMEOUT_SECS=${timeout} bash ${q(runner)} ${flag}`
+// envExtra (optional): extra `KEY=VAL ` env assignments prepended to the runner call (e.g. grok's FL_GROK_WEB=1).
+const runnerCmd = (runner, flag, ws, b, maxTurns, timeout = attemptTimeout, envExtra = '') => `${cmdHead(ws, b)} && ${envExtra}FL_MAX_TURNS=${maxTurns} FL_TIMEOUT_SECS=${timeout} bash ${q(runner)} ${flag}`
 // Codex reuses cmdHead + the runner but overrides the wall-clock with codexTimeout (no FL_MAX_TURNS:
 // codex has no turn cap, and codex-run.sh ignores it).
 const codexRunnerCmd = (runner, flag, ws, b) => `${cmdHead(ws, b)} && FL_TIMEOUT_SECS=${codexTimeout} bash ${q(runner)} ${flag}`
@@ -305,7 +307,11 @@ function dispatch(a, ws, guidance, phaseTitle) {
     }
     // Grok uses the STANDARD runnerCmd (both FL_MAX_TURNS and FL_TIMEOUT_SECS), NOT codexRunnerCmd:
     // unlike codex, grok HAS --max-turns, so it gets both guards like glm/minimax. (Key structural delta.)
-    prompt = RUNVERBATIM(runnerCmd(grokRunner, flag, ws, b, grokMaxTurns, grokTimeout), ws, '_grok_run.log')
+    // Web search is OFF by default (hermetic/fair, like the other runner-based providers); args.grokWebSearch:true
+    // sets FL_GROK_WEB=1 so the runner enables it — for tasks needing LIVE web at attempt time (a URL/doc/link
+    // the shared contextFiles bundle cannot pre-provide).
+    const grokEnv = A.grokWebSearch === true ? 'FL_GROK_WEB=1 ' : ''
+    prompt = RUNVERBATIM(runnerCmd(grokRunner, flag, ws, b, grokMaxTurns, grokTimeout, grokEnv), ws, '_grok_run.log')
   } else {
     // Native Anthropic attempt. NOTE: the workflow agent() primitive exposes no turn/time cap,
     // so (unlike GLM/local) these are bounded only by the single-pass brief. If a future agent()

@@ -22,10 +22,17 @@ command -v grok >/dev/null 2>&1 || { echo "FARNSWORTH-GROK-ERROR grok CLI not fo
 # Record which mode was used (for the session-expiry diagnosis the OAuth path needs); does NOT gate.
 if [ -n "${XAI_API_KEY:-}" ]; then AUTHMODE="env-key"; else AUTHMODE="oauth-session"; fi
 
+# Web search is OFF by default — hermetic, and consistent with the other runner-based providers
+# (glm/minimax/local restrict --allowedTools to Bash/Read/Write/Edit; codex sets mcp_servers={}), so a
+# MIXED blind review stays fair (grok gets no live-web edge the others structurally lack) and reproducible.
+# Opt IN per run with FL_GROK_WEB=1 (the workflow's grokWebSearch:true) for tasks that need LIVE web at
+# attempt time (validate a URL/doc, check a link) — something the shared contextFiles bundle cannot pre-provide.
+if [ "${FL_GROK_WEB:-0}" = "1" ]; then WEBFLAG=""; WEBMODE="on"; else WEBFLAG="--disable-web-search"; WEBMODE="off"; fi
+
 # Write the PROVENANCE marker UNCONDITIONALLY, up front: a missing log at this path proves the runner
 # never ran (a native-solve spoof or refusal) and must fail closed (P=0) downstream. Column-0 + provider-
 # specific token so the staging validator's '^FARNSWORTH-GROK-' grep is mention-proof.
-echo "FARNSWORTH-GROK-PROVENANCE endpoint=cli-chat-proxy.grok.com auth=${AUTHMODE} flag=${FLAG} max-turns=${MAXTURNS} timeout=${TIMEOUT}s" >> "$LOG"
+echo "FARNSWORTH-GROK-PROVENANCE endpoint=cli-chat-proxy.grok.com auth=${AUTHMODE} web=${WEBMODE} flag=${FLAG} max-turns=${MAXTURNS} timeout=${TIMEOUT}s" >> "$LOG"
 
 # Headless grok policy (every flag CONFIRMED present in `grok --help`):
 #   -p "<brief>"        : single non-interactive invocation; runs agentically (tools) under --max-turns then exits.
@@ -34,7 +41,16 @@ echo "FARNSWORTH-GROK-PROVENANCE endpoint=cli-chat-proxy.grok.com auth=${AUTHMOD
 #                         codex approval_policy="never" / claude --permission-mode acceptEdits).
 #   --max-turns N       : PRIMARY iteration guard. Grok HAS this (codex does not) — the deliverable written
 #                         before the cap is preserved.
-#   --disable-web-search: hermetic attempts (no network reads skewing diversity); also quiets web/MCP tools.
+#   $WEBFLAG            : web search. OFF by default (--disable-web-search) for a hermetic, fair blind review
+#                         consistent with the other runner-based providers; set FL_GROK_WEB=1 to enable it.
+#   --no-subagents      : an FL attempt is ONE independent piece of work; grok-build can otherwise spawn up to
+#                         8 parallel sub-agents (an internal swarm), which both fights FL's "N independent
+#                         attempts" model AND is the main variable-latency surface (a fanned-out run can
+#                         balloon to minutes on a non-trivial task; a single agent loop stays ~15-30s).
+#                         NOTE: we deliberately do NOT pass --no-plan (it toggles grok's read-only plan
+#                         PERMISSION mode, not the model's reasoning; FL runs planning tasks — a measured A/B
+#                         showed it gave NO speed benefit yet thinner plans) nor --no-memory (cross-session
+#                         memory is the opt-in --experimental-memory feature, OFF by default → --no-memory is a no-op).
 #   --no-alt-screen     : run INLINE — no fullscreen TUI takeover (mandatory under the `>> LOG` redirect).
 #   --no-auto-update    : skip the background update check (CI gotcha) so a script run never stalls/mutates.
 #   --cwd "$PWD"        : scope the agent's working root to this attempt workspace (analog of codex -C "$PWD").
@@ -51,7 +67,8 @@ perl -e '
 ' "$TIMEOUT" grok -p "$(cat _brief.txt)" $FLAG \
     --always-approve \
     --max-turns "$MAXTURNS" \
-    --disable-web-search \
+    $WEBFLAG \
+    --no-subagents \
     --no-alt-screen \
     --no-auto-update \
     --cwd "$PWD" </dev/null >> "$LOG" 2>&1

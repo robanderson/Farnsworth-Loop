@@ -656,7 +656,8 @@ function dispatchGrok(target, timeoutSecs, cfg) {
     '--output-format', 'json',
     '--no-alt-screen',
     '--no-auto-update',
-    '--disable-web-search',
+    '--disable-web-search',  // benchmark = deterministic throughput, so always hermetic (no grokWebSearch knob here)
+    '--no-subagents',        // pure single-turn generation: never fan out sub-agents (bounds latency)
   ]
   const argv = perlAlarmArgv(timeoutSecs, ['grok', ...grokArgs])
   const t0 = Date.now()
