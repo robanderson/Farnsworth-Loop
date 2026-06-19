@@ -222,5 +222,76 @@ out="$( cd "$repo" && printf '%s\n' "sleep 30" "touch $snr" | FL_VERIFY_CMD_TIME
                || bad "T6: command after a timed-out command still ran (fail-fast broken)"
 rm -rf "$T6"
 
+# ---------------------------------------------------------------------------
+# V) detect_verify [<dir>]: detect against an explicit target tree (the winner's
+#    worktree, plan §9.2). Hermetic: only package.json + Makefile are exercised
+#    (toolchain-FREE in detect_verify); pytest/ruff/cargo/go are command-v-gated
+#    and intentionally not asserted (host-dependent).
+#
+#    dv <dir-arg...> -> runs `detect_verify <dir-arg...>` from a NEUTRAL cwd
+#    (an empty dir with NO config files), so the only signal is the arg. Captures
+#    stdout to $DV_OUT (stderr discarded so incidental output can't taint the
+#    load-bearing equality), echoes rc.
+# ---------------------------------------------------------------------------
+DV_OUT=""
+NEUTRAL="$(mktemp -d)"   # an empty dir: no package.json/Makefile/etc. anywhere
+dv() {
+  local out rc
+  out="$( cd "$NEUTRAL" && bash "$FLGIT" detect_verify "$@" 2>/dev/null )"
+  rc=$?
+  DV_OUT="$out"
+  return $rc
+}
+
+# A target tree with a multi-config fixture: package.json (build+test scripts)
+# and a Makefile (test + check targets). No toolchain needed for either.
+VT="$(mktemp -d)"
+printf '{"scripts":{"build":"true","test":"true"}}\n' > "$VT/package.json"
+printf 'test:\n\ttrue\ncheck:\n\ttrue\n'              > "$VT/Makefile"
+
+# V1: detect against the target dir finds that dir's package.json + Makefile.
+dv "$VT"; rc=$?
+check "V1: target dir detected -> rc 0" "$rc" "0"
+case "$DV_OUT" in *"npm run build --if-present"*) ok "V1: emits npm build for target";; *) bad "V1: missing npm build";; esac
+case "$DV_OUT" in *"npm run test --if-present"*)  ok "V1: emits npm test for target";;  *) bad "V1: missing npm test";;  esac
+case "$DV_OUT" in *"make test"*)  ok "V1: emits make test for target";;  *) bad "V1: missing make test";;  esac
+case "$DV_OUT" in *"make check"*) ok "V1: emits make check for target";; *) bad "V1: missing make check";; esac
+
+# V2: a target dir with NOTHING -> rc nonzero AND empty output (the §9.2
+#     "could not verify -> draft needs-human" path).
+EMPTY="$(mktemp -d)"
+dv "$EMPTY"; rc=$?
+[ "$rc" -ne 0 ] && ok "V2: empty target -> rc nonzero ($rc)" || bad "V2: empty target should be nonzero"
+[ -z "$DV_OUT" ] && ok "V2: empty target -> no commands printed" || bad "V2: empty target printed '$DV_OUT'"
+
+# V3: BACKWARD-COMPAT, proven OBSERVABLY (not asserted). On a multi-config tree,
+#     the no-arg form (cwd-relative) must produce BYTE-IDENTICAL output+rc to the
+#     explicit '.' form AND to the absolute-dir form. Run all three over the SAME
+#     fixture and compare. (A bare relative '.' default that diverges from the
+#     absolute path is exactly the partial-redirect bug this catches.)
+noarg="$( cd "$VT" && bash "$FLGIT" detect_verify         2>/dev/null )"; rc_n=$?
+dotarg="$( cd "$VT" && bash "$FLGIT" detect_verify .       2>/dev/null )"; rc_d=$?
+absarg="$( cd "$NEUTRAL" && bash "$FLGIT" detect_verify "$VT" 2>/dev/null )"; rc_a=$?
+check "V3: no-arg rc == '.'-arg rc"        "$rc_n" "$rc_d"
+check "V3: no-arg rc == abs-dir-arg rc"    "$rc_n" "$rc_a"
+[ "$noarg" = "$dotarg" ] && ok "V3: no-arg output == '.'-arg output (byte-identical)" \
+                         || bad "V3: no-arg output diverged from '.'-arg output"
+[ "$noarg" = "$absarg" ] && ok "V3: no-arg output == abs-dir-arg output (byte-identical)" \
+                         || bad "V3: no-arg output diverged from abs-dir-arg output"
+
+# V4: COMPETING-SIGNALS guard. Put DIFFERENT configs in the cwd AND in the
+#     target, then detect with the target arg from inside the cwd: detection must
+#     follow the TARGET, never the cwd. A target-only/empty-cwd fixture cannot
+#     catch a partial-redirect bug (where one probe still reads the cwd); this
+#     one does. cwd has ONLY a Makefile(test:); target has ONLY package.json(lint).
+CWDONLY="$(mktemp -d)"; printf 'test:\n\ttrue\n'                 > "$CWDONLY/Makefile"
+TGTONLY="$(mktemp -d)"; printf '{"scripts":{"lint":"true"}}\n'  > "$TGTONLY/package.json"
+comp="$( cd "$CWDONLY" && bash "$FLGIT" detect_verify "$TGTONLY" 2>/dev/null )"; rc_c=$?
+check "V4: competing-signals detect -> rc 0" "$rc_c" "0"
+case "$comp" in *"npm run lint --if-present"*) ok "V4: followed TARGET (npm lint present)";;       *) bad "V4: did NOT detect target's package.json";; esac
+case "$comp" in *"make test"*) bad "V4: LEAKED cwd signal (saw cwd Makefile 'make test')";;        *) ok "V4: did NOT leak cwd Makefile";; esac
+
+rm -rf "$NEUTRAL" "$VT" "$EMPTY" "$CWDONLY" "$TGTONLY"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]

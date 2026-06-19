@@ -87,6 +87,7 @@ Branch naming:  FL-<loop>-<random7>   (NOTE: this OVERRIDES your global 'rob/' b
 Kill switch:    create a file  <runDir>/STOP  at any time to stop the chain before the next loop
 Projected cost: ~Z × (N attempts + 1-2 Opus judges + 1 Opus implementer + verify)
                 ≈ <z> × (<n> attempts + judges + implementer + verify). (Cost is not the constraint; this is for awareness. Real implementer + verify spend is included.)
+                Repo-anchored mode adds, per loop, a nested security audit: +2 audit attempts (opus, glm-5.2) + 1 Opus reconciler, plus up to 1 runner-up re-gate (verify + audit) on a gate failure. Within the grand-loop envelope; included for awareness.
 
 To proceed, re-type the number of grand loops: ___
 ```
@@ -215,7 +216,7 @@ Reached only after a successful Phase 0b authorization. The orchestration home i
 
 The driver calls exactly these `fl-git.sh` functions: `fl_branch`, `preflight`, `detect_verify`, `run_verify`, `commit_and_push`, `open_pr`, `open_pr_needs_human`, `fl_compose_body`, `fl_append_verify_tail`, `stop_file_check`, `done_marker`, `fl_detect_orphan_branch`.
 
-Setup once: `base` = the current branch (from preflight). `ledger = []` (cross-loop memory). Detect verify commands once: `bash <plugin-root>/bin/fl-git.sh detect_verify > <runDir>/_verify_cmds.txt` (empty file ⇒ unverifiable ⇒ every PR will be draft + needs-human).
+Setup once: `base` = the current branch (from preflight). `ledger = []` (cross-loop memory). Detect a *base-tree* verify set once for preflight context: `bash <plugin-root>/bin/fl-git.sh detect_verify > <runDir>/_verify_cmds.txt` (empty file ⇒ base tree is unverifiable). **In repo-anchored mode the AUTHORITATIVE verify set is RE-FROZEN per loop from the WINNER'S WORKTREE at gate time** (the winner may have added a test suite the base lacked — plan §9.2): `bash <plugin-root>/bin/fl-git.sh detect_verify "<winner-worktree>" > <runDir>/loop-<k>/_verify_cmds.txt`, then pipe THAT file into `run_verify`. An empty per-loop file ⇒ unverifiable ⇒ that loop's PR is draft + needs-human. (`run_verify` still never re-detects on a mutated tree; we freeze once, from the winner's tree, and pipe it in.)
 
 **For each loop `k` in 1..Z:**
 
@@ -225,12 +226,42 @@ Setup once: `base` = the current branch (from preflight). `ledger = []` (cross-l
 4. **Run the tournament (UNCHANGED engine) via the Workflow tool.** Invoke `workflows/tournament.mjs` exactly as in Phase 2, with `runDir: "<runDir>/loop-<k>"` and the task **augmented with the cross-loop ledger** (see below). It returns the structured mapping/ranking; **pick the winning candidate's deliverable path** (its proposal artifact) from `final.mapping`/`round1.mapping`. The proposal must be a concrete, file-level change description (Phase 2 already briefs attempts to produce that).
 5. **Implement the winner via the Task tool.** Spawn `Task` with agent `farnsworth-loop:farnsworth-implementer` (model Opus), cwd = `repoRoot`, passing `{ proposal: <winnerProposalPath>, repoRoot: <base repo root>, branch: "$BR", base: "<base>" }`. It makes the smallest coherent change on `$BR`, leaves changes **UNSTAGED**, and returns a 3-6 line summary (its `FL-NOTES.md` captures any ambiguity). Keep that summary as `WINNER_SUMMARY`.
 6. **Verify (fail-closed).** `bash <plugin-root>/bin/fl-git.sh run_verify < <runDir>/_verify_cmds.txt > <runDir>/loop-<k>/_verify.log 2>&1`. rc 0 = pass; rc 1 = a command failed (fail-fast, never masked) **or the verify-time-RCE gate refused** (issue #21: the implementer's changes touch a verify-executable file like `Makefile`/`package.json`/`conftest.py` whose body would be executed — those go to human review, never auto-run); rc 2 = no (frozen) commands, run_verify does NOT re-detect on the mutated tree. `run_verify` also drops provider secrets from the verify env and runs commands as argv (no `eval`). Treat rc 1 **and** rc 2 as "verify did not pass" for PR routing below.
+
+   **Repo-anchored gate (P3).** In repo-anchored mode the winner is an UNTRUSTED model's commit, so step 6's `run_verify` is no longer sufficient on its own — it is paired with the security audit (7-AUDIT) and routed by the bounded fallback (7-FALLBACK). Run `run_verify` against the WINNER'S WORKTREE with the per-loop frozen set: `bash <plugin-root>/bin/fl-git.sh run_verify < <runDir>/loop-<k>/_verify_cmds.txt > <runDir>/loop-<k>/_verify.log 2>&1`. **Disambiguate the overloaded rc 1**: rc 1 is EITHER a genuine command failure OR the `verify_safe_diff` safety REFUSAL (the winner touched a verify-executable file like `package.json`/`Makefile`/`conftest.py`/a test file). Tell them apart by a STABLE log marker, not by "all nonzero alike" — grep `_verify.log` for `FL-VERIFY-REFUSE-UNSAFE` (emitted by `verify_safe_diff`) or `refusing to run verify on implementer-authored executable changes` (emitted by `run_verify`'s gate branch). If that marker is present, this is a **config-refusal** (route per 7-FALLBACK's config rule); otherwise rc 1/124/2 is a **verify failure** (route per 7-FALLBACK's runner-up rule). Do NOT proceed to commit/PR (existing steps 7–9) until 7-FALLBACK has selected an adopted candidate or decided needs-human+HALT.
 7. **Commit + push.** `bash <plugin-root>/bin/fl-git.sh commit_and_push "$BR" "<base>" "FL loop <k>: <WINNER_SUMMARY first line>"`. It refuses unless HEAD is `$BR` and the diff is non-empty, then pushes `-u` to the resolved remote. Propagate any nonzero rc (stop with the message).
 8. **Open the PR.** Compose a body file in a portable temp file, then:
    - **verify passed (rc 0):** `BODY=$(mktemp); bash <plugin-root>/bin/fl-git.sh fl_compose_body "$BODY" <<'EOF' ...PR template (Task, tournament, winner, topology, verify result, ledger siblings, run dir, WINNER_SUMMARY)... EOF`; `bash <plugin-root>/bin/fl-git.sh open_pr "$BR" "<base>" "FL loop <k>: <summary>" "$BODY"`.
    - **verify failed/unverifiable (rc 1 or 2):** compose the same body, then `bash <plugin-root>/bin/fl-git.sh fl_append_verify_tail "$BODY" "<runDir>/loop-<k>/_verify.log"` (caps the output so a huge log can't blow the PR limit), then `bash <plugin-root>/bin/fl-git.sh open_pr_needs_human "$BR" "<base>" "[needs-human] FL loop <k>" "$BODY"` (draft + `needs-human`, with a label-less draft fallback). **Then HALT the whole chain** (fail-closed default; STACK always halts). NEVER auto-merge, ever.
 9. **DONE marker (only after the PR is created).** `bash <plugin-root>/bin/fl-git.sh done_marker "<runDir>" <k> write`. A re-run will now skip loop k.
 10. **Append to the ledger:** `{ loop: k, winner_summary: <WINNER_SUMMARY>, pr_url: <url> }`.
+
+**7-AUDIT — nested @@FL security audit of the winner's diff (fail-closed, run AFTER un-blinding).** The winner is now an untrusted actor's mergeable commit; this audit is the ONLY security review before a human sees the change. Run it as a **SIBLING `Workflow(tournament.mjs)` call** (NOT nested — `tournament.mjs` is unchanged and the driver is the main agent, so the one-level limit does not apply), supplying `args.assignment` directly to bypass the interactive gate exactly as the main tournament does in a grand loop:
+
+- `task` = `"Security-audit this diff. Report every vulnerability, injected-execution path, credential/secret risk, and supply-chain/build-config risk you find, each with a severity (low|medium|high|critical) and concrete evidence (file + why). This is the only safety review before a human sees this change; if unsure, flag it."`
+- `assignment` = `[opus, glm-5.2]` (the documented Top-Mixed N=2 case; two independent auditors).
+- `contextFiles` = `[ <winner's candidate.diff> ]` — the EXACT gated diff (the same artifact the blind judge ranked), bundled once via the existing `contextFiles` path so both auditors read the identical bytes.
+- `runDir` = `<runDir>/loop-<k>/_audit`.
+
+**Synthesis is UNION-OF-FINDINGS via a DEDICATED Opus reconciler — NOT the competitive judge.** The competitive ranker picks one auditor and discards the other, which would DROP real findings (if Opus catches an injection and GLM catches a secret leak, ranking keeps one). So after both audits return, spawn ONE Opus `Task` (the *reconciler*, explicitly not the ranker) with this prompt and schema:
+
+> You are a security-audit RECONCILER, not a judge. You are given N independent security audits of ONE code diff. Do NOT pick a "best" audit and do NOT rank the auditors. Instead, produce the UNION of their findings: merge all findings, de-duplicate findings that describe the same underlying issue (same file + same root cause), and for each merged finding assign the MAXIMUM severity any auditor gave it. Then decide one overall verdict. Output ONLY a single JSON object, no prose, exactly this schema:
+> ```json
+> { "findings": [ { "title": "<short>", "severity": "low|medium|high|critical", "evidence": "<file + why>" } ],
+>   "verdict": "PASS" | "FAIL",
+>   "reason": "<one line>" }
+> ```
+> RULES: verdict MUST be "FAIL" if ANY finding has severity "high" or "critical"; otherwise "PASS". If you cannot parse an input audit or are unsure, INCLUDE a finding for it at severity "high" (fail-closed). Emit valid JSON only.
+>
+> **Fail-closed wiring:** the audit's `verdict` is **ANDed** with `run_verify` to form the gate result. `verdict:"FAIL"` ⇒ **gate FAIL**. An audit that ERRORS (a sibling-Workflow `__failed`, a reconciler that errors, or reconciler output that does not parse as the schema above) is ALSO a **gate FAIL** — never "audit unavailable, proceed". Carry the reconciler's `findings` forward verbatim for the PR body (transparency).
+
+**7-FALLBACK — bounded gate-failure fallback (plan §9.2).** Define `gate(candidate)` = (`run_verify` against that candidate's worktree returns rc 0) **AND** (7-AUDIT on that candidate's diff returns `verdict:"PASS"` with no audit error). Then, after un-blinding, using the final ranking from Phase 5/3:
+
+1. **Gate ranked #1.** If `gate(#1)` passes → adopt #1 (proceed to existing steps 7–9; in repo-anchored mode adoption is the P2 `adopt_winner_branch` path). Done.
+2. **#1 failed → bounded fall to ranked #2.** EXCEPTION — if #1's failure was the **config-refusal** (the `FL-VERIFY-REFUSE-UNSAFE` marker from step 6, i.e. the winner touched verify-executable config): do NOT try the runner-up (the runner-up will almost certainly touch config too — burning the fallback is pointless). Skip straight to step 4 (needs-human + HALT) with the §8.3 explanatory note ("this change edits executable build/test config; human review is required under the new model"). Otherwise (a genuine verify failure OR an audit FAIL/error), gate ranked **#2** the same way.
+3. **#2 passed → adopt #2 and ANNOTATE.** Adopt #2 and add a clear PR note: "ranked #1 (<model, un-blinded>) FAILED the validation gate (<verify-fail | audit-FAIL: \<top finding\>>); adopted ranked #2 (<model>) which passed." Full transparency. Done.
+4. **#2 also failed, OR there is no #2, OR config-refusal:** **needs-human + HALT.** Compose a draft PR off the #1 winner's branch: `bash <plugin-root>/bin/fl-git.sh fl_append_verify_tail "$BODY" "<runDir>/loop-<k>/_verify.log"` for the verify tail, plus the reconciler `findings` JSON, then `open_pr_needs_human` (draft + `needs-human`, label-less fallback as today). Then **HALT the whole chain** (fail-closed; matches the existing step-8 HALT contract). NEVER auto-merge.
+
+The fallback is **bounded to depth 1** (try at most #1 then #2). Falling further would silently merge a low-ranked candidate just because it passed, defeating the tournament's quality signal — so beyond #2 it is always needs-human + HALT.
 
 **Cross-loop ledger (FAN memory).** Because every FAN loop re-attacks the same `base`, augment loop k's task with what prior loops already proposed so loop k explores something different:
 

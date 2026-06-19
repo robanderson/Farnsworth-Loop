@@ -19,7 +19,7 @@
 #   fl_suffix                              -> 7-char [0-9a-z]
 #   fl_branch <loop>                       -> "FL-<loop>-<suffix>"
 #   preflight <base> <runDir>              -> collects ALL failures; rc!=0 on any
-#   detect_verify                          -> prints detected verify commands (one/line); rc 0 if any
+#   detect_verify [<dir>]                  -> prints detected verify commands (one/line); rc 0 if any; <dir> default '.'
 #   fl_run_with_timeout <secs> -- <cmd...> -> run argv with a wall-clock watchdog; 124 == timed out
 #   run_verify                             -> reads commands on stdin or detects; fail-FAST; real rc
 #   commit_and_push <branch> <base> <msg>  -> commit (guarded) + push -u; rc propagated
@@ -58,22 +58,33 @@ fl_branch() {
 }
 
 # --------------------------------------------------------------------------
-# detect_verify — scan the repo and print the verify commands we WOULD run,
-# one per line (the driver runs them later via run_verify). Records, does not
-# run. Prints nothing and returns rc 1 if no verify commands can be detected
-# (the SKILL then opens a draft needs-human PR — we could not verify).
+# detect_verify [<dir>] — scan a repo tree and print the verify commands we
+# WOULD run, one per line (the driver runs them later via run_verify). Records,
+# does not run. Prints nothing and returns rc 1 if no verify commands can be
+# detected (the SKILL then opens a draft needs-human PR — we could not verify).
+#
+# <dir> (optional, default '.') is the tree to DETECT against — so the driver can
+# freeze the command set from the WINNER'S WORKTREE at gate time (plan §9.2),
+# which may have added a test suite the base tree lacked. Only the FILE-PRESENCE
+# and CONTENT-GREP probes follow <dir>; tool-availability checks (command -v /
+# `python3 -c import pytest`) and the EMITTED command strings are unchanged —
+# they are host/run-time properties, evaluated later by run_verify FROM INSIDE
+# the tree, so they must not be path-qualified. With no arg, behavior is
+# byte-identical to before ('.' prefix is observationally inert for -f and for a
+# single-named-file grep).
 #
 # Order is fail-fast-friendly: build/typecheck before test before lint.
 # --------------------------------------------------------------------------
 detect_verify() {
+  local d="${1:-.}"
   local found=0
 
   # Node / JS: package.json scripts. Only emit scripts that actually exist.
-  if [ -f package.json ]; then
+  if [ -f "$d/package.json" ]; then
     local has
     for s in build typecheck test lint; do
       # crude but dependency-free: does a "<s>": key exist in scripts?
-      if grep -Eq "\"${s}\"[[:space:]]*:" package.json; then
+      if grep -Eq "\"${s}\"[[:space:]]*:" "$d/package.json"; then
         echo "npm run ${s} --if-present"
         found=1
       fi
@@ -81,7 +92,7 @@ detect_verify() {
   fi
 
   # Python: pyproject.toml + pytest / ruff.
-  if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f tox.ini ]; then
+  if [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.cfg" ] || [ -f "$d/tox.ini" ]; then
     if command -v ruff >/dev/null 2>&1; then echo "ruff check ."; found=1; fi
     if command -v pytest >/dev/null 2>&1; then echo "pytest -q"; found=1
     elif command -v python3 >/dev/null 2>&1 && python3 -c 'import pytest' >/dev/null 2>&1; then
@@ -90,21 +101,21 @@ detect_verify() {
   fi
 
   # Makefile: test / check targets.
-  if [ -f Makefile ] || [ -f makefile ]; then
-    local mf="Makefile"; [ -f Makefile ] || mf="makefile"
+  if [ -f "$d/Makefile" ] || [ -f "$d/makefile" ]; then
+    local mf="$d/Makefile"; [ -f "$d/Makefile" ] || mf="$d/makefile"
     if grep -Eq '^test[[:space:]]*:' "$mf"; then echo "make test"; found=1; fi
     if grep -Eq '^check[[:space:]]*:' "$mf"; then echo "make check"; found=1; fi
   fi
 
   # Rust: cargo.
-  if [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
+  if [ -f "$d/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
     echo "cargo build"
     echo "cargo test"
     found=1
   fi
 
   # Go.
-  if [ -f go.mod ] && command -v go >/dev/null 2>&1; then
+  if [ -f "$d/go.mod" ] && command -v go >/dev/null 2>&1; then
     echo "go build ./..."
     echo "go test ./..."
     found=1
@@ -643,7 +654,7 @@ Functions:
   fl_suffix
   fl_branch <loop>
   preflight <base> <runDir>
-  detect_verify
+  detect_verify [<dir>]           (detect against <dir>, default '.'; e.g. a winner worktree)
   verify_safe_diff                (rc 0 safe, rc 1 implementer touched executable file)
   fl_run_with_timeout <secs> -- <cmd...>   (run argv with a wall-clock watchdog; rc 124 == timed out)
   run_verify                      (FROZEN commands on stdin one/line; gated + secrets dropped)
