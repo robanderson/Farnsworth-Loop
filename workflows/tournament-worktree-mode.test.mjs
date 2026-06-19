@@ -7,6 +7,7 @@
 //   (2) repoMode:true brief tells workers to edit the checkout, not propose, and forbids git/tests.
 //   (3) repoMode:true staging captures `git diff <base> HEAD` and preserves FLV/provenance fail-closed flow.
 //   (4) worktree setup is gated and uses the blind candidate label, never displayModel.
+//   (5) Phase 5 enrichment is repoMode-only, fixed-grammar blind, in-section, and timeout-wrapped.
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +37,7 @@ const briefSrc = extractFn(SRC, 'brief')
 const stageSrc = extractFn(SRC, 'stageAndValidate')
 const buildSrc = extractFn(SRC, 'buildWorktrees')
 const setupSrc = extractFn(SRC, 'worktreeSetupShell')
+const enrichSrc = extractFn(SRC, 'enrichBlindPool')
 
 // (1) Legacy snippets: these exact strings are the current repoMode:false behavior.
 check('(legacy) repoMode flag read from args',
@@ -52,6 +54,10 @@ check('(legacy) file-staging copy snippet unchanged',
   stageSrc.includes('mkdir -p ${q(dest)}; cp -R ${q(c.ws)}/. ${q(dest)}/ 2>/dev/null;'))
 check('(legacy) file-staging pool concat snippet unchanged',
   stageSrc.includes('find ${q(dest)} -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null'))
+check('(legacy) round-1 judge call unchanged',
+  SRC.includes("const review = await judge('reviewer', blind1, mode === 'two', `${runDir}/review-1/_pool.md`,\n  mode === 'two' ? REVIEW_SCHEMA : RANK_SCHEMA, 'Review', 'review')"))
+check('(legacy) final judge call unchanged',
+  SRC.includes("const finalRank = await judge('final ranker', blindF, false, `${runDir}/review-final/_pool.md`, RANK_SCHEMA, 'Final rank', 'final-rank')"))
 
 // (2) Repo-anchored worker brief: apply real changes, no proposals, no tests, no git.
 check('(brief) repoMode branch exists',
@@ -109,6 +115,53 @@ check('(worktree) harness commit uses fixed identity',
   SRC.includes('GIT_COMMITTER_NAME=farnsworth GIT_COMMITTER_EMAIL=farnsworth@localhost'))
 check('(worktree) base date cached once',
   SRC.includes('dateFile=${q(dateFile)}') && SRC.includes('git show -s --format=%cI "$baseSha"'))
+
+// (5a) repoMode:false: no enrichment agent or pool rewrite is reachable.
+check('(enrich) helper is hard-gated when repoMode is false',
+  enrichSrc.includes('if (!repoMode || !list.length) return'))
+check('(enrich) round-1 call is repoMode-gated and after staging',
+  SRC.indexOf("const staged1 = await stageAndValidate") < SRC.indexOf("if (repoMode) await enrichBlindPool(blind1") &&
+  SRC.indexOf("if (repoMode) await enrichBlindPool(blind1") < SRC.indexOf("const review = await judge('reviewer'"))
+check('(enrich) final call is repoMode-gated and after staging',
+  SRC.indexOf("const stagedF = await stageAndValidate") < SRC.indexOf("if (repoMode) await enrichBlindPool(blindF") &&
+  SRC.indexOf("if (repoMode) await enrichBlindPool(blindF") < SRC.indexOf("const finalRank = await judge('final ranker'"))
+
+// (5b) live worktree recovery and carryover reuse: never test the stripped review dir twice.
+check('(enrich) staging preserves live worktree only in repoMode',
+  stageSrc.includes('? { ...c, liveWs: c.ws, ws: `${reviewDir}/${c.blind}`, valid, failReason }') &&
+  stageSrc.includes(': { ...c, ws: `${reviewDir}/${c.blind}`, valid, failReason }'))
+check('(enrich) checks change into live candidate worktree',
+  enrichSrc.includes('const ws = c.liveWs') && enrichSrc.includes('(cd "$ws" && bash "$helper" fl_run_with_timeout'))
+check('(enrich) carryover reuses strict prior summary',
+  enrichSrc.includes('if (c.carriedOver)') && enrichSrc.includes('c.enrichmentSource') &&
+  SRC.includes('enrichmentSource: `${champ.ws}/enrichment.txt`'))
+
+// (5c) blindness: fixed grammar only, no identity, command text, logs, paths, or durations in pool.
+check('(enrich) summary grammar is anchored and numeric/boolean only',
+  SRC.includes("const ENRICHMENT_GRAMMAR = '^automated_checks: enrichment_ok=[01]") &&
+  SRC.includes("lint_timeout=[0-9]+$'"))
+check('(enrich) no model/provider fields used',
+  !enrichSrc.includes('displayModel') && !enrichSrc.includes('dispatch') && !enrichSrc.includes('engineLogPath'))
+check('(enrich) raw check output is discarded',
+  enrichSrc.includes('>/dev/null 2>&1') && !enrichSrc.includes('cat "$commands"'))
+check('(enrich) strict summary is appended inside each candidate section',
+  enrichSrc.includes("printf '===== Candidate %s =====\\\\n'") &&
+  enrichSrc.includes("printf '\\\\n--- Automated checks ---\\\\n'") &&
+  enrichSrc.includes('candidate.diff') && enrichSrc.includes('enrichment.txt'))
+check('(enrich) pool replacement is atomic',
+  enrichSrc.includes('`${pool}.enriched`') && enrichSrc.includes('mv -f "$tmp" ${q(pool)}'))
+
+// (5d) detector, every detected verify command, and every lint command use the landed timeout helper.
+check('(enrich) detect_verify targets candidate worktree and is timeout-wrapped',
+  enrichSrc.includes('fl_run_with_timeout "$timeout" -- bash "$helper" detect_verify "$ws"'))
+check('(enrich) verify commands are argv-split, never evaled, and timeout-wrapped',
+  enrichSrc.includes('read -r -a words <<< "$cmd"') &&
+  enrichSrc.includes('fl_run_with_timeout "$timeout" -- "\\${words[@]}"') &&
+  !enrichSrc.includes('eval '))
+check('(enrich) lint commands share the same timeout-wrapped execution site',
+  (enrichSrc.match(/fl_run_with_timeout \"\$timeout\" -- \"\\\$\{words\[@\]\}\"/g) || []).length === 2)
+check('(enrich) timeout is the canonical verify timeout default',
+  enrichSrc.includes('timeout=\\${FL_VERIFY_CMD_TIMEOUT:-600}'))
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nAll checks passed')
 process.exit(failed ? 1 : 0)
