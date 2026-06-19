@@ -90,6 +90,23 @@ const NORMALISER = {
   'minimax-m3': { model: 'minimax-m3', dispatch: 'minimax' },
   'minimax m3': { model: 'minimax-m3', dispatch: 'minimax' },
   'm3':         { model: 'minimax-m3', dispatch: 'minimax' },
+
+  // Grok (xAI, via the `grok` headless CLI). TWO variants on a -m model axis.
+  // Bare 'grok' defaults to grok-build (the operator's '/model grok' = the grok-code build) — deliberately
+  // NOT the CLI's config default (grok-composer-2.5-fast). The Composer variant needs an explicit spelling.
+  'grok':                   { model: 'grok-build',             dispatch: 'grok' },
+  'grok build':             { model: 'grok-build',             dispatch: 'grok' },
+  'grok-build':             { model: 'grok-build',             dispatch: 'grok' },
+  'grok code':              { model: 'grok-build',             dispatch: 'grok' }, // grok-code-fast-1 lineage
+  'grok-code':              { model: 'grok-build',             dispatch: 'grok' },
+  'grok composer':          { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'grok-composer':          { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'grok composer 2.5':      { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'grok composer 2.5 fast': { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'grok-composer-2.5-fast': { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'composer':               { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'composer 2.5':           { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
+  'composer 2.5 fast':      { model: 'grok-composer-2.5-fast', dispatch: 'grok' },
 };
 
 // Top Mixed preset pool, in remainder-priority order.
@@ -102,6 +119,10 @@ const TOP_MIXED_POOL = ['opus', 'glm-5.2', 'codex-high'];
 const MODEL_TOKEN_RX =
   '(?:' +
     'codex(?:\\s*-?\\s*(?:low|medium|high|xhigh|x-?high|extra\\s*high))?' +
+    // grok: 'grok', 'grok build', 'grok-code', 'grok composer 2.5 fast', etc. (more-specific before bare 'grok')
+    '|grok(?:\\s*-?\\s*(?:build|code|composer(?:\\s*-?\\s*2\\.5(?:\\s*-?\\s*fast)?)?))?' +
+    // bare 'composer 2.5 fast' (no 'grok' prefix) — the operator's Composer name on its own
+    '|composer(?:\\s*-?\\s*2\\.5(?:\\s*-?\\s*fast)?)?' +
     '|glm(?:\\s*-?\\s*[0-9](?:\\.[0-9])?)?(?:\\s*-?\\s*air)?' +
     '|opus|sonnet|haiku' +
     '|minimax(?:\\s*-?\\s*m3)?|m3' +
@@ -655,7 +676,7 @@ function parse(rawInput) {
       errors.push(
         'Unrecognised model token(s) in spec: ' + allUnknowns.map(u => '"' + u + '"').join(', ') +
         '. Known: opus, sonnet, haiku, glm[-5.2/5.1/4.7/4.5-air], codex[-low/medium/high/xhigh], ' +
-        'minimax-m3, or a live local id. Re-state the spec (a dropped token would silently change N).'
+        'minimax-m3, grok[-build]/grok-composer-2.5-fast, or a live local id. Re-state the spec (a dropped token would silently change N).'
       );
       assignment = null;
       nSpec = null;

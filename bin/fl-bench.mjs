@@ -164,7 +164,7 @@ const LOCAL_TIMEOUT_SECS = PROFILES.light.localTimeoutSecs   // a cold MLX weigh
 //   <provider>:<id>              -> one specific model, e.g. glm:glm-5.1, codex:codex-high,
 //                                   local:gemma-4-26b-a4b-it-8bit, anthropic:opus
 //   <id>                         -> a bare id resolved against the known/discovered catalogue
-//                                   (e.g. opus, glm-5.2, minimax-m3, codex-high, a local id)
+//                                   (e.g. opus, glm-5.2, minimax-m3, codex-high, grok-build, a local id)
 // Examples:
 //   fl-bench.mjs --models all
 //   fl-bench.mjs --models anthropic,glm
@@ -253,6 +253,13 @@ const MINIMAX_MODELS = [
   { provider: 'minimax', id: 'minimax-m3' },
 ]
 
+// Grok (xAI) — `grok` headless CLI. Auth from the OAuth session (~/.grok/auth.json) OR XAI_API_KEY
+// (CI fallback); no env key injected (mirrors codex's ~/.codex/auth.json). TWO variants on a -m model axis.
+const GROK_MODELS = [
+  { provider: 'grok', id: 'grok-build', model: 'grok-build' },
+  { provider: 'grok', id: 'grok-composer-2.5-fast', model: 'grok-composer-2.5-fast' },
+]
+
 // ----------------------------------------------------------------------------
 // Local (omlx MLX) discovery — DYNAMIC, fetched live from the omlx server.
 // Degrades gracefully: if OMLX_AUTH_TOKEN is unset or the server is down, we
@@ -285,7 +292,7 @@ function discoverLocalModels() {
 // ============================================================================
 // Catalogue assembly + selection resolution.
 // ============================================================================
-const PROVIDERS = ['anthropic', 'glm', 'local', 'codex', 'minimax']
+const PROVIDERS = ['anthropic', 'glm', 'local', 'codex', 'minimax', 'grok']
 
 function buildCatalogue() {
   const local = discoverLocalModels()
@@ -295,6 +302,7 @@ function buildCatalogue() {
     ...local.models,
     ...CODEX_MODELS,
     ...MINIMAX_MODELS,
+    ...GROK_MODELS,
   ]
   return { all, localNote: local.note }
 }
@@ -636,12 +644,66 @@ import { createRequire as _createRequire } from 'node:module'
 const _req = _createRequire(import.meta.url)
 function importSyncFallback(mod) { return _req(mod) }
 
+// Grok (xAI) — `grok` headless CLI, auth from OAuth session OR XAI_API_KEY (no env key injected). We
+// request --output-format json to read a usage/token event if present; grok's token-reporting shape is
+// UNCONFIRMED, so if no machine-readable usage is found we fall back to a chars/4 estimate of the response
+// (estimated:true) — the same single legitimate estimation codex uses. Single-turn generation (no
+// --always-approve / --max-turns): the bench measures raw decode throughput, like the other dispatch fns.
+function dispatchGrok(target, timeoutSecs, cfg) {
+  const grokArgs = [
+    '-p', cfg.prompt,
+    '-m', target.model,
+    '--output-format', 'json',
+    '--no-alt-screen',
+    '--no-auto-update',
+    '--disable-web-search',  // benchmark = deterministic throughput, so always hermetic (no grokWebSearch knob here)
+    '--no-subagents',        // pure single-turn generation: never fan out sub-agents (bounds latency)
+  ]
+  const argv = perlAlarmArgv(timeoutSecs, ['grok', ...grokArgs])
+  const t0 = Date.now()
+  const r = spawnSync('perl', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
+  const secs = (Date.now() - t0) / 1000
+  if (r.status === 124) return { ok: false, secs, tokens: 0, inputTokens: 0, estimated: false, error: `timeout after ${timeoutSecs}s` }
+  const out = (r.stdout || '')
+  // terminal model/auth/session failure -> fail closed (mirrors grok-run.sh guard)
+  if (/401 Unauthorized|403 Forbidden|invalid api key|session (expired|token expired)|requires a newer version of Grok/i.test(out + (r.stderr || ''))) {
+    return { ok: false, secs, tokens: 0, inputTokens: 0, estimated: false, error: 'grok model/auth/session failure (see grok output)' }
+  }
+  if (r.status !== 0) {
+    const tail = ((r.stderr || '') + out).trim().slice(-300)
+    return { ok: false, secs, tokens: 0, inputTokens: 0, estimated: false, error: `grok exit ${r.status}: ${tail || 'no output'}` }
+  }
+  // 1) try to find REAL token counts in --output-format json (shape UNCONFIRMED: walk common usage fields).
+  let realTokens = 0, realInput = 0, finalMsg = ''
+  for (const line of out.split(/\r?\n/)) {
+    const s = line.trim(); if (!s || s[0] !== '{') continue
+    try {
+      const o = JSON.parse(s)
+      const cand = (o && o.usage && (o.usage.output_tokens ?? o.usage.completion_tokens ?? o.usage.total_tokens)) ??
+                   (o && o.token_count && (o.token_count.output_tokens ?? o.token_count.total_tokens))
+      const n = Number(cand); if (Number.isFinite(n) && n > realTokens) realTokens = n
+      const inCand = (o && o.usage && (o.usage.input_tokens ?? o.usage.prompt_tokens)) ??
+                     (o && o.token_count && (o.token_count.input_tokens ?? o.token_count.prompt_tokens))
+      const m = Number(inCand); if (Number.isFinite(m) && m > realInput) realInput = m
+      const txt = o?.result ?? o?.response ?? o?.message ?? o?.text
+      if (typeof txt === 'string' && txt.length > finalMsg.length) finalMsg = txt
+    } catch { /* skip */ }
+  }
+  if (realTokens > 0) return { ok: true, secs, tokens: realTokens, inputTokens: realInput, estimated: false, error: '' }
+  // 2) FALLBACK: chars/4 estimate of the response text (plain stdout if the json wasn't parseable).
+  if (!finalMsg.trim()) finalMsg = out
+  if (!finalMsg.trim()) return { ok: false, secs, tokens: 0, inputTokens: realInput, estimated: false, error: 'grok produced no extractable response or token count' }
+  const est = Math.max(1, Math.round(finalMsg.length / 4))
+  return { ok: true, secs, tokens: est, inputTokens: realInput, estimated: true, error: '' }
+}
+
 const DISPATCH = {
   anthropic: dispatchAnthropic,
   glm: dispatchGlm,
   local: dispatchLocal,
   codex: dispatchCodex,
   minimax: dispatchMinimax,
+  grok: dispatchGrok,
 }
 
 // ============================================================================
