@@ -153,5 +153,74 @@ for s in README.md FL-NOTES.md docs/notes.txt src/app.py main.go util.rs; do
   check "H: gate allows $s" "$(gate_trips "$s")" "safe"
 done
 
+# ---------------------------------------------------------------------------
+# T) fl_run_with_timeout in isolation: real rc passthrough, timeout->124, and
+#    NO leaked background process on the EARLY-COMPLETION path (fast command
+#    under a large timeout — where a naive watchdog orphans its sleep).
+# ---------------------------------------------------------------------------
+
+# T1: a fast command returns its REAL rc (0). Small timeout so any residual
+#     benign orphan is short-lived; watchdog torn down early.
+( bash "$FLGIT" fl_run_with_timeout 5 -- true ) >/dev/null 2>&1; rc=$?
+check "T1: fast success -> real rc 0" "$rc" "0"
+
+# T2: a fast NONZERO exit passes through unchanged (NOT normalised to 124).
+( bash "$FLGIT" fl_run_with_timeout 30 -- sh -c 'exit 7' ) >/dev/null 2>&1; rc=$?
+check "T2: fast failure -> real rc 7 (not 124)" "$rc" "7"
+
+# T3: a command that sleeps past a tiny timeout is killed and reported as 124.
+( bash "$FLGIT" fl_run_with_timeout 1 -- sleep 30 ) >/dev/null 2>&1; rc=$?
+check "T3: overrun -> rc 124 (timed out)" "$rc" "124"
+
+# T4: NO LEAK on the early-completion path. A reparented orphan is invisible to
+#     `jobs -p`, so we scan the REAL process table for the watchdog's sleep.
+#     Use a unique marker timeout value so we match THIS test's sleep only, then
+#     run a SHORT NON-INSTANT command (sleep 0.2 — >=200ms guarantees the
+#     watchdog's TERM trap is installed before teardown, so this is DETERMINISTIC,
+#     no flake, while still exercising the real early-completion leak path).
+#     Generous settle window so a loaded machine doesn't flake. NOTE: we scan only
+#     for the UNIQUE marker `sleep 98765`, never the command's own `sleep 0.2`.
+T4=$(mktemp -d)
+marker=98765                                   # unique sleep duration -> greppable
+# Run a short non-instant command under a (marker-second) timeout; the watchdog
+# will `sleep 98765`. The command finishes first -> early-completion teardown.
+( bash "$FLGIT" fl_run_with_timeout "$marker" -- sleep 0.2 ) >/dev/null 2>&1
+# Give any orphan a moment to show up, then look for a `sleep 98765` we own.
+leak=""
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+  # match the literal marker arg; exclude our own grep/ps pipeline.
+  if ps -A -o pid=,args= 2>/dev/null | grep -E "sleep[[:space:]]+$marker([[:space:]]|$)" | grep -v grep >/dev/null 2>&1; then
+    leak="present"
+  else
+    leak=""; break
+  fi
+  sleep 1
+done
+# Best-effort cleanup so a (buggy) leaked sleep doesn't linger past the test run.
+ps -A -o pid=,args= 2>/dev/null | grep -E "sleep[[:space:]]+$marker([[:space:]]|$)" | grep -v grep \
+  | awk '{print $1}' | while read -r p; do kill "$p" 2>/dev/null; done
+rm -rf "$T4"
+[ -z "$leak" ] && ok "T4: no leaked watchdog sleep after fast success (early-completion path)" \
+               || bad "T4: watchdog 'sleep $marker' orphaned to init on the fast-success path"
+
+# T5: integration — run_verify still PASSES a quick command set unchanged.
+T5=$(mktemp -d); repo="$T5/repo"; mkrepo "$repo"
+printf 'edited\n' >> "$repo/README.md"            # safe diff -> gate allows
+out="$( cd "$repo" && printf 'true\ntrue\n' | FL_VERIFY_CMD_TIMEOUT=30 bash "$FLGIT" run_verify 2>&1 )"; rc=$?
+check "T5: run_verify quick set -> rc 0" "$rc" "0"
+case "$out" in *FL-VERIFY-ALL-PASS*) ok "T5: reports all-pass";; *) bad "T5: missing all-pass marker";; esac
+rm -rf "$T5"
+
+# T6: integration — a hung command past a tiny timeout makes run_verify FAIL
+#     (nonzero), AND fail-fast survives the wrapper: the next command does NOT run.
+T6=$(mktemp -d); repo="$T6/repo"; mkrepo "$repo"
+printf 'edited\n' >> "$repo/README.md"
+snr="$T6/SHOULD_NOT_RUN"; rm -f "$snr"
+out="$( cd "$repo" && printf '%s\n' "sleep 30" "touch $snr" | FL_VERIFY_CMD_TIMEOUT=1 bash "$FLGIT" run_verify 2>&1 )"; rc=$?
+[ "$rc" -ne 0 ] && ok "T6: hung command -> run_verify rc nonzero ($rc)" || bad "T6: hung command did not fail run_verify"
+[ ! -e "$snr" ] && ok "T6: fail-fast survives wrapper (command after the timeout did NOT run)" \
+               || bad "T6: command after a timed-out command still ran (fail-fast broken)"
+rm -rf "$T6"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
