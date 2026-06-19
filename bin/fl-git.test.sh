@@ -293,5 +293,106 @@ case "$comp" in *"make test"*) bad "V4: LEAKED cwd signal (saw cwd Makefile 'mak
 
 rm -rf "$NEUTRAL" "$VT" "$EMPTY" "$CWDONLY" "$TGTONLY"
 
+# ---------------------------------------------------------------------------
+# W) adopt_winner_branch (plan §7/§11): a PURE REF ALIAS of the winner's exact
+#    gated commit -> FL- branch (NO new commit, NO re-author), then push -u to a
+#    LOCAL BARE remote wired as origin (so push + upstream tracking run offline).
+#
+#    mkadopt <root> -> sets up:
+#      <root>/origin.git  bare repo (the remote)
+#      <root>/repo        work repo cloned-style: origin remote + base upstream set
+#      <root>/repo's BASE branch name captured in the global BASE (portable: may be
+#      'master' on some sandboxes, so we never hard-code 'main').
+#    Echoes nothing; sets globals: ADOPT_REPO, BASE.
+# ---------------------------------------------------------------------------
+ADOPT_REPO=""; BASE=""
+mkadopt() {
+  local root="$1"
+  ADOPT_REPO="$root/repo"
+  mkrepo "$ADOPT_REPO"                                   # initial commit on the default branch
+  BASE="$(git -C "$ADOPT_REPO" symbolic-ref --short HEAD)"   # 'main' or 'master' — capture it
+  git init -q --bare "$root/origin.git"
+  git -C "$ADOPT_REPO" remote add origin "$root/origin.git"
+  git -C "$ADOPT_REPO" push -q -u origin "$BASE"         # base now has origin/$BASE upstream
+}
+
+# mkwinner <repo> <branch> [extra] — create a winner worktree branch off BASE.
+# With [extra]='ahead', add ONE commit so the winner is one commit ahead of base.
+# Uses a separate worktree dir so we never disturb the work repo's HEAD.
+mkwinner() {
+  local repo="$1" wbranch="$2" extra="${3:-}"
+  local wt="$repo/../wt-$wbranch"
+  git -C "$repo" worktree add -q -b "$wbranch" "$wt" "$BASE"
+  if [ "$extra" = "ahead" ]; then
+    printf 'winner change\n' > "$wt/WINNER.txt"
+    git -C "$wt" add -A
+    git -C "$wt" commit -q -m "winner work" --no-gpg-sign
+  fi
+}
+
+echo "== fl-git.sh adopt_winner_branch (P2 §7/§11) =="
+
+# W1: HAPPY PATH — winner one commit AHEAD of base. adopt aliases the FL- branch
+#     to the winner's EXACT sha (no new commit), pushes -u, and the remote has it.
+W1=$(mktemp -d); mkadopt "$W1"
+mkwinner "$ADOPT_REPO" "flwt/run/round-1/candidate-1" ahead
+win_sha="$(git -C "$ADOPT_REPO" rev-parse flwt/run/round-1/candidate-1)"
+base_sha="$(git -C "$ADOPT_REPO" rev-parse "$BASE")"
+[ "$win_sha" != "$base_sha" ] && ok "W1: winner is one commit ahead of base (precondition)" \
+                              || bad "W1: winner sha unexpectedly equals base sha"
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" adopt_winner_branch "FL-1-aaaaaa1" "$BASE" "flwt/run/round-1/candidate-1" 2>&1 )"; rc=$?
+check "W1: adopt -> rc 0" "$rc" "0"
+fl_sha="$(git -C "$ADOPT_REPO" rev-parse FL-1-aaaaaa1 2>/dev/null || echo MISSING)"
+# THE INVARIANT: FL- branch sha == winner sha (pure alias, no new commit).
+check "W1: FL- branch == winner EXACT sha (no new commit)" "$fl_sha" "$win_sha"
+# Commit count on the FL- branch equals the winner's (alias added no commit).
+fl_n="$(git -C "$ADOPT_REPO" rev-list --count FL-1-aaaaaa1)"
+win_n="$(git -C "$ADOPT_REPO" rev-list --count flwt/run/round-1/candidate-1)"
+check "W1: FL- branch commit count == winner's (no extra commit)" "$fl_n" "$win_n"
+# push -u happened: the remote bare repo now has the FL- branch at the same sha.
+remote_sha="$(git -C "$W1/origin.git" rev-parse FL-1-aaaaaa1 2>/dev/null || echo MISSING)"
+check "W1: remote received pushed FL- branch at winner sha" "$remote_sha" "$win_sha"
+# upstream tracking set by push -u.
+up="$(git -C "$ADOPT_REPO" rev-parse --abbrev-ref --symbolic-full-name 'FL-1-aaaaaa1@{upstream}' 2>/dev/null || echo NONE)"
+check "W1: push -u set upstream to origin/FL-1-aaaaaa1" "$up" "origin/FL-1-aaaaaa1"
+case "$out" in *FL-ADOPT-PUSH-OK*) ok "W1: emits FL-ADOPT-PUSH-OK";; *) bad "W1: missing FL-ADOPT-PUSH-OK marker";; esac
+rm -rf "$W1"
+
+# W2: REFUSE a non-FL- branch name (mirrors commit_and_push's prefix guard), and
+#     prove it created NOTHING (fail-closed) — no branch, nothing pushed.
+W2=$(mktemp -d); mkadopt "$W2"
+mkwinner "$ADOPT_REPO" "flwt/run/round-1/candidate-1" ahead
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" adopt_winner_branch "notfl-1-x" "$BASE" "flwt/run/round-1/candidate-1" 2>&1 )"; rc=$?
+[ "$rc" -ne 0 ] && ok "W2: non-FL- name -> rc nonzero ($rc)" || bad "W2: expected nonzero rc for non-FL- name"
+case "$out" in *FL-ADOPT-REFUSE*not\ an\ FL-\ branch*) ok "W2: names the FL- prefix refusal";; *) bad "W2: missing FL- prefix refuse marker";; esac
+if git -C "$ADOPT_REPO" rev-parse --verify --quiet "refs/heads/notfl-1-x" >/dev/null 2>&1; then
+  bad "W2: refused name was created anyway (not fail-closed)"
+else
+  ok "W2: refused -> no branch created (fail-closed)"
+fi
+rm -rf "$W2"
+
+# W3: winner branch EVEN WITH base (zero commits ahead) still aliases correctly to
+#     the EXACT (base) sha — the alias is sha-faithful regardless of distance.
+W3=$(mktemp -d); mkadopt "$W3"
+mkwinner "$ADOPT_REPO" "flwt/run/round-1/candidate-2"        # no 'ahead' -> sits at base sha
+win_sha="$(git -C "$ADOPT_REPO" rev-parse flwt/run/round-1/candidate-2)"
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" adopt_winner_branch "FL-2-bbbbbb2" "$BASE" "flwt/run/round-1/candidate-2" 2>&1 )"; rc=$?
+check "W3: adopt (winner at base) -> rc 0" "$rc" "0"
+fl_sha="$(git -C "$ADOPT_REPO" rev-parse FL-2-bbbbbb2 2>/dev/null || echo MISSING)"
+check "W3: FL- branch == winner EXACT sha" "$fl_sha" "$win_sha"
+rm -rf "$W3"
+
+# W4: REFUSE when the winner branch does not resolve (fail-closed; no FL- branch).
+W4=$(mktemp -d); mkadopt "$W4"
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" adopt_winner_branch "FL-3-cccccc3" "$BASE" "flwt/run/round-1/does-not-exist" 2>&1 )"; rc=$?
+[ "$rc" -ne 0 ] && ok "W4: missing winner branch -> rc nonzero ($rc)" || bad "W4: expected nonzero rc for missing winner"
+if git -C "$ADOPT_REPO" rev-parse --verify --quiet "refs/heads/FL-3-cccccc3" >/dev/null 2>&1; then
+  bad "W4: FL- branch created despite missing winner (not fail-closed)"
+else
+  ok "W4: no FL- branch created for missing winner (fail-closed)"
+fi
+rm -rf "$W4"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]

@@ -23,6 +23,9 @@
 #   fl_run_with_timeout <secs> -- <cmd...> -> run argv with a wall-clock watchdog; 124 == timed out
 #   run_verify                             -> reads commands on stdin or detects; fail-FAST; real rc
 #   commit_and_push <branch> <base> <msg>  -> commit (guarded) + push -u; rc propagated
+#   adopt_winner_branch <flBranch> <base> <winnerWorktreeBranch>
+#                                          -> alias <flBranch> to the winner's EXACT commit (no new
+#                                             commit/re-author) + push -u; rc propagated (repo-anchored)
 #   open_pr <branch> <base> <title> <bodyFile>            -> normal PR; prints URL
 #   open_pr_needs_human <branch> <base> <title> <bodyFile> -> draft + needs-human PR; prints URL
 #   stop_file_check <runDir>               -> rc 0 if STOP present (caller halts), rc 1 otherwise
@@ -456,6 +459,79 @@ commit_and_push() {
 }
 
 # --------------------------------------------------------------------------
+# adopt_winner_branch <flBranch> <base> <winnerWorktreeBranch>
+# REPO-ANCHORED adoption (plan §7/§11). The winning attempt already produced a
+# real, GATED commit on its own worktree branch <winnerWorktreeBranch> (P1 made
+# the commit; the P3 verify+audit gate cleared it BEFORE this is ever called).
+# Adoption is a PURE REF ALIAS of that exact commit:
+#
+#     git branch <flBranch> <winnerWorktreeBranch>
+#
+# This creates <flBranch> pointing at the WINNER'S EXACT commit object — no new
+# commit, no re-author/squash/cherry-pick — so the commit a human reviews/merges
+# is byte-for-byte the commit that was verified+audited ("validated ref == merged
+# ref", §11). Then push -u to the resolved remote.
+#
+# This is a SIBLING of commit_and_push, NOT a reuse of it: commit_and_push assumes
+# an UNSTAGED implementer diff it `git add -A`/commits (and refuses an empty diff),
+# which would either refuse here (nothing staged) or mint a NEW sha and break the
+# invariant. commit_and_push is left untouched for the legacy (repoMode:false) path.
+#
+# Guards mirror commit_and_push (FL-* prefix, fl_resolve_remote, rc-propagation,
+# fail-closed). There is deliberately NO HEAD guard: we create <flBranch> fresh
+# from the winner's commit and never switch to it, so HEAD is irrelevant here.
+#
+# rc 0  -> aliased + pushed
+# rc 2  -> refused: <flBranch> is not an FL- branch, or the winner branch is missing
+# rc 1  -> a git/gh step failed (branch create, remote resolve, or push)
+# --------------------------------------------------------------------------
+adopt_winner_branch() {
+  local branch="${1:?fl branch required}"
+  local base="${2:?base required}"
+  local winner="${3:?winner worktree branch required}"
+
+  # Guard: the adopted branch MUST be an FL- branch (mirrors commit_and_push's
+  # guard; the SKILL hard-requires the prefix). Refuse anything else, fail-closed.
+  case "$branch" in
+    FL-*) : ;;
+    *) echo "FL-ADOPT-REFUSE: branch '$branch' is not an FL- branch (refusing)" >&2; return 2 ;;
+  esac
+
+  # Guard: the winner's commit must actually exist (resolve the start-point) before
+  # we create anything — fail-closed instead of creating a dangling/empty branch.
+  if ! git rev-parse --verify --quiet "${winner}^{commit}" >/dev/null 2>&1; then
+    echo "FL-ADOPT-REFUSE: winner branch '$winner' does not resolve to a commit (refusing)" >&2
+    return 2
+  fi
+
+  # Guard: do not clobber an existing FL- branch (an adoption must be a clean
+  # create; a pre-existing branch means a half-applied/duplicate loop — fail-closed).
+  if git rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
+    echo "FL-ADOPT-REFUSE: branch '$branch' already exists (refusing to clobber)" >&2
+    return 2
+  fi
+
+  # PURE REF ALIAS: <flBranch> = the winner's EXACT commit. No new sha, no re-author.
+  if ! git branch "$branch" "$winner"; then
+    echo "FL-ADOPT-FAIL: git branch '$branch' '$winner' failed" >&2
+    return 1
+  fi
+
+  local remote
+  remote="$(fl_resolve_remote "$base")"
+  if [ -z "$remote" ]; then
+    echo "FL-PUSH-FAIL: no remote resolvable" >&2
+    return 1
+  fi
+  if ! git push -u "$remote" "$branch"; then
+    echo "FL-PUSH-FAIL: git push -u $remote $branch failed" >&2
+    return 1
+  fi
+  echo "FL-ADOPT-PUSH-OK branch=$branch winner=$winner remote=$remote"
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # _ensure_label — idempotently create the needs-human label. If creation fails
 # (no permission, etc.) we return nonzero so the caller can fall back to a
 # label-less draft PR rather than failing the whole loop.
@@ -638,6 +714,7 @@ if ! _fl_is_sourced; then
     fl_run_with_timeout)   fl_run_with_timeout "$@" ;;
     run_verify)            run_verify "$@" ;;
     commit_and_push)       commit_and_push "$@" ;;
+    adopt_winner_branch)   adopt_winner_branch "$@" ;;
     open_pr)               open_pr "$@" ;;
     open_pr_needs_human)   open_pr_needs_human "$@" ;;
     fl_compose_body)       fl_compose_body "$@" ;;
@@ -659,6 +736,7 @@ Functions:
   fl_run_with_timeout <secs> -- <cmd...>   (run argv with a wall-clock watchdog; rc 124 == timed out)
   run_verify                      (FROZEN commands on stdin one/line; gated + secrets dropped)
   commit_and_push <branch> <base> <message>
+  adopt_winner_branch <flBranch> <base> <winnerWorktreeBranch>   (repo-anchored: alias FL- branch to winner's EXACT commit + push -u)
   open_pr <branch> <base> <title> <bodyFile>
   open_pr_needs_human <branch> <base> <title> <bodyFile>
   fl_compose_body <outFile>       (body text on stdin)
