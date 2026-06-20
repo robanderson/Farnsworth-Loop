@@ -38,7 +38,12 @@ perl -e '
   my $p = fork; if (!defined $p) { exit 127 }
   if ($p == 0) { exec @ARGV; exit 127 }
   $SIG{ALRM} = sub { kill "TERM", $p; sleep 3; kill "KILL", $p; exit 124 };
-  alarm $t; waitpid($p, 0); exit($? >> 8);
+  alarm $t; waitpid($p, 0);
+  # Map a signal death (OOM-killer SIGKILL, SIGSEGV crash, ...) to the shell-conventional
+  # 128+signum (NONZERO). Perl puts the signal into the low 7 bits of $? with 0 in the high byte, so the
+  # old `$? >> 8` reported exit 0 for a CRASHED child -> the downstream `DONE exit=0` provenance gate
+  # would accept a deliverable-less crash as success (fail-OPEN). Normal exits/exec-fail 127 unchanged.
+  my $st = $?; exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
 ' "$TIMEOUT" codex exec \
     -s workspace-write \
     -C "$PWD" \
