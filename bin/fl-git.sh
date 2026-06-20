@@ -325,7 +325,15 @@ fl_run_with_timeout() {
     # Timeout fired: escalate TERM -> (grace) -> KILL on the command.
     kill -TERM "$cmd_pid" 2>/dev/null
     sleep "$FL_VERIFY_KILL_GRACE"
-    kill -KILL "$cmd_pid" 2>/dev/null ) &
+    kill -KILL "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  # #46: the watchdog subshell (and the `sleep` it backgrounds) is detached from the caller's
+  # stdout/stderr (`>/dev/null 2>&1`). The watchdog never writes output, but it would otherwise
+  # INHERIT fd 1 — and when fl_run_with_timeout (or run_verify) is invoked inside command
+  # substitution `$( ... )`, fd 1 is the capture pipe. The residual instant-command race can orphan
+  # the inner `sleep`; if that orphan still held the pipe, `$()` would block until the sleep ended
+  # (the full timeout). Detaching the watchdog's fds means an orphaned sleep can never hold the
+  # `$()` pipe, so `$()` returns as soon as the command itself finishes. The command (`"$@"` above)
+  # keeps fd 1, so captured command output is unchanged.
   local watch_pid=$!
 
   # Wait for the command; capture its REAL rc.

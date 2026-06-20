@@ -460,5 +460,19 @@ else
 fi
 rm -rf "$W4"
 
+# ---------------------------------------------------------------------------
+# X) #46 regression: fl_run_with_timeout invoked inside command substitution $(...)
+#    must NOT block on an orphaned watchdog `sleep`. Pre-fix, the residual
+#    instant-command race orphaned the watchdog's `sleep`, which (inheriting fd 1)
+#    held the $() capture pipe open for the FULL timeout (~12%/call). 30 instant
+#    calls with a 10s per-call timeout: with the fix the batch is a few seconds; a
+#    single hang would add ~10s. Assert the batch finishes well under one timeout.
+xs=$(date +%s)
+for xi in $(seq 1 30); do xout="$( bash "$FLGIT" fl_run_with_timeout 10 -- true 2>/dev/null )"; done
+xel=$(( $(date +%s) - xs ))
+[ "$xel" -lt 8 ] \
+  && ok "X: fl_run_with_timeout in \$() never blocks on an orphaned watchdog sleep (30 calls in ${xel}s)" \
+  || bad "X: \$()-captured fl_run_with_timeout blocked on an orphaned watchdog sleep (30 calls took ${xel}s; >=8 => a sleep held the pipe)"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
