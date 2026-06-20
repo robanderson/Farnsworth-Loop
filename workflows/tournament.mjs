@@ -200,6 +200,16 @@ async function buildContext() {
 const worktreeBranch = (roundName, label) => `flwt/${safeRunId}/${roundName}/${label}`
 const worktreeLogDir = (roundName, label) => `${runDir}/_engine-logs/${roundName}/${label}`
 const worktreeMetaDir = `${runDir}/_worktrees`
+// issue #44: repoMode worktree CHECKOUTS live OUTSIDE ~/.claude/ (which the harness treats as sensitive
+// and DENIES sub-agent Write/Edit/shell-redirect under), so runner-based attempts (glm/minimax/codex/grok)
+// can actually write their deliverable into their worktree instead of failing / burning their turn budget.
+// ONLY the checkout moves — staging artifacts, _engine-logs, and the run dir stay under runDir (the engine
+// + native agents write those fine, and the blind _pool.md diff capture is path-independent). Configurable
+// via args.worktreeRoot; default /tmp/fl-worktrees/<runId> (the engine sandbox has no node:process, so it
+// cannot read TMPDIR — the SKILL/caller may pass ${TMPDIR:-/tmp}/fl-worktrees/<runId>). repoMode:false =>
+// null (unused; the legacy scratch-dir path is byte-for-byte unchanged).
+const worktreeRoot = repoMode ? (A.worktreeRoot || `/tmp/fl-worktrees/${safeRunId}`) : null
+const worktreePath = (roundName, label) => repoMode ? `${worktreeRoot}/${roundName}/${label}` : null
 const engineFiles = ['_brief.txt', '_glm_run.log', '_local_run.log', '_codex_run.log', '_codex_last.txt', '_minimax_run.log', '_grok_run.log']
 const engineLogPath = (c, log) => {
   if (!repoMode || !log) return log ? `${c.ws}/${log}` : ''
@@ -883,7 +893,7 @@ function largestRemainderRound(combined, share) {
 // ---- Round 1 ----
 phase('Round 1')
 await buildContext() // shared context bundle (no-op unless args.contextFiles given) — built once, before the attempts
-const r1Worktrees = attempts.map(a => ({ ...a, ws: `${runDir}/round-1/${a.label}` }))
+const r1Worktrees = attempts.map(a => ({ ...a, ws: repoMode ? worktreePath('round-1', a.label) : `${runDir}/round-1/${a.label}` }))
 await buildWorktrees('round-1', r1Worktrees) // repoMode-only no-op otherwise
 log(`Round 1: ${attempts.length} attempts (${attempts.map(a => a.displayModel).join(', ')})`)
 const r1 = (await parallel(r1Worktrees.map(a => () => dispatch(a, a.ws, null, 'Round 1')))).filter(Boolean)
@@ -944,7 +954,7 @@ if (!winner1) log(`round-1 winner "${review.winner}" not among valid candidates;
 const champ = winner1 || blind1[0]
 phase('Round 2')
 log(`Round 2: ${attempts.length} guided attempts; carrying over round-1 winner (${champ.displayModel})`)
-const r2Worktrees = attempts.map(a => ({ ...a, ws: `${runDir}/round-2/${a.label}` }))
+const r2Worktrees = attempts.map(a => ({ ...a, ws: repoMode ? worktreePath('round-2', a.label) : `${runDir}/round-2/${a.label}` }))
 await buildWorktrees('round-2', r2Worktrees) // repoMode-only no-op otherwise
 const r2 = (await parallel(r2Worktrees.map(a => () => dispatch(a, a.ws, review.guidance, 'Round 2')))).filter(Boolean)
 await snapshotWorktrees('round-2', r2) // repoMode-only no-op otherwise

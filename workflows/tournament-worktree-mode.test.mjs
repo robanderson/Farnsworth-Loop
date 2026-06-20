@@ -163,5 +163,21 @@ check('(enrich) lint commands share the same timeout-wrapped execution site',
 check('(enrich) timeout is the canonical verify timeout default',
   enrichSrc.includes('timeout=\\${FL_VERIFY_CMD_TIMEOUT:-600}'))
 
+// (6) issue #44: repoMode worktree CHECKOUTS live OUTSIDE ~/.claude/ so runner sub-agents can edit freely;
+//     only the checkout moves; repoMode:false stays byte-identical under runDir.
+console.log('== issue #44: repoMode worktrees outside ~/.claude/ ==')
+check('(worktree-root) worktreeRoot is configurable with a /tmp default, never under .claude/',
+  SRC.includes('const worktreeRoot = repoMode ? (A.worktreeRoot || `/tmp/fl-worktrees/${safeRunId}`) : null'))
+check('(worktree-root) default worktreeRoot does not resolve under .claude/',
+  (() => { const m = SRC.match(/A\.worktreeRoot \|\| `([^`]+)`/); return !!m && !m[1].includes('.claude') })())
+check('(worktree-root) worktreePath is rooted at worktreeRoot and repoMode-gated',
+  SRC.includes('const worktreePath = (roundName, label) => repoMode ? `${worktreeRoot}/${roundName}/${label}` : null'))
+check('(worktree-root) round-1 attempt ws uses worktreePath in repoMode',
+  SRC.includes("ws: repoMode ? worktreePath('round-1', a.label) : `${runDir}/round-1/${a.label}`"))
+check('(worktree-root) round-2 attempt ws uses worktreePath in repoMode',
+  SRC.includes("ws: repoMode ? worktreePath('round-2', a.label) : `${runDir}/round-2/${a.label}`"))
+check('(worktree-root) repoMode:false keeps legacy round-1 ws literal under runDir',
+  SRC.includes('`${runDir}/round-1/${a.label}`'))
+
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nAll checks passed')
 process.exit(failed ? 1 : 0)
