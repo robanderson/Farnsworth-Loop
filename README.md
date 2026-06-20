@@ -20,6 +20,7 @@ That one line triggers the loop: it asks which model(s) to run the 5 attempts on
 - [Single pass vs two pass](#single-pass-vs-two-pass)
 - [Invoking it: the sigil and prose forms](#invoking-it-the-sigil-and-prose-forms)
   - [The `@@FL` sigil](#the-fl-sigil)
+  - [Task size (dynamic limits)](#task-size-dynamic-limits)
   - [Prose model spec](#prose-model-spec)
   - [Mixed and Top Mixed presets](#mixed-and-top-mixed-presets)
   - [Worked examples](#worked-examples)
@@ -109,6 +110,20 @@ Put a trigger anywhere in your message; **the text before it is the task**. All 
 **Positional skips are forbidden.** `@@FL:5::3` is invalid — to set Z with a default M, write `@@FL:5:1:3`. (`Z=1` and omitting Z are byte-identical: today's isolated tournament.)
 
 There is also a **prose marker** that extends identically: `farnsworth loop:N[:M[:Z]]` — e.g. `do abc :farnsworth loop:5` (single) or `do abc: farnsworth loop:5:2` (two pass).
+
+### Task size (dynamic limits)
+
+The per-attempt **turn caps and wall-clock timeouts** scale to how big the task is, instead of being fixed. By default the orchestrator **estimates** the task as `short`, `medium`, or `long` (Phase 1c) and sizes the limits to match — a quick script gets tight guards, a heavy multi-file build gets generous ones.
+
+You can **override** the estimate by listing one of `short` / `medium` / `long` next to the marker:
+
+```text
+@@FL:5 long          Refactor the whole rendering pipeline.
+@@FL short, fix the off-by-one in the paginator
+tidy up the imports long @@FL:4
+```
+
+The size word is recognised **only adjacent to the marker** and is stripped from the task (the after-marker form needs a comma/semicolon/end right after it), so an ordinary size word in the task body — `build a short-circuit evaluator`, `long division solver` — is left untouched. The numbers live in one place: `SIZE_PROFILES` in `bin/fl-parse.mjs` (printable with `node bin/fl-parse.mjs --size <label>`). They flow to the runner-based providers (GLM / local / codex / MiniMax / grok) as `FL_MAX_TURNS` / `FL_TIMEOUT_SECS`; native Anthropic attempts are uncapped.
 
 ### Prose model spec
 
