@@ -3,6 +3,32 @@
 All notable changes to the **farnsworth-loop** plugin are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/); each version maps to a git tag.
 
+## [0.1.1] — 2026-06-20
+
+### Fixed — repoMode runner-provider failures + a verify-gate hang (found dogfooding the first repoMode grand loop)
+
+The first full repoMode grand loop (Z=2) surfaced two real bugs that broke repoMode for the non-Anthropic
+providers and intermittently hung the verify gate. Both are fixed; the default (`repoMode:false` /
+`FL_VERIFY_SANDBOX` unset) behavior is unchanged.
+
+- **#44 — repoMode attempt worktrees moved out of `~/.claude/`.** They were created under
+  `${runDir}` (= `~/.claude/.../.runs/...`), which the harness sandboxes — so runner sub-agents
+  (glm/minimax/codex/grok) were denied `Write`/`Edit`/shell-redirect in their own worktree and failed or
+  burned their turn budget (only native opus, and runner models that found the allow-listed `python3`
+  workaround, succeeded). The worktree **checkout** now lives at `/tmp/fl-worktrees/<runId>/round-N/<label>`
+  (configurable via `args.worktreeRoot`; hardcoded `/tmp` default because the engine sandbox has no `process`).
+  Only the checkout moved — staging, `_engine-logs`, and the run dir stay under `runDir`; `repoMode:false` is
+  byte-identical. Validated: glm-5.2 / codex-high / minimax-m3 now produce valid deliverables in repoMode.
+- **#46 — `fl_run_with_timeout` no longer hangs command-substitution callers.** Its watchdog subshell
+  inherited fd 1; the residual instant-command race could orphan the watchdog `sleep`, which then held a
+  `$(...)` capture pipe open for the full timeout — so `run_verify` / `bin/fl-git.test.sh` (whose helper
+  captures output via `$()`) hung 600s (`exit 124`) ~55%/run, flaking the verify gate. The watchdog's fds are
+  now detached (`>/dev/null 2>&1`); the command keeps fd 1 so captured output is unchanged. Repro: 5/40 → 0/40
+  hangs; added regression test.
+
+Known: `farnsworth-grok` attempts require a session in which the agent type is registered (it is in the
+plugin; a session started before the agent was installed cannot dispatch it) — tracked in #45 (not a code bug).
+
 ## [0.1.0] — 2026-06-20
 
 ### Added — repo-anchored worktree mode (P0–P6): attempts build real code in git worktrees
