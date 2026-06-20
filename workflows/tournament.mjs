@@ -283,6 +283,30 @@ const RUNVERBATIM = (cmd, ws, log) =>
 // agent registry actually resolves.
 const nsAgent = t => (t && !t.includes(':')) ? `farnsworth-loop:${t}` : t
 
+// ---- dispatch-failure classification (#45) -------------------------------
+// A worker attempt fails in two very different ways: (a) the model RAN but produced a
+// bad/empty deliverable — a normal, expected loss; or (b) it NEVER ran because its
+// required agent type is not registered in this session — an INFRASTRUCTURE drop that
+// silently shrinks N (the field the judges see). These must not be blended together.
+// The workflow runtime exposes no agent-registry query primitive, so we cannot truly
+// preflight; instead we classify the dispatch error and report effective-vs-requested
+// field size per round so a missing provider agent is LOUD, never silent. The common
+// cause is a plugin installed/updated AFTER session start (agent types register only at
+// session start). The canonical error text is: agent type 'x' not found.
+const dispatchDrops = [] // {label, displayModel, agentType, phase} — one per unregistered-agent drop
+// Match the canonical harness text `agent type 'x' not found` ONLY: same line, bounded gap.
+// (No /s flag and a no-newline bounded gap so a multi-line runner transcript that merely
+// mentions "agent type" somewhere and an unrelated "X not found" elsewhere is NOT misread
+// as an infra drop — that false positive would invert the exact distinction #45 makes.)
+function isUnregisteredAgentError(msg) { return /agent type\b[^\n]{0,80}\bnot found\b/i.test(String(msg)) }
+// The prominent per-round warning (or null when no infra drops happened that round).
+function dispatchDropSummary(phaseTitle, drops, requested, survived) {
+  const mine = drops.filter(d => d.phase === phaseTitle)
+  if (!mine.length) return null
+  const types = [...new Set(mine.map(d => d.agentType))].join(', ')
+  return `FL-DISPATCH-WARNING [${phaseTitle}]: ${mine.length}/${requested} attempt(s) dropped — required agent type(s) NOT REGISTERED: ${types}. Effective field ${survived}/${requested}. The affected provider(s) did NOT run, silently shrinking N. Most likely the plugin was installed/updated AFTER this session started (agent types register only at session start) — restart the session, then re-run for the full field.`
+}
+
 function dispatch(a, ws, guidance, phaseTitle) {
   const b = brief(guidance ? a.r2nudge : a.r1nudge, ws, guidance, contextPath)
   const opts = { label: `${phaseTitle}:${a.displayModel}`, phase: phaseTitle }
@@ -331,7 +355,17 @@ function dispatch(a, ws, guidance, phaseTitle) {
   }
   return agent(prompt, opts)
     .then(res => ({ label: a.label, displayModel: a.displayModel, dispatch: a.dispatch || 'anthropic', ws, res }))
-    .catch(e => { log(`attempt ${a.label} (${a.displayModel}) errored: ${String(e).slice(0, 100)}`); return null }) // don't swallow silently
+    .catch(e => {
+      const msg = String(e)
+      if (opts.agentType && isUnregisteredAgentError(msg)) {
+        // (b) infrastructure drop — surface LOUDLY and record so the round summary can name it. (#45)
+        dispatchDrops.push({ label: a.label, displayModel: a.displayModel, agentType: opts.agentType, phase: phaseTitle })
+        log(`FL-DISPATCH-DROP [${phaseTitle}]: required agent type '${opts.agentType}' is NOT REGISTERED — attempt ${a.label} (${a.displayModel}) never ran. Likely the plugin was installed/updated after this session started; restart the session to register it, then re-run.`)
+      } else {
+        log(`attempt ${a.label} (${a.displayModel}) errored: ${msg.slice(0, 100)}`) // (a) ran-but-lost; don't swallow silently
+      }
+      return null
+    })
 }
 
 function judgePrompt(kind, blindList, guidanceWanted, poolPath) {
@@ -897,7 +931,13 @@ const r1Worktrees = attempts.map(a => ({ ...a, ws: repoMode ? worktreePath('roun
 await buildWorktrees('round-1', r1Worktrees) // repoMode-only no-op otherwise
 log(`Round 1: ${attempts.length} attempts (${attempts.map(a => a.displayModel).join(', ')})`)
 const r1 = (await parallel(r1Worktrees.map(a => () => dispatch(a, a.ws, null, 'Round 1')))).filter(Boolean)
-if (!r1.length) return { error: 'all round-1 attempts failed (dispatch errors)' }
+{ const w = dispatchDropSummary('Round 1', dispatchDrops, r1Worktrees.length, r1.length); if (w) log(w) } // #45
+if (!r1.length) {
+  const unreg = [...new Set(dispatchDrops.filter(d => d.phase === 'Round 1').map(d => d.agentType))]
+  return { error: unreg.length
+    ? `all round-1 attempts failed: required agent type(s) NOT REGISTERED (${unreg.join(', ')}). Restart the session to register newly-installed plugin agents, then re-run.`
+    : 'all round-1 attempts failed (dispatch errors)' }
+}
 await snapshotWorktrees('round-1', r1) // repoMode-only no-op otherwise
 
 phase('Review')
@@ -957,6 +997,7 @@ log(`Round 2: ${attempts.length} guided attempts; carrying over round-1 winner (
 const r2Worktrees = attempts.map(a => ({ ...a, ws: repoMode ? worktreePath('round-2', a.label) : `${runDir}/round-2/${a.label}` }))
 await buildWorktrees('round-2', r2Worktrees) // repoMode-only no-op otherwise
 const r2 = (await parallel(r2Worktrees.map(a => () => dispatch(a, a.ws, review.guidance, 'Round 2')))).filter(Boolean)
+{ const w = dispatchDropSummary('Round 2', dispatchDrops, r2Worktrees.length, r2.length); if (w) log(w) } // #45
 await snapshotWorktrees('round-2', r2) // repoMode-only no-op otherwise
 
 // final pool = round-2 attempts + the carried-over round-1 winner. Staging erases the round path,
