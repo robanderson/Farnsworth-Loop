@@ -178,6 +178,81 @@ const REPO_ANCHORED_BEFORE_RX = /\b(?:repo[\s-]?anchored|anchored)\b[\s:,-]*$/i;
 const NO_REPO_AFTER_RX  = /^[\s:,-]*(?:--no-repo|self[\s-]?contained)\b/i;
 const NO_REPO_BEFORE_RX = /(?:--no-repo|self[\s-]?contained)\b[\s:,-]*$/i;
 
+// Marker-adjacent TASK-SIZE override (the dynamic-limits feature). The orchestrator
+// normally ESTIMATES whether a task is short / medium / long and sizes the per-attempt
+// turn + wall-clock limits accordingly; this keyword lets the user force a size by
+// listing one of short / medium / long next to the @@FL marker (e.g. `@@FL:5 long`,
+// `@@FL short, fix the bug`, `tidy up long @@FL:4`). It is recognised ONLY immediately
+// adjacent to the marker and stripped at THAT side — the SAME D-0006 discipline the
+// pass-count + repo-mode keywords use — so an ordinary 'short'/'medium'/'long' in the
+// task body (e.g. 'long division solver', 'short-circuit the eval') is never misread as
+// a directive and never eaten from the task. The AFTER form additionally requires a
+// clause boundary (',' / ';' / end) right after the size word, so only a deliberately
+// set-off `@@FL:5 long` or `@@FL long, <task>` matches — `@@FL long division` does not.
+//   AFTER  : immediately follows the marker, then a clause boundary (, ; eol)
+//   BEFORE : immediately precedes the marker
+const SIZE_AFTER_RX  = /^[\s:,-]*\b(short|medium|long)\b(?=\s*(?:[,;]|$))/i;
+const SIZE_BEFORE_RX = /\b(short|medium|long)\b[\s:,-]*$/i;
+
+// ---------------------------------------------------------------------------
+// Task-size limit profiles (single source of truth for the dynamic limits).
+//
+// Each profile is the COMPLETE set of per-attempt guard args the SKILL passes
+// straight through to workflows/tournament.mjs. 'medium' is the engine's historical
+// default behaviour (so an un-sized run is unchanged in spirit); 'short' tightens the
+// guards for quick scripts; 'long' loosens them for heavy multi-file builds / big
+// writing deliverables. These are deliberately GENEROUS runaway backstops (the
+// single-pass hard-stop brief is the real guard), scaled to task weight.
+//   attemptMaxTurns : GLM iteration cap (FL_MAX_TURNS)
+//   localMaxTurns   : on-device/local iteration cap (weaker models -> tighter)
+//   minimaxMaxTurns : MiniMax iteration cap
+//   grokMaxTurns    : Grok iteration cap (grok has BOTH guards)
+//   attemptTimeoutSecs : wall-clock backstop for local/minimax/GLM (GLM overridden below)
+//   glmTimeoutSecs  : GLM-only wall-clock (GLM via z.ai is slow on heavy code)
+//   codexTimeoutSecs: Codex-only wall-clock (codex has NO turn cap -> wall clock only)
+//   grokTimeoutSecs : Grok-only wall-clock
+// ---------------------------------------------------------------------------
+const SIZE_PROFILES = {
+  short: {
+    attemptMaxTurns: 15,
+    localMaxTurns: 12,
+    minimaxMaxTurns: 15,
+    grokMaxTurns: 15,
+    attemptTimeoutSecs: 180,
+    glmTimeoutSecs: 600,
+    codexTimeoutSecs: 300,
+    grokTimeoutSecs: 300,
+  },
+  medium: { // == today's engine defaults (with a roomier GLM wall-clock, which is slow)
+    attemptMaxTurns: 30,
+    localMaxTurns: 20,
+    minimaxMaxTurns: 30,
+    grokMaxTurns: 30,
+    attemptTimeoutSecs: 300,
+    glmTimeoutSecs: 1200,
+    codexTimeoutSecs: 600,
+    grokTimeoutSecs: 600,
+  },
+  long: {
+    attemptMaxTurns: 50,
+    localMaxTurns: 35,
+    minimaxMaxTurns: 50,
+    grokMaxTurns: 50,
+    attemptTimeoutSecs: 600,
+    glmTimeoutSecs: 2400,
+    codexTimeoutSecs: 1200,
+    grokTimeoutSecs: 1200,
+  },
+};
+
+// Resolve a size label to its full limit profile, or null for an unknown label.
+// Returns a fresh object tagged with the canonical size so the SKILL can pass it
+// straight into the workflow args (and echo it in the Phase 2 confirmation).
+function sizeProfile(label) {
+  const key = canon(label);
+  return SIZE_PROFILES[key] ? { size: key, ...SIZE_PROFILES[key] } : null;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -364,6 +439,7 @@ function parse(rawInput) {
     needsGate: false,
     repoMode: false, // P0 (plan §4): false => today's self-contained tournament unchanged
     baseRef: null,   // P0: resolved to a pinned sha by the SKILL; the parser records null
+    size: null,      // manual task-size override (short|medium|long); null => SKILL estimates
   };
   const errors = [];
   const oversizedNs = new Set();
@@ -503,6 +579,19 @@ function parse(rawInput) {
   } else if (NO_REPO_BEFORE_RX.test(preMarker)) {
     repoForcedOff = true;
     preMarker = preMarker.replace(NO_REPO_BEFORE_RX, ' ');
+  }
+
+  // --- 4c. Task-size override (short|medium|long; dynamic-limits feature). ---
+  // Marker-adjacent, stripped at its source side (same D-0006 discipline as the pass
+  // and repo-mode keywords) so it never leaks into the task and an ordinary size word
+  // in the body is left intact. AFTER form requires a clause boundary after the word.
+  // When absent, size stays null and the SKILL ESTIMATES short/medium/long itself.
+  const szAfter = SIZE_AFTER_RX.exec(postMarker);
+  const szMatch = szAfter || SIZE_BEFORE_RX.exec(preMarker);
+  if (szMatch) {
+    result.size = canon(szMatch[1]); // short | medium | long
+    if (szAfter) postMarker = postMarker.replace(SIZE_AFTER_RX, ' ');
+    else preMarker = preMarker.replace(SIZE_BEFORE_RX, ' ');
   }
 
   // Task = both sides of the marker (D-0007), with the adjacent pass directive (if
@@ -821,8 +910,10 @@ export {
   topMixedAssignment,
   expandSpec,
   locateSpec,
+  sizeProfile,
   NORMALISER,
   TOP_MIXED_POOL,
+  SIZE_PROFILES,
   Z_MAX,
   N_MAX,
 };
@@ -838,6 +929,20 @@ const isMain = (() => {
 })();
 
 if (isMain) {
+  // Subcommand: `fl-parse.mjs --size <short|medium|long>` prints just that size's
+  // limit profile as JSON, so the SKILL can resolve the dynamic limits deterministically
+  // (one source of truth) instead of hard-coding the numbers in the procedure text.
+  if (process.argv[2] === '--size') {
+    const prof = sizeProfile(process.argv.slice(3).join(' '));
+    if (prof) {
+      process.stdout.write(JSON.stringify(prof, null, 2) + '\n');
+      process.exit(0);
+    }
+    process.stdout.write(JSON.stringify({
+      error: 'unknown size; expected one of: ' + Object.keys(SIZE_PROFILES).join(', '),
+    }, null, 2) + '\n');
+    process.exit(1);
+  }
   const raw = process.argv.slice(2).join(' ');
   try {
     const out = parse(raw);

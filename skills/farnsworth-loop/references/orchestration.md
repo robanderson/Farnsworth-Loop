@@ -58,12 +58,18 @@ Workflow({ scriptPath: "<plugin-root>/workflows/tournament.mjs", args: <ARGS> })
   codexRunner: "<plugin-root>/bin/codex-run.sh",  // REQUIRED if any attempt is Codex
   minimaxRunner: "<plugin-root>/bin/minimax-run.sh", // REQUIRED if any attempt is MiniMax
   grokRunner: "<plugin-root>/bin/grok-run.sh",    // REQUIRED if any attempt is Grok
-  attemptMaxTurns: 30,                    // optional iteration cap for GLM attempts; default 30
-  localMaxTurns: 20,                      // optional iteration cap for LOCAL attempts; default 20
-  attemptTimeoutSecs: 300,               // optional wall-clock backstop (local/minimax/GLM); default 300
-  glmTimeoutSecs: 2400,                  // optional GLM-only wall-clock (GLM is slow on heavy code); default = attemptTimeoutSecs
-  codexTimeoutSecs: 600,                 // optional wall-clock backstop for Codex; default 600 (codex has no turn cap)
-  grokTimeoutSecs: 600,                  // optional wall-clock backstop for Grok; default 600 (grok ALSO honours grokMaxTurns, default 30)
+  // Per-attempt guards — SET FROM THE TASK-SIZE PROFILE (SKILL Phase 1c). Resolve the whole set with
+  // `node <plugin-root>/bin/fl-parse.mjs --size <short|medium|long>` and pass every field through; the
+  // engine still has its own fallbacks (shown below) if a field is omitted, but always pass an explicit
+  // profile so the limits match the task. (short tightens, medium ≈ historical defaults, long loosens.)
+  attemptMaxTurns: 30,                    // GLM iteration cap; engine fallback 30
+  localMaxTurns: 20,                      // LOCAL iteration cap; engine fallback 20
+  minimaxMaxTurns: 30,                    // MiniMax iteration cap; engine fallback = attemptMaxTurns
+  grokMaxTurns: 30,                       // Grok iteration cap; engine fallback = attemptMaxTurns (grok has BOTH guards)
+  attemptTimeoutSecs: 300,               // wall-clock backstop (local/minimax/GLM base); engine fallback 300
+  glmTimeoutSecs: 2400,                  // GLM-only wall-clock (GLM is slow on heavy code); engine fallback = attemptTimeoutSecs
+  codexTimeoutSecs: 600,                 // wall-clock backstop for Codex; engine fallback 600 (codex has no turn cap)
+  grokTimeoutSecs: 600,                  // wall-clock backstop for Grok; engine fallback 600 (grok ALSO honours grokMaxTurns)
   grokWebSearch: false,                  // optional — true enables grok web search (default false = hermetic, like the other providers)
   attempts: [                            // one per attempt, length N
     { label: "candidate-1",
@@ -130,6 +136,21 @@ Anthropic attempts pass `dispatch:"anthropic"` + `model`; the workflow spawns th
 **Grok dispatch mirrors codex** (an external non-`claude` CLI authenticated from a file, not an env key), with grok specifics: (1) it shells to `grok -p "$(cat _brief.txt)"` through `bin/grok-run.sh`, authenticating from the OAuth session (`~/.grok/auth.json`) OR `XAI_API_KEY` — the runner requires/injects **neither** (mirrors codex), and records `auth=oauth-session|env-key` in the provenance line for session-expiry diagnosis; (2) verified-safe headless flags (all present in `grok --help`, agentic file-write verified end-to-end) are `-p "<brief>" -m <id> --always-approve --max-turns <N> --no-subagents --no-alt-screen --no-auto-update --cwd "$PWD"`, plus `--disable-web-search` **UNLESS** `FL_GROK_WEB=1` (the workflow's `grokWebSearch:true`). `--no-subagents` keeps the attempt ONE independent unit (grok-build can otherwise spawn up to 8 parallel sub-agents — an internal swarm that fights FL's "N independent attempts" model and is the main variable-latency surface). Two flags are deliberately OMITTED: **`--no-plan`** (it toggles grok's read-only plan PERMISSION mode, not the model's reasoning — FL runs planning tasks, and a measured A/B showed it gave no speed benefit yet thinner plans) and **`--no-memory`** (cross-session memory is the opt-in `--experimental-memory` feature, OFF by default, so the flag is a no-op). Web search is OFF by default (hermetic + fair in a mixed blind review, consistent with glm/minimax/local/codex which have no web); enable it per-run for tasks needing LIVE web (validate a URL/doc/link). (3) **unlike codex, grok HAS `--max-turns`**, so it uses **both** guards via the standard `runnerCmd` (NOT `codexRunnerCmd`) — `grokMaxTurns` (default 30) + `grokTimeoutSecs` (default 600); (4) the runner adds a defensive grep for terminal auth/model/version failures, gated on "no deliverable produced" (mention-proof, like codex's `[ ! -s "$LAST" ]`), that forces a nonzero exit so a soft failure still fails closed; (5) the provenance marker is `FARNSWORTH-GROK-PROVENANCE endpoint=cli-chat-proxy.grok.com` in `_grok_run.log`. Grok bills the operator's SuperGrok / X Premium+ plan.
 
 **Stdin (all `claude`/`codex` runners).** Every runner closes stdin with `</dev/null` on the nested call. With a prompt passed as an arg but an *open* (non-TTY) stdin, `claude`/`codex` wait for stdin input — `claude` warns "no stdin data received in 3s" and can stall the whole wall-clock; `codex` prints "Reading additional input from stdin" and hangs to the timeout. Closing stdin is mandatory and uniform across glm/local/codex/minimax/grok.
+
+**Task-size profiles (dynamic limits).** The per-attempt guards below are not fixed: the SKILL (Phase 1c) sizes them to the task — a manual marker-adjacent `short`/`medium`/`long` override, else the orchestrator's estimate. `bin/fl-parse.mjs` is the single source of truth: `SIZE_PROFILES` defines each label's full guard set, and `node bin/fl-parse.mjs --size <label>` prints it as JSON for the SKILL to pass straight into the workflow args. The keys are exactly the arg names the engine reads, so they flow into the runners as `FL_MAX_TURNS`/`FL_TIMEOUT_SECS`. Reference values:
+
+| guard | short | medium | long |
+|-------|-------|--------|------|
+| `attemptMaxTurns` (GLM) | 15 | 30 | 50 |
+| `localMaxTurns` | 12 | 20 | 35 |
+| `minimaxMaxTurns` | 15 | 30 | 50 |
+| `grokMaxTurns` | 15 | 30 | 50 |
+| `attemptTimeoutSecs` (local/MiniMax/base) | 180 | 300 | 600 |
+| `glmTimeoutSecs` | 600 | 1200 | 2400 |
+| `codexTimeoutSecs` | 300 | 600 | 1200 |
+| `grokTimeoutSecs` | 300 | 600 | 1200 |
+
+`medium` matches the engine's historical defaults in spirit (with a roomier GLM wall-clock, since z.ai is slow). **Native Anthropic attempts are uncapped** — the workflow's `agent()` primitive exposes no turn/time cap, so the size profile only affects the runner-based providers (GLM / local / codex / MiniMax / grok).
 
 **Per-attempt guards (two layers).** The GLM and local runner scripts bound the nested `claude` call with both layers below. **Codex uses only layer 2** (the wall-clock timeout): `codex exec` has no `--max-turns`, so there is no iteration layer to apply — which is exactly why `codexTimeoutSecs` defaults higher (600s).
 

@@ -3,6 +3,32 @@
 All notable changes to the **farnsworth-loop** plugin are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/); each version maps to a git tag.
 
+## [Unreleased]
+
+### Added — dynamic per-attempt limits (task-size–aware turn caps + timeouts)
+
+The per-attempt iteration caps and wall-clock timeouts were hard-coded (GLM 30 turns / 300s, local 20 turns,
+codex 600s, etc.). They now scale to how big the task is — a one-line script and a heavy multi-file build get
+very different headroom.
+
+- **Orchestrator estimate.** In a new SKILL **Phase 1c**, the orchestrator classifies the task as `short`,
+  `medium` (the default when unsure), or `long`, and passes that size's limit profile into the tournament
+  workflow.
+- **Manual override via the sigil.** A marker-adjacent `short` / `medium` / `long` next to `@@FL`
+  (e.g. `@@FL:5 long`, `@@FL short, fix the bug`, `tidy up long @@FL:4`) forces the size. It is recognised
+  only adjacent to the marker and stripped from the task (the AFTER form needs a comma/semicolon/end right
+  after it), so an ordinary size word in the task body (`long division solver`, `short-circuit evaluator`) is
+  left untouched. `fl-parse.mjs` now emits a `size` field (`short|medium|long|null`).
+- **Single source of truth.** `SIZE_PROFILES` in `bin/fl-parse.mjs` defines each label's full guard set;
+  `node bin/fl-parse.mjs --size <label>` prints it as JSON. The keys are exactly the workflow arg names
+  (`attemptMaxTurns`, `localMaxTurns`, `minimaxMaxTurns`, `grokMaxTurns`, `attemptTimeoutSecs`,
+  `glmTimeoutSecs`, `codexTimeoutSecs`, `grokTimeoutSecs`), so they flow through to the runners as
+  `FL_MAX_TURNS` / `FL_TIMEOUT_SECS` unchanged. `medium` matches the historical engine defaults in spirit.
+- **Scope.** Engine (`tournament.mjs`) and the runner scripts are unchanged — they already accepted these
+  args/env vars; this wires the orchestrator to set them per task. Native Anthropic attempts remain uncapped
+  (the workflow `agent()` primitive exposes no turn/time cap). New parser tests cover the override, the
+  false-positive guards, the profiles, and the `--size` CLI.
+
 ## [0.1.1] — 2026-06-20
 
 ### Fixed — repoMode runner-provider failures + a verify-gate hang (found dogfooding the first repoMode grand loop)

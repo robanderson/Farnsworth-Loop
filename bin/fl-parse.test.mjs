@@ -11,7 +11,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parse, normaliseModel, topMixedAssignment, expandSpec, Z_MAX, N_MAX } from './fl-parse.mjs';
+import { parse, normaliseModel, topMixedAssignment, expandSpec, sizeProfile, SIZE_PROFILES, Z_MAX, N_MAX } from './fl-parse.mjs';
 
 const FL_PARSE_CLI = fileURLToPath(new URL('./fl-parse.mjs', import.meta.url));
 
@@ -463,6 +463,84 @@ parseCase('P0 "self-contained" in task body untouched', 'review the self-contain
 {
   const r = parse('do abc @@FL:5:1:2');
   unit('P0 Z=2 leaves n/mode/assignment/needsGate', r.n === 5 && r.mode === 1 && r.assignment === null && r.needsGate === false);
+}
+
+// ===========================================================================
+// DYNAMIC LIMITS — marker-adjacent task-size override (short|medium|long). NEW.
+// ===========================================================================
+
+// --- default: no size keyword -> size null (SKILL estimates) ---
+parseCase('size default null', 'do abc @@FL:5',
+  { task: 'do abc', n: 5, size: null }, { noErrors: true });
+
+// --- AFTER the marker, set off by end-of-input ---
+parseCase('size long after marker', 'fix the bug @@FL:5 long',
+  { task: 'fix the bug', n: 5, size: 'long' }, { noErrors: true });
+parseCase('size medium after marker', 'refactor @@FL:4 medium',
+  { task: 'refactor', n: 4, size: 'medium' }, { noErrors: true });
+
+// --- AFTER the marker, set off by a comma, with a trailing task ---
+parseCase('size short after marker + comma + task', '@@FL short, refactor the parser',
+  { task: 'refactor the parser', size: 'short', needsGate: true }, { noErrors: true });
+
+// --- BEFORE the marker ---
+parseCase('size before marker', 'tidy up long @@FL:4',
+  { task: 'tidy up', n: 4, size: 'long' }, { noErrors: true });
+
+// --- combines with spec + two-pass; size stripped, everything else intact ---
+parseCase('size + two-pass + spec', '@@FL:4:2 medium, 2 opus, 2 sonnet, build a CSV parser',
+  { task: 'build a CSV parser', n: 4, mode: 2, z: 1, size: 'medium',
+    assignment: ['opus', 'opus', 'sonnet', 'sonnet'] }, { noErrors: true });
+
+// --- false-positive guards: a size word in the TASK BODY is NOT a directive ---
+// (AFTER form needs a clause boundary; 'long division' has none -> not stripped.)
+parseCase('size "long division" task untouched', '@@FL:3 long division solver',
+  { task: 'long division solver', n: 3, size: null }, { noErrors: true });
+parseCase('size "short-circuit" task untouched', 'build a short-circuit evaluator @@FL:3',
+  { task: 'build a short-circuit evaluator', n: 3, size: null }, { noErrors: true });
+parseCase('size "medium" mid-task untouched', 'render the medium font weight @@FL:3',
+  { task: 'render the medium font weight', n: 3, size: null }, { noErrors: true });
+
+// --- the size override is independent of grand loops / repo mode ---
+parseCase('size long with Z>=2', 'optimise the build @@FL:4:1:2 long',
+  { task: 'optimise the build', n: 4, z: 2, size: 'long', repoMode: true }, { noErrors: true });
+
+// --- sizeProfile() returns the full guard set, tagged with the canonical size ---
+unit('sizeProfile short keys', (() => {
+  const p = sizeProfile('short');
+  return p && p.size === 'short' && p.attemptMaxTurns === 15 && p.attemptTimeoutSecs === 180 &&
+    p.codexTimeoutSecs === 300 && p.grokTimeoutSecs === 300;
+})());
+unit('sizeProfile medium == engine defaults spirit', (() => {
+  const p = sizeProfile('MEDIUM'); // case-insensitive
+  return p && p.size === 'medium' && p.attemptMaxTurns === 30 && p.localMaxTurns === 20 &&
+    p.attemptTimeoutSecs === 300 && p.codexTimeoutSecs === 600;
+})());
+unit('sizeProfile long loosens guards', (() => {
+  const p = sizeProfile('long');
+  return p && p.attemptMaxTurns === 50 && p.glmTimeoutSecs === 2400 && p.codexTimeoutSecs === 1200;
+})());
+unit('sizeProfile unknown -> null', sizeProfile('huge') === null);
+// every profile must define the SAME complete key set the engine reads.
+unit('SIZE_PROFILES have identical key sets', (() => {
+  const keys = o => Object.keys(o).sort().join(',');
+  const ref = keys(SIZE_PROFILES.medium);
+  return keys(SIZE_PROFILES.short) === ref && keys(SIZE_PROFILES.long) === ref;
+})());
+// monotonic: short <= medium <= long for every numeric guard.
+unit('SIZE_PROFILES monotonic short<=medium<=long', (() => {
+  const { short: s, medium: m, long: l } = SIZE_PROFILES;
+  return Object.keys(m).every(k => s[k] <= m[k] && m[k] <= l[k]);
+})());
+
+// --- CLI: `--size <label>` prints the profile (exit 0); unknown -> exit 1 ---
+{
+  const ok = spawnSync(process.execPath, [FL_PARSE_CLI, '--size', 'long'], { encoding: 'utf8' });
+  unit('CLI --size long exit 0', ok.status === 0);
+  let prof = null; try { prof = JSON.parse(ok.stdout); } catch {}
+  unit('CLI --size long JSON profile', prof && prof.size === 'long' && prof.grokTimeoutSecs === 1200);
+  const bad = spawnSync(process.execPath, [FL_PARSE_CLI, '--size', 'huge'], { encoding: 'utf8' });
+  unit('CLI --size huge exit 1', bad.status === 1);
 }
 
 // ===========================================================================
