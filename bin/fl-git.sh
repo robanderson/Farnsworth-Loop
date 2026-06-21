@@ -189,7 +189,14 @@ verify_safe_diff() {
 # rc 0  -> all passed
 # rc 1  -> a command failed, OR the gate refused (caller -> draft needs-human PR)
 # rc 2  -> no (frozen) verify commands provided (caller -> draft needs-human PR)
+#
+# Wall-clock timeout (issue #32): if FL_VERIFY_TIMEOUT is a positive integer,
+# each command is run under a native watchdog (backgrounded `sleep` + `kill` —
+# NO GNU `timeout`, per the macOS portability rule). A command that exceeds the
+# budget is SIGTERM'd then SIGKILL'd, reported as FL-VERIFY-TIMEOUT, and treated
+# as a failure (fail-closed). Unset/0 = legacy behaviour (no per-command cap).
 # --------------------------------------------------------------------------
+FL_VERIFY_TIMEOUT="${FL_VERIFY_TIMEOUT:-0}"
 run_verify() {
   # GATE first: never execute anything when the implementer touched executable code.
   if ! verify_safe_diff; then
@@ -225,13 +232,52 @@ run_verify() {
     words=()
     read -r -a words <<< "$c"
     [ "${#words[@]}" -gt 0 ] || continue
-    # Direct rc capture; break on first failure so a later success cannot mask it.
-    if "${words[@]}"; then
-      echo "FL-VERIFY-OK: $c"
+
+    if [ "$FL_VERIFY_TIMEOUT" -gt 0 ] 2>/dev/null; then
+      # Watchdog path (issue #32): background the command, then a backgrounded
+      # sleeper that SIGTERM's it after the budget (and SIGKILL's a second later
+      # if it ignores TERM). A SENTINEL file is touched *before* the kill so the
+      # outcome is decoupled from any timing race — if it exists after `wait`,
+      # the command timed out (regardless of whether the watcher is still alive
+      # in its `sleep 1` escalation pause). The watcher is killed on normal
+      # completion so it cannot fire late. No GNU `timeout`/`gtimeout` — native
+      # kill only. rc 143 (128+15) is the SIGTERM the watchdog sends.
+      local _fired
+      _fired="$(mktemp -t flvwatch)"
+      rm -f "$_fired"
+      "${words[@]}" &
+      local cmdpid=$!
+      ( sleep "$FL_VERIFY_TIMEOUT" 2>/dev/null \
+          && { : > "$_fired"; kill -TERM "$cmdpid" 2>/dev/null; sleep 1; kill -KILL "$cmdpid" 2>/dev/null; } ) &
+      local wdog=$!
+      local ok=1 cmdrc=0
+      if wait "$cmdpid"; then ok=1; else cmdrc=$?; ok=0; fi
+      # Stop the watcher first (whether or not it fired) so it never lands late.
+      kill "$wdog" 2>/dev/null
+      wait "$wdog" 2>/dev/null
+      if [ "$ok" -eq 1 ]; then
+        echo "FL-VERIFY-OK: $c"
+      elif [ -f "$_fired" ]; then
+        echo "FL-VERIFY-TIMEOUT: $c (exceeded ${FL_VERIFY_TIMEOUT}s wall-clock)" >&2
+        rc=143
+        rm -f "$_fired"
+        break
+      else
+        rc="$cmdrc"
+        echo "FL-VERIFY-FAIL: $c (exit $rc)" >&2
+        rm -f "$_fired"
+        break
+      fi
     else
-      rc=$?
-      echo "FL-VERIFY-FAIL: $c (exit $rc)" >&2
-      break
+      # Legacy path (no per-command cap): direct rc capture; break on first
+      # failure so a later success cannot mask it.
+      if "${words[@]}"; then
+        echo "FL-VERIFY-OK: $c"
+      else
+        rc=$?
+        echo "FL-VERIFY-FAIL: $c (exit $rc)" >&2
+        break
+      fi
     fi
   done
 

@@ -153,5 +153,63 @@ for s in README.md FL-NOTES.md docs/notes.txt src/app.py main.go util.rs; do
   check "H: gate allows $s" "$(gate_trips "$s")" "safe"
 done
 
+echo "== fl-git.sh run_verify wall-clock timeout (#32) =="
+
+# A reusable newline (a literal NL char in double quotes) so the `read` loop
+# sees a terminated final line.
+NL="
+"
+
+# ---------------------------------------------------------------------------
+# I) WALL-CLOCK TIMEOUT (issue #32): a hung command is killed by the watchdog,
+#    returns rc!=0 FAST (not after the full `sleep 30`), emits FL-VERIFY-TIMEOUT,
+#    and stays fail-closed. No GNU `timeout` — this is the native watchdog path.
+# ---------------------------------------------------------------------------
+I=$(mktemp -d); repo="$I/repo"; mkrepo "$repo"
+printf 'edited\n' >> "$repo/README.md"   # safe change so the diff-gate lets us through
+start=$SECONDS
+FL_VERIFY_TIMEOUT=2 rv "$repo" "sleep 30${NL}"; rc=$?
+elapsed=$((SECONDS - start))
+[ "$rc" -ne 0 ] && ok "I: timed-out command -> rc!=0 (rc=$rc)" || bad "I: expected nonzero rc, got 0"
+[ "$elapsed" -lt 10 ] && ok "I: returned fast (${elapsed}s < 10s, not 30s)" || bad "I: did not return fast (took ${elapsed}s)"
+case "$RV_OUT" in *FL-VERIFY-TIMEOUT*sleep\ 30*) ok "I: emits FL-VERIFY-TIMEOUT marker";; *) bad "I: missing FL-VERIFY-TIMEOUT marker (got: $RV_OUT)";; esac
+rm -rf "$I"
+
+# ---------------------------------------------------------------------------
+# J) TIMEOUT + fast command: a command that finishes well within the budget is
+#    NOT killed, rc 0, no timeout marker, all-pass marker present.
+# ---------------------------------------------------------------------------
+J=$(mktemp -d); repo="$J/repo"; mkrepo "$repo"
+printf 'edited\n' >> "$repo/README.md"
+FL_VERIFY_TIMEOUT=5 rv "$repo" "true${NL}"; rc=$?
+check "J: fast command under timeout -> rc 0" "$rc" "0"
+case "$RV_OUT" in *FL-VERIFY-TIMEOUT*) bad "J: timeout marker on a fast command";; *) ok "J: no timeout marker on fast command";; esac
+case "$RV_OUT" in *FL-VERIFY-ALL-PASS*) ok "J: reports all-pass";; *) bad "J: missing all-pass marker";; esac
+rm -rf "$J"
+
+# ---------------------------------------------------------------------------
+# K) BACK-COMPAT: with FL_VERIFY_TIMEOUT unset (default), run_verify behaves
+#    exactly as before — a `sleep 1` completes normally (rc 0), no timeout fires.
+# ---------------------------------------------------------------------------
+K=$(mktemp -d); repo="$K/repo"; mkrepo "$repo"
+printf 'edited\n' >> "$repo/README.md"
+rv "$repo" "sleep 1${NL}"; rc=$?
+check "K: no timeout default -> rc 0 (back-compat)" "$rc" "0"
+case "$RV_OUT" in *FL-VERIFY-TIMEOUT*) bad "K: timeout marker when timeout disabled";; *) ok "K: no timeout marker when disabled";; esac
+rm -rf "$K"
+
+# ---------------------------------------------------------------------------
+# L) failure-vs-timeout discrimination: under a timeout, a command that FAILS
+#    fast (nonzero rc) is reported as FL-VERIFY-FAIL, NOT FL-VERIFY-TIMEOUT, and
+#    still breaks the chain (fail-closed). Guards the subtle branch.
+# ---------------------------------------------------------------------------
+L=$(mktemp -d); repo="$L/repo"; mkrepo "$repo"
+printf 'edited\n' >> "$repo/README.md"
+FL_VERIFY_TIMEOUT=10 rv "$repo" "false${NL}"; rc=$?
+check "L: failing command under timeout -> rc 1" "$rc" "1"
+case "$RV_OUT" in *FL-VERIFY-FAIL*false*) ok "L: reports FL-VERIFY-FAIL";; *) bad "L: missing FL-VERIFY-FAIL marker";; esac
+case "$RV_OUT" in *FL-VERIFY-TIMEOUT*) bad "L: false TIMEOUT on a fast failure";; *) ok "L: no false TIMEOUT marker";; esac
+rm -rf "$L"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
