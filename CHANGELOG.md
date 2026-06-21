@@ -3,7 +3,7 @@
 All notable changes to the **farnsworth-loop** plugin are documented here.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/); each version maps to a git tag.
 
-## [Unreleased]
+## [0.1.2] — 2026-06-21
 
 ### Added — dynamic per-attempt limits (task-size–aware turn caps + timeouts)
 
@@ -28,6 +28,46 @@ very different headroom.
   args/env vars; this wires the orchestrator to set them per task. Native Anthropic attempts remain uncapped
   (the workflow `agent()` primitive exposes no turn/time cap). New parser tests cover the override, the
   false-positive guards, the profiles, and the `--size` CLI.
+
+### Added — `farnsworth-cleanup` disk-reclaim agent (registered + shipped)
+
+A new ASK-FIRST, dry-run-by-default agent that reclaims the local disk Farnsworth Loop leaves behind, touching
+**only** FL-owned artifacts.
+
+- **`agents/farnsworth-cleanup.md`** *(new)* — an Opus `Bash`+`Read` agent. It reports reclaimable bytes and
+  deletes only on an explicit yes; it never auto-deletes, never touches unmerged work, the main checkout, or a
+  non-FL branch/file. Invoked only when you ask, or by the grand-loop driver as an ASK-FIRST prompt *after* a
+  loop's PR is merged.
+- **`bin/fl-git.sh fl_cleanup`** *(new)* — the audited helper that does all destructive work: **dry-run by
+  default**, `--apply` to delete. Reclaims `flwt/*` worktrees, **already-merged** `FL-*` loop branches, and
+  `.runs/<id>` scratch dirs. Adversarial hardening: refuses a `runsDir` that isn't a `.runs` dir, skips
+  symlinked children, treats detached HEAD as empty base (branch self-guard intact), surfaces git's real
+  refusal reason, and force-deletes orphaned `flwt/*` branch refs.
+- **`skills/farnsworth-loop/SKILL.md`** — an ASK-FIRST post-merge reclaim step.
+- **`.claude-plugin/plugin.json`** — registers the `farnsworth-cleanup` agent (it was committed in 0.1.1's
+  window but not registered, so this is its first loadable release) and advertises the capability.
+- Tests: `bin/fl-git.test.sh` 82 → 120 checks.
+
+### Added — louder dispatch failures (#45: unregistered-agent drop classification)
+
+A worker attempt that **never ran** because its provider agent type isn't registered used to be blended in with
+a normal ran-but-lost attempt, silently shrinking the field `N` the judges see.
+
+- **`workflows/tournament.mjs`** now classifies an unregistered-agent dispatch error distinctly: an immediate
+  **`FL-DISPATCH-DROP`** log per dropped attempt, plus a per-round **`FL-DISPATCH-WARNING`** reporting the
+  effective-vs-requested field size and the missing agent type(s). The classifier regex is bounded to a single
+  line so a ran-but-lost runner transcript that merely mentions "agent type … not found" can't be misread as an
+  infra drop (the false positive that would invert the exact distinction this makes). The common cause —
+  plugin installed/updated *after* session start — is named in the message.
+- Tests: new `workflows/tournament-dispatch-preflight.test.mjs` (27 checks).
+
+### Added — run-purpose summary in the live `/workflows` heading (FL-38)
+
+- **`workflows/tournament.mjs`** — a new pure `deriveSummary()` emits one early `log()` narrator line
+  (`▶ <summary>`) so a running tournament is identifiable in `/workflows`. `args.title`/`args.purpose` win
+  verbatim; otherwise it sanitizes `args.task` (strips `@@FL`-style sigils, flattens whitespace, truncates to
+  ~80 chars). The static `meta.description` was shortened so it no longer truncates mid-sentence. No change to
+  mapping/ranking/return value or control flow.
 
 ## [0.1.1] — 2026-06-20
 

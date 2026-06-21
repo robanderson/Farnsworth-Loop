@@ -349,17 +349,20 @@ farnsworth-loop/
 │   ├── farnsworth-local.md             # one generic local worker — runs bin/local-run.sh
 │   ├── farnsworth-codex.md             # one generic codex worker — runs bin/codex-run.sh
 │   ├── farnsworth-minimax.md           # one generic minimax worker — runs bin/minimax-run.sh
-│   └── farnsworth-implementer.md       # (grand loops) Opus; applies the winner to the real repo
+│   ├── farnsworth-grok.md              # one generic grok worker (both variants) — runs bin/grok-run.sh
+│   ├── farnsworth-implementer.md       # (grand loops) Opus; applies the winner to the real repo
+│   └── farnsworth-cleanup.md           # (on request) Opus; ASK-FIRST disk reclaim via bin/fl-git.sh fl_cleanup
 ├── workflows/
 │   └── tournament.mjs                  # the dynamic-workflow engine: attempts → blind review → (two pass) round 2 → final rank
 ├── bin/                                # runners + helpers (run with node / bash)
-│   ├── fl-parse.mjs                    # Phase 0 invocation parser (sigil, prose spec, Top Mixed, Z)
-│   ├── fl-git.sh                       # ALL git/gh side effects for grand loops (preflight, branch, verify, PR, markers)
+│   ├── fl-parse.mjs                    # Phase 0 invocation parser (sigil, prose spec, Top Mixed, Z, task size)
+│   ├── fl-git.sh                       # ALL git/gh side effects for grand loops (preflight, branch, verify, PR, markers, cleanup)
 │   ├── fl-issue.sh                     # the only forge-touching part: dogfood GitHub-Issues helper
 │   ├── glm-run.sh                      # provider runner scripts (build a benign command, set env,
 │   ├── local-run.sh                    #   call the nested claude/codex, write provenance markers)
 │   ├── codex-run.sh
 │   ├── minimax-run.sh
+│   ├── grok-run.sh
 │   ├── fl-bench.mjs                    # the throughput benchmark
 │   └── README.fl-bench.md              # fl-bench usage + results-format reference
 ├── docs/
