@@ -1,6 +1,6 @@
 export const meta = {
   name: 'Farnsworth Loop',
-  description: 'A refined, multi-model best-of-N refinement loop: N parallel attempts judged blind by Anthropic Opus; two-pass adds a guided round and a final rank.',
+  description: 'Multi-model best-of-N: N attempts judged blind by Opus; two-pass adds a guided round + final rank.',
   phases: [
     { title: 'Round 1' },
     { title: 'Review' },
@@ -34,6 +34,26 @@ if (!Array.isArray(attempts) || attempts.length === 0) {
   return { error: 'no attempts provided', argsType: typeof args, keys: Object.keys(A || {}) }
 }
 const LABELS = 'ABCDEFGHIJKLMNOP'.split('')
+
+// Run-purpose summary for the live /workflows heading (issue #38). meta.name/description is a static
+// PURE LITERAL (Workflow spec — it CANNOT be dynamic per-run), so the only runtime lever into the live
+// display is an early log() narrator line rendered above the progress tree. args.title (alias args.purpose)
+// wins verbatim when present; otherwise derive a sanitized one-line summary of args.task. Sanitization
+// strips @@FL-style sigils and embedded newlines and collapses whitespace, then truncates to ~80 chars.
+const SUMMARY_MAX = 80
+function deriveSummary() {
+  const explicit = A.title != null ? A.title : A.purpose
+  if (explicit != null && String(explicit).trim()) return String(explicit).trim()
+  const cleaned = String(task || '')
+    .replace(/@@FL(:\d+){0,3}/g, '') // strip @@FL sigils (e.g. @@FL, @@FL:5, @@FL:5:2:1)
+    .replace(/[\r\n]+/g, ' ')        // flatten to one line
+    .replace(/\s+/g, ' ')            // collapse runs of whitespace
+    .trim()
+  if (!cleaned) return '(untitled run)'
+  return cleaned.length > SUMMARY_MAX
+    ? cleaned.slice(0, SUMMARY_MAX - 1).trimEnd() + '…'
+    : cleaned
+}
 
 // Render one fallible-prior guidance item as a tagged bullet. Shared by brief() (the round-2 brief) and
 // guidanceToMd() (the saved guidance.md). Back-compat: an old/in-flight guidance object may still hold bare
@@ -926,6 +946,7 @@ function largestRemainderRound(combined, share) {
 
 // ---- Round 1 ----
 phase('Round 1')
+log(`▶ ${deriveSummary()}`) // issue #38: run-purpose summary as the first narrator line (above the progress tree)
 await buildContext() // shared context bundle (no-op unless args.contextFiles given) — built once, before the attempts
 const r1Worktrees = attempts.map(a => ({ ...a, ws: repoMode ? worktreePath('round-1', a.label) : `${runDir}/round-1/${a.label}` }))
 await buildWorktrees('round-1', r1Worktrees) // repoMode-only no-op otherwise
