@@ -474,5 +474,150 @@ xel=$(( $(date +%s) - xs ))
   && ok "X: fl_run_with_timeout in \$() never blocks on an orphaned watchdog sleep (30 calls in ${xel}s)" \
   || bad "X: \$()-captured fl_run_with_timeout blocked on an orphaned watchdog sleep (30 calls took ${xel}s; >=8 => a sleep held the pipe)"
 
+# ---------------------------------------------------------------------------
+# Y) fl_cleanup (disk reclaim): DRY-RUN by default, --apply to actually delete.
+#    Reclaims ONLY FL-owned artifacts: flwt/* worktrees, MERGED FL-* branches,
+#    and .runs/<run-id> dirs. NEVER unmerged work, the main checkout, non-FL refs.
+#
+#    Reuses mkadopt/mkwinner (above): they set ADOPT_REPO + BASE and give us a
+#    flwt/* worktree branch we can also use as a stand-in FL- branch.
+# ---------------------------------------------------------------------------
+echo "== fl-git.sh fl_cleanup (disk reclaim, dry-run default) =="
+
+# cleanup_setup <root> -> builds a repo with:
+#   - one flwt/* worktree (mergeable into base, i.e. at base sha)
+#   - one FL- branch MERGED into base  (FL-merged)
+#   - one FL- branch NOT merged (one commit ahead) (FL-unmerged)
+#   - a .runs/<id> dir with a junk file (so it has nonzero bytes)
+# Sets globals: ADOPT_REPO, BASE, RUNS_DIR (the .runs dir), RUN_ID.
+RUNS_DIR=""; RUN_ID=""
+cleanup_setup() {
+  local root="$1"
+  mkadopt "$root"                                   # ADOPT_REPO + BASE, origin wired
+  # flwt/* worktree at base (mergeable / safe to remove).
+  mkwinner "$ADOPT_REPO" "flwt/run/round-1/candidate-1"
+  # A MERGED FL- branch: create at base sha (0 commits ahead == merged).
+  git -C "$ADOPT_REPO" branch "FL-9-merged00" "$BASE"
+  # An UNMERGED FL- branch: one commit ahead of base on its own worktree.
+  mkwinner "$ADOPT_REPO" "FL-9-unmerge1" ahead
+  # A .runs/<id> dir with content.
+  RUNS_DIR="$ADOPT_REPO/.runs"; RUN_ID="gl-deadbeef-20990101-000000"
+  mkdir -p "$RUNS_DIR/$RUN_ID/loop-1"
+  printf 'scratch artifact bytes\n' > "$RUNS_DIR/$RUN_ID/loop-1/junk.txt"
+}
+
+# Y1: DRY-RUN (default) LISTS candidates + bytes but DELETES NOTHING.
+Y1=$(mktemp -d); cleanup_setup "$Y1"
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" fl_cleanup "$BASE" "$RUNS_DIR" 2>&1 )"; rc=$?
+check "Y1: dry-run -> rc 0" "$rc" "0"
+case "$out" in *FL-CLEANUP-DRYRUN*) ok "Y1: announces dry-run mode";; *) bad "Y1: missing dry-run marker";; esac
+case "$out" in *flwt/run/round-1/candidate-1*) ok "Y1: lists the flwt worktree";; *) bad "Y1: did not list flwt worktree";; esac
+case "$out" in *FL-9-merged00*) ok "Y1: lists the merged FL- branch";; *) bad "Y1: did not list merged FL- branch";; esac
+case "$out" in *"$RUN_ID"*) ok "Y1: lists the .runs/<id> dir";; *) bad "Y1: did not list .runs dir";; esac
+# The unmerged FL- branch must surface ONLY as kept, NEVER in the merged-delete list.
+case "$out" in *UNMERGED*FL-9-unmerge1*) ok "Y1: unmerged FL- branch surfaced as kept";; *) bad "Y1: unmerged FL- branch not reported as kept";; esac
+case "$out" in *"[branch merged] FL-9-unmerge1"*) bad "Y1: unmerged branch wrongly listed for deletion";; *) ok "Y1: unmerged FL- branch NOT in the merged-delete list";; esac
+# Nothing deleted: every artifact still present after dry-run.
+git -C "$ADOPT_REPO" rev-parse --verify --quiet refs/heads/FL-9-merged00 >/dev/null 2>&1 && ok "Y1: merged branch NOT deleted (dry-run)" || bad "Y1: merged branch deleted in dry-run"
+[ -d "$RUNS_DIR/$RUN_ID" ] && ok "Y1: .runs dir NOT deleted (dry-run)" || bad "Y1: .runs dir deleted in dry-run"
+git -C "$ADOPT_REPO" worktree list 2>/dev/null | grep -q "candidate-1" && ok "Y1: worktree NOT removed (dry-run)" || bad "Y1: worktree removed in dry-run"
+# bytes are reported.
+case "$out" in *bytes*) ok "Y1: reports a byte total";; *) bad "Y1: no byte total reported";; esac
+rm -rf "$Y1"
+
+# Y2: --apply REMOVES a MERGED FL- branch + its flwt worktree, and the .runs dir.
+Y2=$(mktemp -d); cleanup_setup "$Y2"
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" fl_cleanup --apply "$BASE" "$RUNS_DIR" 2>&1 )"; rc=$?
+check "Y2: --apply -> rc 0" "$rc" "0"
+case "$out" in *FL-CLEANUP-APPLY*) ok "Y2: announces apply mode";; *) bad "Y2: missing apply marker";; esac
+if git -C "$ADOPT_REPO" rev-parse --verify --quiet refs/heads/FL-9-merged00 >/dev/null 2>&1; then
+  bad "Y2: merged FL- branch still present after --apply"
+else
+  ok "Y2: merged FL- branch deleted under --apply"
+fi
+if git -C "$ADOPT_REPO" worktree list 2>/dev/null | grep -q "candidate-1"; then
+  bad "Y2: flwt worktree still present after --apply"
+else
+  ok "Y2: flwt worktree removed under --apply"
+fi
+[ ! -d "$RUNS_DIR/$RUN_ID" ] && ok "Y2: .runs/<id> dir removed under --apply" || bad "Y2: .runs dir still present after --apply"
+
+# Y3: --apply REFUSES the UNMERGED FL- branch (never -D / force-deletes work).
+if git -C "$ADOPT_REPO" rev-parse --verify --quiet refs/heads/FL-9-unmerge1 >/dev/null 2>&1; then
+  ok "Y3: unmerged FL- branch PRESERVED under --apply (refused)"
+else
+  bad "Y3: unmerged FL- branch was deleted (DATA LOSS — must refuse)"
+fi
+case "$out" in *FL-9-unmerge1*) ok "Y3: reports it skipped the unmerged branch";; *) ok "Y3: silently skipped unmerged branch";; esac
+rm -rf "$Y2"
+
+# Y4: SAFETY — fl_cleanup NEVER touches a non-FL branch nor the base branch.
+Y4=$(mktemp -d); cleanup_setup "$Y4"
+git -C "$ADOPT_REPO" branch "rob/keepme" "$BASE"     # a non-FL local branch
+( cd "$ADOPT_REPO" && bash "$FLGIT" fl_cleanup --apply "$BASE" "$RUNS_DIR" ) >/dev/null 2>&1
+git -C "$ADOPT_REPO" rev-parse --verify --quiet "refs/heads/$BASE" >/dev/null 2>&1 && ok "Y4: base branch preserved" || bad "Y4: base branch deleted (CATASTROPHIC)"
+git -C "$ADOPT_REPO" rev-parse --verify --quiet refs/heads/rob/keepme >/dev/null 2>&1 && ok "Y4: non-FL branch preserved" || bad "Y4: non-FL branch deleted"
+[ -f "$ADOPT_REPO/README.md" ] && ok "Y4: main checkout files untouched" || bad "Y4: main checkout damaged"
+rm -rf "$Y4"
+
+# Y5: BLAST-RADIUS guard (review-critical). A runsDir whose basename != ".runs" is
+#     REFUSED — its subdirs are NEVER deleted (guards the repo-root / '/' / $HOME typo).
+#     And a SYMLINKED child under a real .runs/ is skipped (never followed out of tree).
+#     Run from a NON-git temp dir so worktree/branch reclaim is inert and only step 3 runs.
+Y5=$(mktemp -d)
+# (a) a non-".runs" dir shaped like a source tree -> must be refused, subdirs kept.
+notruns="$Y5/srcroot"; mkdir -p "$notruns/bin" "$notruns/workflows"
+out="$( cd "$notruns" && bash "$FLGIT" fl_cleanup --apply main "$notruns" 2>&1 )"; rc=$?
+check "Y5a: non-.runs runsDir -> rc 0 (fail-soft)" "$rc" "0"
+case "$out" in *FL-CLEANUP-REFUSE*) ok "Y5a: refuses a non-.runs runsDir";; *) bad "Y5a: did not refuse non-.runs runsDir";; esac
+[ -d "$notruns/bin" ] && [ -d "$notruns/workflows" ] && ok "Y5a: non-.runs subdirs PRESERVED (no blast)" || bad "Y5a: DELETED subdirs of a non-.runs runsDir (BLAST RADIUS)"
+# (b) symlinked child under a real .runs/ -> skipped; target + real run-id dir handled.
+realruns="$Y5/.runs"; victim="$Y5/victim"; mkdir -p "$realruns/gl-real-20990101-000000" "$victim"
+printf 'precious\n' > "$victim/precious.txt"
+ln -s "$victim" "$realruns/evillink"
+out="$( cd "$Y5" && bash "$FLGIT" fl_cleanup --apply main "$realruns" 2>&1 )"; rc=$?
+check "Y5b: real .runs runsDir -> rc 0" "$rc" "0"
+case "$out" in *"SKIPPED — symlink"*) ok "Y5b: reports the symlinked child as skipped";; *) bad "Y5b: did not skip symlinked .runs child";; esac
+[ -f "$victim/precious.txt" ] && ok "Y5b: symlink target PRESERVED (no escape)" || bad "Y5b: followed symlink and deleted target (ESCAPE)"
+[ -L "$realruns/evillink" ] && ok "Y5b: symlink child left intact (not reclaimed)" || bad "Y5b: removed the symlink child"
+[ ! -d "$realruns/gl-real-20990101-000000" ] && ok "Y5b: real run-id dir under .runs IS reclaimed" || bad "Y5b: real run-id dir not reclaimed"
+rm -rf "$Y5"
+
+# Y6: a MERGED FL- branch that is the CURRENTLY-CHECKED-OUT HEAD is kept, and the WARN
+#     surfaces git's REAL reason (checked-out), not a misleading "(not merged?)".
+Y6=$(mktemp -d); mkadopt "$Y6"
+git -C "$ADOPT_REPO" branch "FL-9-current0" "$BASE"
+git -C "$ADOPT_REPO" checkout -q "FL-9-current0"     # HEAD now on the merged FL- branch
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" fl_cleanup --apply "$BASE" "$ADOPT_REPO/.runs" 2>&1 )"; rc=$?
+check "Y6: --apply with HEAD on merged FL- -> rc 0" "$rc" "0"
+git -C "$ADOPT_REPO" rev-parse --verify --quiet refs/heads/FL-9-current0 >/dev/null 2>&1 && ok "Y6: checked-out merged FL- branch KEPT (git protects it)" || bad "Y6: deleted the checked-out branch"
+case "$out" in *"(not merged?)"*) bad "Y6: still prints misleading '(not merged?)'";; *) ok "Y6: no misleading '(not merged?)' message";; esac
+case "$out" in *"git refused:"*) ok "Y6: surfaces git's real refusal reason";; *) bad "Y6: did not surface git's reason";; esac
+rm -rf "$Y6"
+
+# Y7: Fix #4 — on a DETACHED HEAD with no explicit base, base defaults to EMPTY (not the
+#     literal "HEAD"), so the branch self-guard is intact and the branch section is skipped.
+#     Dry-run proves it (announce shows base='') without deleting anything.
+Y7=$(mktemp -d); mkadopt "$Y7"
+git -C "$ADOPT_REPO" branch "FL-9-detach00" "$BASE"
+git -C "$ADOPT_REPO" checkout -q --detach "$BASE"    # detached HEAD at base sha
+out="$( cd "$ADOPT_REPO" && bash "$FLGIT" fl_cleanup 2>&1 )"; rc=$?   # NO base/runsDir args
+check "Y7: dry-run on detached HEAD -> rc 0" "$rc" "0"
+case "$out" in *"base=''"*) ok "Y7: detached HEAD defaults base to EMPTY (not literal HEAD)";; *) bad "Y7: detached HEAD did not yield empty base";; esac
+case "$out" in *"[branch merged] FL-9-detach00"*) bad "Y7: branch section ran under detached HEAD (self-guard defeated)";; *) ok "Y7: branch section skipped under detached HEAD";; esac
+git -C "$ADOPT_REPO" rev-parse --verify --quiet refs/heads/FL-9-detach00 >/dev/null 2>&1 && ok "Y7: FL- branch at detached commit preserved" || bad "Y7: FL- branch missing"
+rm -rf "$Y7"
+
+# Y8: Fix #5 — under --apply the flwt/* BRANCH ref is removed too (not just the worktree),
+#     so stale attempt branches don't accumulate across grand loops.
+Y8=$(mktemp -d); cleanup_setup "$Y8"
+( cd "$ADOPT_REPO" && bash "$FLGIT" fl_cleanup --apply "$BASE" "$RUNS_DIR" ) >/dev/null 2>&1
+if git -C "$ADOPT_REPO" rev-parse --verify --quiet "refs/heads/flwt/run/round-1/candidate-1" >/dev/null 2>&1; then
+  bad "Y8: flwt/* branch ref left behind after --apply (leak)"
+else
+  ok "Y8: flwt/* branch ref removed under --apply"
+fi
+rm -rf "$Y8"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]

@@ -31,6 +31,9 @@
 #   open_pr_needs_human <branch> <base> <title> <bodyFile> -> draft + needs-human PR; prints URL
 #   stop_file_check <runDir>               -> rc 0 if STOP present (caller halts), rc 1 otherwise
 #   done_marker <runDir> <loop> [write]    -> check/write per-loop DONE marker
+#   fl_cleanup [--apply] [<base>] [<runsDir>] -> reclaim FL-owned local disk (flwt/* worktrees,
+#                                             MERGED FL-* branches, .runs/<id> dirs); DRY-RUN by
+#                                             DEFAULT (lists + bytes, deletes nothing); --apply deletes
 #
 set -uo pipefail
 
@@ -816,6 +819,182 @@ fl_detect_orphan_branch() {
 }
 
 # --------------------------------------------------------------------------
+# _fl_du_bytes <path> -> prints the apparent disk size of <path> in BYTES (a
+# bare integer; 0 if missing/unreadable). macOS `du` has no `-b`, so use the
+# 512-byte-block count (`du -s`, BLOCKSIZE=512) and multiply. This is "blocks
+# on disk" (what a delete actually frees), the right number to report.
+# --------------------------------------------------------------------------
+_fl_du_bytes() {
+  local p="${1:-}"
+  [ -e "$p" ] || { echo 0; return 0; }
+  local blocks
+  blocks="$(BLOCKSIZE=512 du -s "$p" 2>/dev/null | awk '{print $1}')"
+  case "$blocks" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo $(( blocks * 512 )) ;;
+  esac
+}
+
+# --------------------------------------------------------------------------
+# fl_cleanup [--apply] [<base>] [<runsDir>]
+# Reclaim LOCAL disk from Farnsworth Loop artifacts, SAFELY. DRY-RUN BY DEFAULT:
+# with no --apply it only LISTS what it WOULD remove (plus a byte total) and
+# deletes NOTHING. `--apply` is the explicit opt-in that actually deletes.
+#
+# It touches ONLY FL-owned artifacts, and nothing else:
+#   1. flwt/* git worktrees   (repoMode attempt workspaces) -> `git worktree
+#      remove --force` + `git worktree prune`.
+#   2. FL-* loop branches that are ALREADY MERGED into <base> -> `git branch -d`
+#      (the merged-only delete; it REFUSES an unmerged branch by construction, so
+#      in-flight/unmerged work is never lost). Unmerged FL-* branches are listed
+#      as skipped, never force-deleted.
+#   3. <runsDir>/<run-id> directories (the per-run parallel-attempt scratch under
+#      the plugin `.runs/`) -> `rm -rf` of each immediate child dir. SAFETY: <runsDir>
+#      MUST be a directory literally named `.runs` (else the run reclaim is REFUSED) and
+#      symlinked children are skipped — this is the guard that bounds the blast radius so
+#      a mistyped runsDir (repo root, `/`, `$HOME`) can never delete non-FL dirs.
+#
+# It NEVER touches: the base branch, any non-FL branch, the main checkout, or any
+# non-FL file. Defaults: <base> = current branch (EMPTY on a detached HEAD, which skips
+# the branch section rather than misresolving "HEAD"); <runsDir> = "<this script's
+# dir>/../.runs" (the plugin `.runs/`). Fail-soft per-item (one bad item does not
+# abort the rest); rc 0 on a normal pass. Args may appear in any order; the first
+# non-flag is <base>, the second is <runsDir>.
+# --------------------------------------------------------------------------
+fl_cleanup() {
+  local apply=0 base="" runsDir="" a
+  for a in "$@"; do
+    case "$a" in
+      --apply) apply=1 ;;
+      --dry-run) apply=0 ;;
+      -*) echo "FL-CLEANUP: unknown flag '$a' (use --apply to delete; default is dry-run)" >&2; return 64 ;;
+      *) if [ -z "$base" ]; then base="$a"; elif [ -z "$runsDir" ]; then runsDir="$a"; fi ;;
+    esac
+  done
+  # Defaults: base = current branch; runsDir = the plugin's .runs/ (sibling of bin/).
+  # Use symbolic-ref (NOT rev-parse --abbrev-ref): on a DETACHED HEAD the latter prints
+  # the literal "HEAD", which would resolve as a ref and defeat the base self-guard below
+  # (`[ "$br" = "$base" ]` can never match "HEAD"); symbolic-ref prints EMPTY when detached,
+  # so the `[ -n "$base" ]` guard then skips the branch section entirely.
+  if [ -z "$base" ]; then
+    base="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo '')"
+  fi
+  if [ -z "$runsDir" ]; then
+    local self_dir
+    self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    runsDir="${self_dir%/bin}/.runs"
+  fi
+
+  local mode total=0 b
+  if [ "$apply" -eq 1 ]; then mode=apply; echo "FL-CLEANUP-APPLY: deleting FL-owned artifacts (base='$base' runsDir='$runsDir')";
+  else mode=dryrun; echo "FL-CLEANUP-DRYRUN: would remove FL-owned artifacts only — NOTHING deleted (pass --apply to delete) (base='$base' runsDir='$runsDir')"; fi
+
+  # --- 1) flwt/* worktrees ------------------------------------------------
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local wt_path="" wt_branch="" line
+    while IFS= read -r line; do
+      case "$line" in
+        "worktree "*) wt_path="${line#worktree }"; wt_branch="" ;;
+        "branch "*)
+          wt_branch="${line#branch }"; wt_branch="${wt_branch#refs/heads/}"
+          case "$wt_branch" in
+            flwt/*)
+              b="$(_fl_du_bytes "$wt_path")"; total=$(( total + b ))
+              echo "  [worktree] $wt_path (branch $wt_branch) — ${b} bytes"
+              if [ "$mode" = apply ]; then
+                git worktree remove --force "$wt_path" 2>/dev/null \
+                  || echo "  FL-CLEANUP-WARN: could not remove worktree $wt_path" >&2
+                # `git worktree remove` leaves the flwt/* branch ref behind. These are
+                # throwaway attempt branches (the winner's commit was already adopted onto
+                # its FL- branch), so force-delete the now-orphaned ref to actually reclaim
+                # it — otherwise stale flwt/* refs accumulate across grand loops.
+                git branch -D "$wt_branch" >/dev/null 2>&1 || true
+              fi
+              ;;
+          esac
+          ;;
+      esac
+    done < <(git worktree list --porcelain 2>/dev/null)
+    [ "$mode" = apply ] && git worktree prune 2>/dev/null || true
+
+    # --- 2) MERGED FL-* branches (merged-only delete) ---------------------
+    if [ -n "$base" ] && git rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
+      local br d_err
+      # MERGED set: branches whose tip is reachable from base. git branch -d also
+      # enforces this, so this is belt-and-suspenders (and lets us classify).
+      while IFS= read -r br; do
+        br="${br#"${br%%[![:space:]]*}"}"   # ltrim
+        br="${br#\* }"                       # drop the current-branch marker
+        [ -n "$br" ] || continue
+        case "$br" in
+          FL-*)
+            [ "$br" = "$base" ] && continue
+            echo "  [branch merged] $br"
+            if [ "$mode" = apply ]; then
+              # -d is the MERGED-ONLY delete; it refuses an unmerged branch. Capture git's
+              # actual stderr and surface THAT reason (e.g. "used by worktree" for the
+              # currently-checked-out branch) rather than hardcoding "(not merged?)".
+              d_err="$(git branch -d "$br" 2>&1 >/dev/null)" \
+                || echo "  FL-CLEANUP-WARN: kept branch $br — git refused: ${d_err}" >&2
+            fi
+            ;;
+        esac
+      done < <(git branch --merged "$base" --format '%(refname:short)' 2>/dev/null)
+
+      # Report (but NEVER delete) UNMERGED FL-* branches, for transparency.
+      while IFS= read -r br; do
+        br="${br#"${br%%[![:space:]]*}"}"; br="${br#\* }"
+        [ -n "$br" ] || continue
+        case "$br" in
+          FL-*) echo "  [branch UNMERGED — kept] $br (refusing to delete unmerged work)" ;;
+        esac
+      done < <(git branch --no-merged "$base" --format '%(refname:short)' 2>/dev/null)
+    fi
+  else
+    echo "  FL-CLEANUP: not inside a git work tree — skipping worktree/branch reclaim" >&2
+  fi
+
+  # --- 3) .runs/<run-id> directories --------------------------------------
+  # SAFETY (this is the blast-radius guard): runsDir MUST be a directory literally named
+  # ".runs". That single check is what makes deleting its children safe — every immediate
+  # child of a real FL ".runs/" is per-run scratch by construction. Without it, a mistyped
+  # runsDir (e.g. the repo root, or '/' / "$HOME") would rm -rf arbitrary non-FL dirs. If the
+  # basename is not ".runs" we REFUSE the run reclaim (worktree/branch reclaim already ran).
+  # We also never follow a symlinked child out of the FL tree, and never touch '.'/'..'.
+  if [ -d "$runsDir" ]; then
+    local runs_real runs_base
+    runs_real="$(cd "$runsDir" 2>/dev/null && pwd -P || echo "$runsDir")"
+    runs_base="$(basename "$runs_real")"
+    if [ "$runs_base" != ".runs" ]; then
+      echo "  FL-CLEANUP-REFUSE: runsDir '$runsDir' is not a plugin '.runs' directory (basename '$runs_base' != '.runs') — skipping run reclaim to avoid touching non-FL dirs" >&2
+    else
+      local d name
+      for d in "$runsDir"/*/; do
+        [ -d "$d" ] || continue              # no-glob-match guard
+        d="${d%/}"; name="$(basename "$d")"
+        if [ -L "$d" ]; then                 # never follow a symlink out of the FL tree
+          echo "  [runs dir SKIPPED — symlink, not FL-owned] $d" >&2; continue
+        fi
+        case "$name" in .|..) continue ;; esac
+        b="$(_fl_du_bytes "$d")"; total=$(( total + b ))
+        echo "  [runs dir] $d — ${b} bytes"
+        if [ "$mode" = apply ]; then
+          rm -rf -- "$d" 2>/dev/null \
+            || echo "  FL-CLEANUP-WARN: could not remove $d" >&2
+        fi
+      done
+    fi
+  fi
+
+  if [ "$mode" = apply ]; then
+    echo "FL-CLEANUP-APPLY-DONE: reclaimed ${total} bytes from FL-owned artifacts"
+  else
+    echo "FL-CLEANUP-DRYRUN-DONE: would reclaim ${total} bytes (run with --apply to delete)"
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # CLI dispatcher (the benign-command pattern, like glm-run.sh). Lets the SKILL
 # call `bash fl-git.sh <fn> args...` without sourcing.
 # --------------------------------------------------------------------------
@@ -847,6 +1026,7 @@ if ! _fl_is_sourced; then
     done_marker)           done_marker "$@" ;;
     fl_resolve_remote)     fl_resolve_remote "$@" ;;
     fl_detect_orphan_branch) fl_detect_orphan_branch "$@" ;;
+    fl_cleanup)            fl_cleanup "$@" ;;
     ""|-h|--help|help)
       cat <<'USAGE'
 fl-git.sh — Farnsworth Loop grand-loop git/gh helper.
@@ -870,6 +1050,7 @@ Functions:
   done_marker <runDir> <loop> [write]
   fl_resolve_remote <base>
   fl_detect_orphan_branch <loop>
+  fl_cleanup [--apply] [<base>] [<runsDir>]   (DRY-RUN by default; reclaim flwt/* worktrees, MERGED FL-* branches, .runs/<id> dirs — never unmerged work/main checkout)
 USAGE
       ;;
     *)
